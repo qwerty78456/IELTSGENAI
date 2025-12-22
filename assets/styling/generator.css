@@ -1,0 +1,178 @@
+/* Generator Page Styles */
+.generator-container {
+    max-width: 1200px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+}
+
+.generator-header {
+    text-align: center;
+    margin-bottom: 2rem;
+}
+
+.generator-header h1 {
+    color: #2c3e50;
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+}
+
+.generator-header p {
+    color: #7f8c8d;
+    font-size: 1rem;
+}
+
+.generator-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.generator-panel {
+    background: white;
+    border-radius: 8px;
+    padding: 1.5rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.panel-header {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 2px solid #e9ecef;
+}
+
+/* Content Input Panel */
+.input-label {
+    display: block;
+    font-weight: 500;
+    color: #495057;
+    margin-bottom: 0.5rem;
+}
+
+.input-textarea {
+    width: 100%;
+    min-height: 200px;
+    padding: 0.75rem;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 0.95rem;
+    resize: vertical;
+}
+
+.input-textarea::placeholder {
+    color: #adb5bd;
+    font-style: italic;
+}
+
+.input-textarea:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+}
+
+/* Configuration Panel */
+.config-group {
+    margin-bottom: 1.5rem;
+}
+
+.select-wrapper {
+    position: relative;
+}
+
+.section-select {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 0.95rem;
+    background: white;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23495057' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.75rem center;
+    padding-right: 2.5rem;
+}
+
+.section-select:focus {
+    outline: none;
+    border-color: #3498db;
+    box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+}
+
+.customize-section {
+    margin-top: 1.5rem;
+    padding-top: 1.5rem;
+    border-top: 1px solid #e9ecef;
+}
+
+.customize-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-weight: 500;
+    color: #495057;
+}
+
+/* Results Panel */
+.success-message {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: #d4edda;
+    border: 1px solid #c3e6cb;
+    border-radius: 4px;
+    color: #155724;
+}
+
+.success-icon {
+    font-size: 1.5rem;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 2rem;
+    color: #6c757d;
+}
+
+/* Generate Button */
+.generate-button-container {
+    text-align: center;
+}
+
+.generate-button {
+    background: #3498db;
+    color: white;
+    border: none;
+    padding: 1rem 3rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.generate-button:hover {
+    background: #2980b9;
+}
+
+.generate-button:active {
+    transform: translateY(1px);
+}
+
+.generate-button:disabled {
+    background: #95a5a6;
+    cursor: not-allowed;
+}
+
+/* Responsive */
+@media (max-width: 968px) {
+    .generator-grid {
+        grid-template-columns: 1fr;
+    }
+}

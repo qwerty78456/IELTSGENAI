@@ -9,9 +9,19 @@ edition = "2024"
 [dependencies]
 dioxus = { version = "0.7.2", features = ["router", "fullstack"] }
 serde = { version = "1.0.228", features = ["derive"] }
-uuid = { version = "1.19.0", features = ["v4", "serde"] }
 thiserror = "2.0.17"
+tracing = "0.1"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1.19.0", features = ["v4", "serde", "js"] }
+gloo-timers = "0.3"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
 tokio = { version = "1.48.0", features = ["full"] }
+
+[target.wasm32-unknown-unknown.dependencies]
+gloo-timers = "0.3.0"
 [features]
 default = ["web"]
 # The feature that are only required for the web = ["dioxus/web"] build target should be optional and only enabled in the web = ["dioxus/web"] feature

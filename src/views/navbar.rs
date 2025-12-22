@@ -3,11 +3,7 @@ use dioxus::prelude::*;
 
 const NAVBAR_CSS: Asset = asset!("/assets/styling/navbar.css");
 
-/// The Navbar component that will be rendered on all pages of our app since every page is under the layout.
-///
-///
-/// This layout component wraps the UI of [Route::Home] and [Route::Blog] in a common navbar. The contents of the Home and Blog
-/// routes will be rendered under the outlet inside this component
+/// The Navbar component that will be rendered on all pages of our app.
 #[component]
 pub fn Navbar() -> Element {
     rsx! {
@@ -17,16 +13,11 @@ pub fn Navbar() -> Element {
             id: "navbar",
             Link {
                 to: Route::Home {},
-                "Home"
-            }
-            Link {
-                to: Route::Blog { id: 1 },
-                "Blog"
+                "IELTS Listening Generator"
             }
         }
 
-        // The `Outlet` component is used to render the next component inside the layout. In this case, it will render either
-        // the [`Home`] or [`Blog`] component depending on the current route.
+        // The `Outlet` component is used to render the Home component
         Outlet::<Route> {}
     }
 }

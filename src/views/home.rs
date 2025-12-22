@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 use crate::domain::{ListeningSection, GenerationRequest, SpeakerRole, Accent};
-use crate::services::topic_generator;
+use crate::services::{topic_generator, script_generator};
 
 #[component]
 pub fn Home() -> Element {
@@ -18,6 +18,10 @@ pub fn Home() -> Element {
     let mut editing_speaker_idx = use_signal(|| None::<usize>);
     let mut topic_error = use_signal(|| None::<String>);
     let mut is_generating_topic = use_signal(|| false);
+    
+    // State for generated script
+    let mut generated_script = use_signal(|| None::<String>);
+    let mut generation_error = use_signal(|| None::<String>);
     
     // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
@@ -62,6 +66,7 @@ pub fn Home() -> Element {
     let handle_generate = move |_| {
         // Validate topic
         if topic().trim().is_empty() {
+            generation_error.set(Some("Please enter a topic description".to_string()));
             return;
         }
 
@@ -72,30 +77,34 @@ pub fn Home() -> Element {
         };
 
         // Validate request
-        if let Err(_e) = request.validate() {
-            // TODO: Show error to user
+        if let Err(e) = request.validate() {
+            generation_error.set(Some(e));
             return;
         }
 
-        // TODO: Call generation service
+        // Call generation service
+        generation_error.set(None);
         is_generating.set(true);
+        generation_success.set(false);
+        generated_script.set(None);
         
-        // Simulate generation (will be replaced with actual service call)
+        let current_speakers = speakers();
+        let current_section = selected_section();
+        let current_topic = topic();
+        
         spawn(async move {
-            // Simulate API call delay
-            #[cfg(target_arch = "wasm32")]
-            {
-                use gloo_timers::future::TimeoutFuture;
-                TimeoutFuture::new(2000).await;
+            match script_generator::generate_script(current_section, &current_topic, &current_speakers).await {
+                Ok(script) => {
+                    generated_script.set(Some(script));
+                    generation_success.set(true);
+                    generation_error.set(None);
+                }
+                Err(e) => {
+                    generation_error.set(Some(format!("Failed to generate script: {}", e)));
+                    generation_success.set(false);
+                }
             }
-            
-            #[cfg(not(target_arch = "wasm32"))]
-            {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-            }
-            
             is_generating.set(false);
-            generation_success.set(true);
         });
     };
 
@@ -239,14 +248,45 @@ pub fn Home() -> Element {
                 div { class: "generator-panel",
                     h2 { class: "panel-header", "Generation Results" }
                     
-                    if generation_success() {
-                        div { class: "success-message",
-                            span { class: "success-icon", "✓" }
-                            span { "Success! Exercise Generated." }
+                    if let Some(error) = generation_error() {
+                        div { class: "error-box",
+                            span { class: "error-icon", "⚠" }
+                            span { "{error}" }
                         }
-                    } else {
+                    }
+                    
+                    if generation_success() {
+                        if let Some(script) = generated_script() {
+                            div { class: "script-result",
+                                div { class: "success-banner",
+                                    span { class: "success-icon", "✓" }
+                                    span { "Script Generated Successfully!" }
+                                }
+                                
+                                div { class: "script-preview",
+                                    h3 { "Script Preview:" }
+                                    pre { class: "script-content", "{script}" }
+                                }
+                                
+                                button {
+                                    class: "download-button",
+                                    onclick: move |_| {
+                                        download_script(&script, &format!("IELTS_Listening_{:?}.txt", selected_section()));
+                                    },
+                                    "📥 Download Script"
+                                }
+                            }
+                        }
+                    } else if !is_generating() && generation_error().is_none() {
                         div { class: "empty-state",
                             p { "Results will appear here after generation." }
+                        }
+                    }
+                    
+                    if is_generating() {
+                        div { class: "loading-state",
+                            div { class: "spinner" }
+                            p { "Generating script... This may take 30-60 seconds." }
                         }
                     }
                 }
@@ -464,4 +504,42 @@ fn string_to_role(s: &str) -> SpeakerRole {
         "other" => SpeakerRole::Other(String::new()),
         _ => SpeakerRole::Student,
     }
+}
+
+// Helper function to download script as text file
+#[cfg(target_arch = "wasm32")]
+fn download_script(content: &str, filename: &str) {
+    use wasm_bindgen::JsCast;
+    use web_sys::{window, Blob, BlobPropertyBag, Url, HtmlAnchorElement};
+    
+    if let Some(window) = window() {
+        if let Some(document) = window.document() {
+            // Create blob
+            let array = js_sys::Array::new();
+            array.push(&wasm_bindgen::JsValue::from_str(content));
+            
+            let mut blob_options = BlobPropertyBag::new();
+            blob_options.set_type("text/plain;charset=utf-8");
+            
+            if let Ok(blob) = Blob::new_with_str_sequence_and_options(&array, &blob_options) {
+                if let Ok(url) = Url::create_object_url_with_blob(&blob) {
+                    // Create temporary anchor element
+                    if let Ok(anchor) = document.create_element("a") {
+                        let anchor: HtmlAnchorElement = anchor.unchecked_into();
+                        anchor.set_href(&url);
+                        anchor.set_download(filename);
+                        anchor.click();
+                        
+                        // Clean up
+                        let _ = Url::revoke_object_url(&url);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn download_script(_content: &str, _filename: &str) {
+    // Download not implemented for non-wasm targets
 }

@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 use crate::domain::{ListeningSection, GenerationRequest, SpeakerRole, Accent};
+use crate::services::topic_generator;
 
 #[component]
 pub fn Home() -> Element {
@@ -15,6 +16,8 @@ pub fn Home() -> Element {
     // State for speaker customization
     let mut custom_speakers = use_signal(|| Vec::new());
     let mut editing_speaker_idx = use_signal(|| None::<usize>);
+    let mut topic_error = use_signal(|| None::<String>);
+    let mut is_generating_topic = use_signal(|| false);
     
     // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
@@ -28,6 +31,32 @@ pub fn Home() -> Element {
             request.generate_default_speakers()
         }
     });
+
+    // Handle topic auto-generation
+    let handle_generate_topic = move |_| {
+        topic_error.set(None);
+        is_generating_topic.set(true);
+        
+        let section_str = match selected_section() {
+            ListeningSection::Section1 => "Section 1",
+            ListeningSection::Section2 => "Section 2",
+            ListeningSection::Section3 => "Section 3",
+            ListeningSection::Section4 => "Section 4",
+        };
+        
+        spawn(async move {
+            match topic_generator::generate_topic_suggestion(section_str).await {
+                Ok(generated_topic) => {
+                    topic.set(generated_topic);
+                    topic_error.set(None);
+                }
+                Err(e) => {
+                    topic_error.set(Some(format!("Failed to generate topic: {}", e)));
+                }
+            }
+            is_generating_topic.set(false);
+        });
+    };
 
     // Handle generation
     let handle_generate = move |_| {
@@ -90,11 +119,35 @@ pub fn Home() -> Element {
                         "Describe the Audio Scenario:"
                     }
                     
-                    textarea {
-                        class: "input-textarea",
-                        placeholder: "Example: A phone conversation about booking a driving lesson.",
-                        value: "{topic}",
-                        oninput: move |evt| topic.set(evt.value()),
+                    div { class: "textarea-container",
+                        textarea {
+                            class: "input-textarea",
+                            placeholder: "Example: A phone conversation about booking a driving lesson.",
+                            value: "{topic}",
+                            oninput: move |evt| {
+                                topic.set(evt.value());
+                                topic_error.set(None);
+                            },
+                        }
+                        
+                        button {
+                            class: "auto-generate-button",
+                            disabled: is_generating_topic(),
+                            onclick: handle_generate_topic,
+                            title: "Auto-generate topic using AI",
+                            
+                            if is_generating_topic() {
+                                "✨ Generating..."
+                            } else {
+                                "✨ Auto-generate"
+                            }
+                        }
+                    }
+                    
+                    if let Some(error) = topic_error() {
+                        div { class: "error-message",
+                            "{error}"
+                        }
                     }
                 }
 

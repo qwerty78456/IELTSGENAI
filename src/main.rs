@@ -6,6 +6,8 @@ use views::{Home, Navbar};
 mod components;
 /// Define a domain module that contains the domain model
 mod domain;
+/// Define a services module that contains business logic services
+mod services;
 /// Define a views module that contains the UI for all Layouts and Routes for our app.
 mod views;
 

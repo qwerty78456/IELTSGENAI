@@ -1,7 +1,7 @@
 //! Home view - IELTS Listening Practice Exercise Generator
 
 use dioxus::prelude::*;
-use crate::domain::{ListeningSection, GenerationRequest};
+use crate::domain::{ListeningSection, GenerationRequest, SpeakerRole, Accent};
 
 #[component]
 pub fn Home() -> Element {
@@ -12,13 +12,21 @@ pub fn Home() -> Element {
     let mut is_generating = use_signal(|| false);
     let mut show_speakers = use_signal(|| false);
     
-    // Compute speakers based on selected section
+    // State for speaker customization
+    let mut custom_speakers = use_signal(|| Vec::new());
+    let mut editing_speaker_idx = use_signal(|| None::<usize>);
+    
+    // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
-        let request = GenerationRequest {
-            section: selected_section(),
-            topic: "temp".to_string(),
-        };
-        request.generate_default_speakers()
+        if !custom_speakers().is_empty() {
+            custom_speakers()
+        } else {
+            let request = GenerationRequest {
+                section: selected_section(),
+                topic: "temp".to_string(),
+            };
+            request.generate_default_speakers()
+        }
     });
 
     // Handle generation
@@ -136,7 +144,14 @@ pub fn Home() -> Element {
                                         
                                         rsx! {
                                             div { class: "speaker-card", key: "{idx}",
-                                                div { class: "speaker-name", "{speaker.name}" }
+                                                div { class: "speaker-card-header",
+                                                    div { class: "speaker-name", "{speaker.name}" }
+                                                    button {
+                                                        class: "edit-button",
+                                                        onclick: move |_| editing_speaker_idx.set(Some(idx)),
+                                                        "✏️ Edit"
+                                                    }
+                                                }
                                                 div { class: "speaker-details",
                                                     span { class: "speaker-badge", "{gender_str}" }
                                                     span { class: "speaker-badge", "{accent_str}" }
@@ -144,6 +159,22 @@ pub fn Home() -> Element {
                                                 }
                                             }
                                         }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // Speaker edit modal
+                        if let Some(idx) = editing_speaker_idx() {
+                            if let Some(speaker) = speakers().get(idx) {
+                                SpeakerEditModal {
+                                    speaker: speaker.clone(),
+                                    onclose: move |_| editing_speaker_idx.set(None),
+                                    onsave: move |updated_speaker| {
+                                        let mut speakers_vec = speakers().clone();
+                                        speakers_vec[idx] = updated_speaker;
+                                        custom_speakers.set(speakers_vec);
+                                        editing_speaker_idx.set(None);
                                     }
                                 }
                             }
@@ -186,6 +217,138 @@ pub fn Home() -> Element {
     }
 }
 
+// Speaker Edit Modal Component
+#[component]
+fn SpeakerEditModal(
+    speaker: crate::domain::SpeakerConfig,
+    onclose: EventHandler<()>,
+    onsave: EventHandler<crate::domain::SpeakerConfig>,
+) -> Element {
+    use crate::domain::{Gender, SpeakerRole};
+    
+    let speaker_name = speaker.name.clone();
+    let mut edited_gender = use_signal(|| speaker.gender);
+    let mut edited_accent = use_signal(|| speaker.accent);
+    let mut edited_role = use_signal(|| speaker.role.clone());
+    let mut custom_role_text = use_signal(|| {
+        match &speaker.role {
+            SpeakerRole::Other(s) => s.clone(),
+            _ => String::new()
+        }
+    });
+    
+    let handle_save = move |_| {
+        let final_role = match edited_role() {
+            SpeakerRole::Other(_) => SpeakerRole::Other(custom_role_text()),
+            other => other
+        };
+        
+        onsave.call(crate::domain::SpeakerConfig {
+            name: speaker.name.clone(),
+            gender: edited_gender(),
+            accent: edited_accent(),
+            role: final_role,
+        });
+    };
+    
+    rsx! {
+        div { class: "modal-overlay",
+            onclick: move |_| onclose.call(()),
+            
+            div { class: "modal-content",
+                onclick: move |e| e.stop_propagation(),
+                
+                div { class: "modal-header",
+                    h3 { "Edit {speaker_name}" }
+                    button {
+                        class: "modal-close",
+                        onclick: move |_| onclose.call(()),
+                        "×"
+                    }
+                }
+                
+                div { class: "modal-body",
+                    div { class: "form-group",
+                        label { "Gender:" }
+                        select {
+                            class: "form-select",
+                            value: if matches!(edited_gender(), Gender::Male) { "male" } else { "female" },
+                            onchange: move |evt| {
+                                edited_gender.set(if evt.value() == "male" {
+                                    Gender::Male
+                                } else {
+                                    Gender::Female
+                                });
+                            },
+                            option { value: "male", "Male" }
+                            option { value: "female", "Female" }
+                        }
+                    }
+                    
+                    div { class: "form-group",
+                        label { "Accent:" }
+                        select {
+                            class: "form-select",
+                            value: "{accent_to_string(edited_accent())}",
+                            onchange: move |evt| {
+                                edited_accent.set(string_to_accent(&evt.value()));
+                            },
+                            option { value: "british", "British" }
+                            option { value: "american", "American" }
+                            option { value: "australian", "Australian" }
+                            option { value: "canadian", "Canadian" }
+                            option { value: "newzealand", "New Zealand" }
+                        }
+                    }
+                    
+                    div { class: "form-group",
+                        label { "Role:" }
+                        select {
+                            class: "form-select",
+                            value: "{role_to_string(&edited_role())}",
+                            onchange: move |evt| {
+                                edited_role.set(string_to_role(&evt.value()));
+                            },
+                            option { value: "student", "Student" }
+                            option { value: "professor", "Professor" }
+                            option { value: "clerk", "Clerk" }
+                            option { value: "receptionist", "Receptionist" }
+                            option { value: "guide", "Guide" }
+                            option { value: "other", "Other" }
+                        }
+                    }
+                    
+                    if matches!(edited_role(), SpeakerRole::Other(_)) {
+                        div { class: "form-group",
+                            label { "Custom Role:" }
+                            input {
+                                class: "form-input",
+                                r#type: "text",
+                                value: "{custom_role_text}",
+                                oninput: move |evt| custom_role_text.set(evt.value()),
+                                placeholder: "Enter custom role..."
+                            }
+                        }
+                    }
+                }
+                
+                div { class: "modal-footer",
+                    button {
+                        class: "button-secondary",
+                        onclick: move |_| onclose.call(()),
+                        "Cancel"
+                    }
+                    button {
+                        class: "button-primary",
+                        onclick: handle_save,
+                        "Save Changes"
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Helper functions for section conversion
 fn section_to_string(section: ListeningSection) -> &'static str {
     match section {
@@ -202,5 +365,50 @@ fn string_to_section(s: &str) -> ListeningSection {
         "section3" => ListeningSection::Section3,
         "section4" => ListeningSection::Section4,
         _ => ListeningSection::Section1,
+    }
+}
+
+// Helper functions for accent
+fn accent_to_string(accent: Accent) -> &'static str {
+    match accent {
+        Accent::British => "british",
+        Accent::American => "american",
+        Accent::Australian => "australian",
+        Accent::Canadian => "canadian",
+        Accent::NewZealand => "newzealand",
+    }
+}
+
+fn string_to_accent(s: &str) -> Accent {
+    match s {
+        "american" => Accent::American,
+        "australian" => Accent::Australian,
+        "canadian" => Accent::Canadian,
+        "newzealand" => Accent::NewZealand,
+        _ => Accent::British,
+    }
+}
+
+// Helper functions for role
+fn role_to_string(role: &SpeakerRole) -> &'static str {
+    match role {
+        SpeakerRole::Student => "student",
+        SpeakerRole::Professor => "professor",
+        SpeakerRole::Clerk => "clerk",
+        SpeakerRole::Receptionist => "receptionist",
+        SpeakerRole::Guide => "guide",
+        SpeakerRole::Other(_) => "other",
+    }
+}
+
+fn string_to_role(s: &str) -> SpeakerRole {
+    match s {
+        "student" => SpeakerRole::Student,
+        "professor" => SpeakerRole::Professor,
+        "clerk" => SpeakerRole::Clerk,
+        "receptionist" => SpeakerRole::Receptionist,
+        "guide" => SpeakerRole::Guide,
+        "other" => SpeakerRole::Other(String::new()),
+        _ => SpeakerRole::Student,
     }
 }

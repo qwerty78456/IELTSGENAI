@@ -10,6 +10,16 @@ pub fn Home() -> Element {
     let mut selected_section = use_signal(|| ListeningSection::Section1);
     let mut generation_success = use_signal(|| false);
     let mut is_generating = use_signal(|| false);
+    let mut show_speakers = use_signal(|| false);
+    
+    // Compute speakers based on selected section
+    let speakers = use_memo(move || {
+        let request = GenerationRequest {
+            section: selected_section(),
+            topic: "temp".to_string(),
+        };
+        request.generate_default_speakers()
+    });
 
     // Handle generation
     let handle_generate = move |_| {
@@ -106,10 +116,38 @@ pub fn Home() -> Element {
                     }
 
                     div { class: "customize-section",
-                        div { class: "customize-header",
+                        button {
+                            class: "customize-toggle",
+                            onclick: move |_| show_speakers.set(!show_speakers()),
                             span { "Customize speakers ⚙" }
+                            span { class: "toggle-icon", if show_speakers() { "▼" } else { "▶" } }
                         }
-                        // TODO: Will be implemented later
+                        
+                        if show_speakers() {
+                            div { class: "speakers-list",
+                                for (idx, speaker) in speakers().iter().enumerate() {
+                                    {
+                                        let gender_str = format!("{:?}", speaker.gender);
+                                        let accent_str = format!("{:?}", speaker.accent);
+                                        let role_str = match &speaker.role {
+                                            crate::domain::SpeakerRole::Other(s) => s.clone(),
+                                            _ => format!("{:?}", speaker.role)
+                                        };
+                                        
+                                        rsx! {
+                                            div { class: "speaker-card", key: "{idx}",
+                                                div { class: "speaker-name", "{speaker.name}" }
+                                                div { class: "speaker-details",
+                                                    span { class: "speaker-badge", "{gender_str}" }
+                                                    span { class: "speaker-badge", "{accent_str}" }
+                                                    span { class: "speaker-badge role", "{role_str}" }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 

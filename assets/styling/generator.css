@@ -576,3 +576,65 @@ body {
     margin: 0;
     font-size: 0.95rem;
 }
+
+/* Download Buttons Grid */
+.download-buttons {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+}
+
+.download-button.primary {
+    background: #28a745;
+}
+
+.download-button.primary:hover {
+    background: #218838;
+}
+
+.download-button.secondary {
+    background: #6c757d;
+}
+
+.download-button.secondary:hover {
+    background: #5a6268;
+}
+
+.download-button.info {
+    background: #17a2b8;
+}
+
+.download-button.info:hover {
+    background: #138496;
+}
+
+/* Info Box */
+.info-box {
+    padding: 1rem;
+    background: #e7f3ff;
+    border: 1px solid #b3d9ff;
+    border-left: 4px solid #0066cc;
+    border-radius: 4px;
+    margin-top: 1rem;
+}
+
+.info-title {
+    font-weight: 600;
+    color: #0056b3;
+    margin: 0 0 0.5rem 0;
+    font-size: 0.95rem;
+}
+
+.info-box p:last-child {
+    margin: 0;
+    color: #004085;
+    font-size: 0.875rem;
+    line-height: 1.5;
+}
+
+@media (max-width: 768px) {
+    .download-buttons {
+        grid-template-columns: 1fr;
+    }
+}

@@ -2,7 +2,7 @@
 
 use dioxus::prelude::*;
 use crate::domain::{ListeningSection, GenerationRequest, SpeakerRole, Accent};
-use crate::services::{topic_generator, script_generator};
+use crate::services::{topic_generator, script_generator, audio_generator};
 
 #[component]
 pub fn Home() -> Element {
@@ -256,7 +256,7 @@ pub fn Home() -> Element {
                     }
                     
                     if generation_success() {
-                        if let Some(script) = generated_script() {
+                        if let Some(ref script) = generated_script() {
                             div { class: "script-result",
                                 div { class: "success-banner",
                                     span { class: "success-icon", "✓" }
@@ -268,12 +268,46 @@ pub fn Home() -> Element {
                                     pre { class: "script-content", "{script}" }
                                 }
                                 
-                                button {
-                                    class: "download-button",
-                                    onclick: move |_| {
-                                        download_script(&script, &format!("IELTS_Listening_{:?}.txt", selected_section()));
-                                    },
-                                    "📥 Download Script"
+                                div { class: "download-buttons",
+                                    button {
+                                        class: "download-button primary",
+                                        onclick: move |_| {
+                                            if let Some(script) = generated_script() {
+                                                download_script(&script, &format!("IELTS_Listening_{:?}_Script.txt", selected_section()));
+                                            }
+                                        },
+                                        "📄 Download Script"
+                                    }
+                                    
+                                    button {
+                                        class: "download-button secondary",
+                                        onclick: move |_| {
+                                            if let Some(script) = generated_script() {
+                                                let ssml = audio_generator::generate_ssml_script(&script, &speakers());
+                                                download_script(&ssml, &format!("IELTS_Listening_{:?}_SSML.xml", selected_section()));
+                                            }
+                                        },
+                                        "🎵 Download SSML"
+                                    }
+                                    
+                                    button {
+                                        class: "download-button info",
+                                        onclick: move |_| {
+                                            if let Some(script) = generated_script() {
+                                                let instructions = audio_generator::generate_audio_instructions(&script, &speakers());
+                                                download_script(&instructions, &format!("IELTS_Listening_{:?}_AudioGuide.txt", selected_section()));
+                                            }
+                                        },
+                                        "📘 Download Audio Guide"
+                                    }
+                                }
+                                
+                                div { class: "info-box",
+                                    p { class: "info-title", "🎙️ Audio Generation" }
+                                    p { 
+                                        "The SSML file can be used with professional TTS services (Google Cloud TTS, Amazon Polly, ElevenLabs). "
+                                        "Download the Audio Guide for detailed instructions on generating high-quality audio."
+                                    }
                                 }
                             }
                         }

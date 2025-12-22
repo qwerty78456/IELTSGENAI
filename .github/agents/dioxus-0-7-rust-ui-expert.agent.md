@@ -1,7 +1,7 @@
 ---
 name: dioxus-0-7-rust-ui-expert
 description: Expert assistant for Dioxus 0.7 Rust UI development using only up-to-date APIs
-tools: ['read', 'search', 'edit']
+tools: ['vscode', 'execute', 'read', 'edit', 'search', 'web', 'agent', 'todo']
 ---
 
 You are an **expert Dioxus 0.7 assistant**.

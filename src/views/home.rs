@@ -22,6 +22,8 @@ pub fn Home() -> Element {
     // State for generated script
     let mut generated_script = use_signal(|| None::<String>);
     let mut generation_error = use_signal(|| None::<String>);
+    let mut is_generating_audio = use_signal(|| false);
+    let mut audio_error = use_signal(|| None::<String>);
     
     // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
@@ -281,32 +283,52 @@ pub fn Home() -> Element {
                                     
                                     button {
                                         class: "download-button secondary",
+                                        disabled: is_generating_audio(),
                                         onclick: move |_| {
-                                            if let Some(script) = generated_script() {
-                                                let ssml = audio_generator::generate_ssml_script(&script, &speakers());
-                                                download_script(&ssml, &format!("IELTS_Listening_{:?}_SSML.xml", selected_section()));
-                                            }
+                                            let script = match generated_script() {
+                                                Some(s) => s,
+                                                None => return,
+                                            };
+                                            let speakers_config = speakers();
+                                            let section = selected_section();
+                                            
+                                            is_generating_audio.set(true);
+                                            audio_error.set(None);
+                                            
+                                            spawn(async move {
+                                                match audio_generator::generate_audio(&script, &speakers_config).await {
+                                                    Ok(pcm_data) => {
+                                                        // Convert PCM to WAV
+                                                        let wav_data = audio_generator::pcm_to_wav(&pcm_data, 24000, 1, 16);
+                                                        download_audio(&wav_data, &format!("IELTS_Listening_{:?}_Audio.wav", section));
+                                                    }
+                                                    Err(e) => {
+                                                        audio_error.set(Some(format!("Audio generation failed: {}", e)));
+                                                    }
+                                                }
+                                                is_generating_audio.set(false);
+                                            });
                                         },
-                                        "🎵 Download SSML"
+                                        if is_generating_audio() {
+                                            "🎵 Generating Audio..."
+                                        } else {
+                                            "🎵 Generate Audio"
+                                        }
                                     }
-                                    
-                                    button {
-                                        class: "download-button info",
-                                        onclick: move |_| {
-                                            if let Some(script) = generated_script() {
-                                                let instructions = audio_generator::generate_audio_instructions(&script, &speakers());
-                                                download_script(&instructions, &format!("IELTS_Listening_{:?}_AudioGuide.txt", selected_section()));
-                                            }
-                                        },
-                                        "📘 Download Audio Guide"
+                                }
+                                
+                                if let Some(error) = audio_error() {
+                                    div { class: "error-box",
+                                        span { class: "error-icon", "⚠" }
+                                        span { "{error}" }
                                     }
                                 }
                                 
                                 div { class: "info-box",
                                     p { class: "info-title", "🎙️ Audio Generation" }
                                     p { 
-                                        "The SSML file can be used with professional TTS services (Google Cloud TTS, Amazon Polly, ElevenLabs). "
-                                        "Download the Audio Guide for detailed instructions on generating high-quality audio."
+                                        "Click 'Generate Audio' to create a high-quality multi-speaker audio file using Gemini 2.5 TTS. "
+                                        "The audio will be automatically downloaded as a WAV file."
                                     }
                                 }
                             }
@@ -575,5 +597,47 @@ fn download_script(content: &str, filename: &str) {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn download_script(_content: &str, _filename: &str) {
+    // Download not implemented for non-wasm targets
+}
+
+// Helper function to download audio as WAV file
+#[cfg(target_arch = "wasm32")]
+fn download_audio(audio_data: &[u8], filename: &str) {
+    use wasm_bindgen::JsCast;
+    use web_sys::{window, Blob, BlobPropertyBag, Url, HtmlAnchorElement};
+    
+    if let Some(window) = window() {
+        if let Some(document) = window.document() {
+            // Create Uint8Array from audio data
+            let uint8_array = js_sys::Uint8Array::new_with_length(audio_data.len() as u32);
+            uint8_array.copy_from(audio_data);
+            
+            // Create blob with audio/wav mime type
+            let array = js_sys::Array::new();
+            array.push(&uint8_array);
+            
+            let mut blob_options = BlobPropertyBag::new();
+            blob_options.set_type("audio/wav");
+            
+            if let Ok(blob) = Blob::new_with_u8_array_sequence_and_options(&array, &blob_options) {
+                if let Ok(url) = Url::create_object_url_with_blob(&blob) {
+                    // Create temporary anchor element
+                    if let Ok(anchor) = document.create_element("a") {
+                        let anchor: HtmlAnchorElement = anchor.unchecked_into();
+                        anchor.set_href(&url);
+                        anchor.set_download(filename);
+                        anchor.click();
+                        
+                        // Clean up
+                        let _ = Url::revoke_object_url(&url);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn download_audio(_audio_data: &[u8], _filename: &str) {
     // Download not implemented for non-wasm targets
 }

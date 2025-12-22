@@ -114,12 +114,12 @@ It serves as the blueprint for the Rust implementation.
 
   - `section`: ListeningSection
   - `topic`: String
-  - `target_duration_seconds`: Integer
-  - `speakers`: List of SpeakerConfig
 
 - **Validation:**
 
-  - `speakers.len()` must match `section` requirements.
+  - `topic` must not be empty.
+
+- **Note:** Speaker configurations are automatically generated based on the selected `section` type.
 
 ## Results
 

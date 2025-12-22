@@ -2,12 +2,15 @@
 name = "vmq_mvp"
 version = "0.1.0"
 authors = ["Curly-Howard-Chungus Correspondence | Lamport-Cabot-Codd-Backus-Naur Form <benghia1st@gmail.com>"]
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dioxus = { version = "0.7.1", features = ["router", "fullstack"] }
+dioxus = { version = "0.7.2", features = ["router", "fullstack"] }
+serde = { version = "1.0.228", features = ["derive"] }
+uuid = { version = "1.19.0", features = ["v4", "serde"] }
+thiserror = "2.0.17"
 
 [features]
 default = ["web"]

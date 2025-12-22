@@ -5,7 +5,7 @@ It serves as a contract to prevent scope creep and ensure focus on the core valu
 
 ## Project Vision
 
-To provide IELTS teachers with an endless supply of high-quality, realistic listening practice materials, customized to specific topics and difficulty levels, eliminating the need to search for or manually record content.
+To provide IELTS teachers with an endless supply of high-quality, realistic listening practice materials, customized to specific topics, eliminating the need to search for or manually record content.
 
 ## Bounded Context
 

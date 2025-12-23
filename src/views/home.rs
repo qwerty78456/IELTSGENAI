@@ -368,6 +368,42 @@ pub fn Home() -> Element {
                     }
                 }
             }
+
+            // Loading Popups
+            if is_generating_topic() {
+                LoadingPopup {
+                    message: "Generating Topic...",
+                    submessage: "Creating a relevant topic suggestion"
+                }
+            }
+
+            if is_generating() {
+                LoadingPopup {
+                    message: "Generating Script...",
+                    submessage: "This may take 30-60 seconds"
+                }
+            }
+
+            if is_generating_audio() {
+                LoadingPopup {
+                    message: "Generating Audio...",
+                    submessage: "Creating high-quality multi-speaker audio"
+                }
+            }
+        }
+    }
+}
+
+// Loading Popup Component
+#[component]
+fn LoadingPopup(message: String, submessage: String) -> Element {
+    rsx! {
+        div { class: "loading-popup-overlay",
+            div { class: "loading-popup-content",
+                div { class: "loading-popup-spinner" }
+                p { class: "loading-popup-text", "{message}" }
+                p { class: "loading-popup-subtext", "{submessage}" }
+            }
         }
     }
 }

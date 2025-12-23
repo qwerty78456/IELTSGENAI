@@ -1,8 +1,8 @@
 //! Home view - IELTS Listening Practice Exercise Generator
 
+use crate::domain::{Accent, GenerationRequest, ListeningSection, SpeakerRole};
+use crate::services::{audio_generator, script_generator, topic_generator};
 use dioxus::prelude::*;
-use crate::domain::{ListeningSection, GenerationRequest, SpeakerRole, Accent};
-use crate::services::{topic_generator, script_generator, audio_generator};
 
 #[component]
 pub fn Home() -> Element {
@@ -12,19 +12,19 @@ pub fn Home() -> Element {
     let mut generation_success = use_signal(|| false);
     let mut is_generating = use_signal(|| false);
     let mut show_speakers = use_signal(|| false);
-    
+
     // State for speaker customization
     let mut custom_speakers = use_signal(|| Vec::new());
     let mut editing_speaker_idx = use_signal(|| None::<usize>);
     let mut topic_error = use_signal(|| None::<String>);
     let mut is_generating_topic = use_signal(|| false);
-    
+
     // State for generated script
     let mut generated_script = use_signal(|| None::<String>);
     let mut generation_error = use_signal(|| None::<String>);
     let mut is_generating_audio = use_signal(|| false);
     let mut audio_error = use_signal(|| None::<String>);
-    
+
     // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
         if !custom_speakers().is_empty() {
@@ -42,14 +42,14 @@ pub fn Home() -> Element {
     let handle_generate_topic = move |_| {
         topic_error.set(None);
         is_generating_topic.set(true);
-        
+
         let section_str = match selected_section() {
             ListeningSection::Section1 => "Section 1",
             ListeningSection::Section2 => "Section 2",
             ListeningSection::Section3 => "Section 3",
             ListeningSection::Section4 => "Section 4",
         };
-        
+
         spawn(async move {
             match topic_generator::generate_topic_suggestion(section_str).await {
                 Ok(generated_topic) => {
@@ -89,13 +89,19 @@ pub fn Home() -> Element {
         is_generating.set(true);
         generation_success.set(false);
         generated_script.set(None);
-        
+
         let current_speakers = speakers();
         let current_section = selected_section();
         let current_topic = topic();
-        
+
         spawn(async move {
-            match script_generator::generate_script(current_section, &current_topic, &current_speakers).await {
+            match script_generator::generate_script(
+                current_section,
+                &current_topic,
+                &current_speakers,
+            )
+            .await
+            {
                 Ok(script) => {
                     generated_script.set(Some(script));
                     generation_success.set(true);
@@ -112,7 +118,7 @@ pub fn Home() -> Element {
 
     rsx! {
         document::Stylesheet { href: asset!("/assets/styling/generator.css") }
-        
+
         div { class: "generator-container",
             // Header
             div { class: "generator-header",
@@ -125,11 +131,11 @@ pub fn Home() -> Element {
                 // Column 1: Content Input
                 div { class: "generator-panel",
                     h2 { class: "panel-header", "Content Input" }
-                    
+
                     label { class: "input-label",
                         "Describe the Audio Scenario:"
                     }
-                    
+
                     div { class: "textarea-container",
                         textarea {
                             class: "input-textarea",
@@ -140,13 +146,13 @@ pub fn Home() -> Element {
                                 topic_error.set(None);
                             },
                         }
-                        
+
                         button {
                             class: "auto-generate-button",
                             disabled: is_generating_topic(),
                             onclick: handle_generate_topic,
                             title: "Auto-generate topic using AI",
-                            
+
                             if is_generating_topic() {
                                 "✨ Generating..."
                             } else {
@@ -154,7 +160,7 @@ pub fn Home() -> Element {
                             }
                         }
                     }
-                    
+
                     if let Some(error) = topic_error() {
                         div { class: "error-message",
                             "{error}"
@@ -165,12 +171,12 @@ pub fn Home() -> Element {
                 // Column 2: IELTS Configuration
                 div { class: "generator-panel",
                     h2 { class: "panel-header", "IELTS Configuration" }
-                    
+
                     div { class: "config-group",
                         label { class: "input-label",
                             "Select Listening Section:"
                         }
-                        
+
                         div { class: "select-wrapper",
                             select {
                                 class: "section-select",
@@ -178,7 +184,7 @@ pub fn Home() -> Element {
                                 onchange: move |evt| {
                                     selected_section.set(string_to_section(&evt.value()));
                                 },
-                                
+
                                 option { value: "section1", "Section 1: Transactional Conversation" }
                                 option { value: "section2", "Section 2: Guided Monologue" }
                                 option { value: "section3", "Section 3: Academic Discussion" }
@@ -194,7 +200,7 @@ pub fn Home() -> Element {
                             span { "Customize speakers ⚙" }
                             span { class: "toggle-icon", if show_speakers() { "▼" } else { "▶" } }
                         }
-                        
+
                         if show_speakers() {
                             div { class: "speakers-list",
                                 for (idx, speaker) in speakers().iter().enumerate() {
@@ -205,7 +211,7 @@ pub fn Home() -> Element {
                                             crate::domain::SpeakerRole::Other(s) => s.clone(),
                                             _ => format!("{:?}", speaker.role)
                                         };
-                                        
+
                                         rsx! {
                                             div { class: "speaker-card", key: "{idx}",
                                                 div { class: "speaker-card-header",
@@ -227,7 +233,7 @@ pub fn Home() -> Element {
                                 }
                             }
                         }
-                        
+
                         // Speaker edit modal
                         if let Some(idx) = editing_speaker_idx() {
                             if let Some(speaker) = speakers().get(idx) {
@@ -249,14 +255,14 @@ pub fn Home() -> Element {
                 // Column 3: Generation Results
                 div { class: "generator-panel",
                     h2 { class: "panel-header", "Generation Results" }
-                    
+
                     if let Some(error) = generation_error() {
                         div { class: "error-box",
                             span { class: "error-icon", "⚠" }
                             span { "{error}" }
                         }
                     }
-                    
+
                     if generation_success() {
                         if let Some(ref script) = generated_script() {
                             div { class: "script-result",
@@ -264,12 +270,12 @@ pub fn Home() -> Element {
                                     span { class: "success-icon", "✓" }
                                     span { "Script Generated Successfully!" }
                                 }
-                                
+
                                 div { class: "script-preview",
                                     h3 { "Script Preview:" }
                                     pre { class: "script-content", "{script}" }
                                 }
-                                
+
                                 div { class: "download-buttons",
                                     button {
                                         class: "download-button primary",
@@ -280,7 +286,7 @@ pub fn Home() -> Element {
                                         },
                                         "📄 Download Script"
                                     }
-                                    
+
                                     button {
                                         class: "download-button secondary",
                                         disabled: is_generating_audio(),
@@ -291,10 +297,10 @@ pub fn Home() -> Element {
                                             };
                                             let speakers_config = speakers();
                                             let section = selected_section();
-                                            
+
                                             is_generating_audio.set(true);
                                             audio_error.set(None);
-                                            
+
                                             spawn(async move {
                                                 match audio_generator::generate_audio(&script, &speakers_config).await {
                                                     Ok(pcm_data) => {
@@ -316,17 +322,17 @@ pub fn Home() -> Element {
                                         }
                                     }
                                 }
-                                
+
                                 if let Some(error) = audio_error() {
                                     div { class: "error-box",
                                         span { class: "error-icon", "⚠" }
                                         span { "{error}" }
                                     }
                                 }
-                                
+
                                 div { class: "info-box",
                                     p { class: "info-title", "🎙️ Audio Generation" }
-                                    p { 
+                                    p {
                                         "Click 'Generate Audio' to create a high-quality multi-speaker audio file using Gemini 2.5 TTS. "
                                         "The audio will be automatically downloaded as a WAV file."
                                     }
@@ -338,7 +344,7 @@ pub fn Home() -> Element {
                             p { "Results will appear here after generation." }
                         }
                     }
-                    
+
                     if is_generating() {
                         div { class: "loading-state",
                             div { class: "spinner" }
@@ -354,7 +360,7 @@ pub fn Home() -> Element {
                     class: "generate-button",
                     disabled: is_generating(),
                     onclick: handle_generate,
-                    
+
                     if is_generating() {
                         "Generating..."
                     } else {
@@ -374,24 +380,22 @@ fn SpeakerEditModal(
     onsave: EventHandler<crate::domain::SpeakerConfig>,
 ) -> Element {
     use crate::domain::{Gender, SpeakerRole};
-    
+
     let speaker_name = speaker.name.clone();
     let mut edited_gender = use_signal(|| speaker.gender);
     let mut edited_accent = use_signal(|| speaker.accent);
     let mut edited_role = use_signal(|| speaker.role.clone());
-    let mut custom_role_text = use_signal(|| {
-        match &speaker.role {
-            SpeakerRole::Other(s) => s.clone(),
-            _ => String::new()
-        }
+    let mut custom_role_text = use_signal(|| match &speaker.role {
+        SpeakerRole::Other(s) => s.clone(),
+        _ => String::new(),
     });
-    
+
     let handle_save = move |_| {
         let final_role = match edited_role() {
             SpeakerRole::Other(_) => SpeakerRole::Other(custom_role_text()),
-            other => other
+            other => other,
         };
-        
+
         onsave.call(crate::domain::SpeakerConfig {
             name: speaker.name.clone(),
             gender: edited_gender(),
@@ -399,14 +403,14 @@ fn SpeakerEditModal(
             role: final_role,
         });
     };
-    
+
     rsx! {
         div { class: "modal-overlay",
             onclick: move |_| onclose.call(()),
-            
+
             div { class: "modal-content",
                 onclick: move |e| e.stop_propagation(),
-                
+
                 div { class: "modal-header",
                     h3 { "Edit {speaker_name}" }
                     button {
@@ -415,7 +419,7 @@ fn SpeakerEditModal(
                         "×"
                     }
                 }
-                
+
                 div { class: "modal-body",
                     div { class: "form-group",
                         label { "Gender:" }
@@ -433,7 +437,7 @@ fn SpeakerEditModal(
                             option { value: "female", "Female" }
                         }
                     }
-                    
+
                     div { class: "form-group",
                         label { "Accent:" }
                         select {
@@ -449,7 +453,7 @@ fn SpeakerEditModal(
                             option { value: "newzealand", "New Zealand" }
                         }
                     }
-                    
+
                     div { class: "form-group",
                         label { "Role:" }
                         select {
@@ -466,7 +470,7 @@ fn SpeakerEditModal(
                             option { value: "other", "Other" }
                         }
                     }
-                    
+
                     if matches!(edited_role(), SpeakerRole::Other(_)) {
                         div { class: "form-group",
                             label { "Custom Role:" }
@@ -480,7 +484,7 @@ fn SpeakerEditModal(
                         }
                     }
                 }
-                
+
                 div { class: "modal-footer",
                     button {
                         class: "button-secondary",
@@ -566,17 +570,17 @@ fn string_to_role(s: &str) -> SpeakerRole {
 #[cfg(target_arch = "wasm32")]
 fn download_script(content: &str, filename: &str) {
     use wasm_bindgen::JsCast;
-    use web_sys::{window, Blob, BlobPropertyBag, Url, HtmlAnchorElement};
-    
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url, window};
+
     if let Some(window) = window() {
         if let Some(document) = window.document() {
             // Create blob
             let array = js_sys::Array::new();
             array.push(&wasm_bindgen::JsValue::from_str(content));
-            
+
             let mut blob_options = BlobPropertyBag::new();
             blob_options.set_type("text/plain;charset=utf-8");
-            
+
             if let Ok(blob) = Blob::new_with_str_sequence_and_options(&array, &blob_options) {
                 if let Ok(url) = Url::create_object_url_with_blob(&blob) {
                     // Create temporary anchor element
@@ -585,7 +589,7 @@ fn download_script(content: &str, filename: &str) {
                         anchor.set_href(&url);
                         anchor.set_download(filename);
                         anchor.click();
-                        
+
                         // Clean up
                         let _ = Url::revoke_object_url(&url);
                     }
@@ -604,21 +608,21 @@ fn download_script(_content: &str, _filename: &str) {
 #[cfg(target_arch = "wasm32")]
 fn download_audio(audio_data: &[u8], filename: &str) {
     use wasm_bindgen::JsCast;
-    use web_sys::{window, Blob, BlobPropertyBag, Url, HtmlAnchorElement};
-    
+    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url, window};
+
     if let Some(window) = window() {
         if let Some(document) = window.document() {
             // Create Uint8Array from audio data
             let uint8_array = js_sys::Uint8Array::new_with_length(audio_data.len() as u32);
             uint8_array.copy_from(audio_data);
-            
+
             // Create blob with audio/wav mime type
             let array = js_sys::Array::new();
             array.push(&uint8_array);
-            
+
             let mut blob_options = BlobPropertyBag::new();
             blob_options.set_type("audio/wav");
-            
+
             if let Ok(blob) = Blob::new_with_u8_array_sequence_and_options(&array, &blob_options) {
                 if let Ok(url) = Url::create_object_url_with_blob(&blob) {
                     // Create temporary anchor element
@@ -627,7 +631,7 @@ fn download_audio(audio_data: &[u8], filename: &str) {
                         anchor.set_href(&url);
                         anchor.set_download(filename);
                         anchor.click();
-                        
+
                         // Clean up
                         let _ = Url::revoke_object_url(&url);
                     }

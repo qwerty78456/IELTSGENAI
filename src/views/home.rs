@@ -373,21 +373,33 @@ pub fn Home() -> Element {
             if is_generating_topic() {
                 LoadingPopup {
                     message: "Generating Topic...",
-                    submessage: "Creating a relevant topic suggestion"
+                    submessage: "Creating a relevant topic suggestion",
+                    oncancel: move |_| {
+                        is_generating_topic.set(false);
+                        topic_error.set(Some("Topic generation cancelled".to_string()));
+                    }
                 }
             }
 
             if is_generating() {
                 LoadingPopup {
                     message: "Generating Script...",
-                    submessage: "This may take 30-60 seconds"
+                    submessage: "This may take 30-60 seconds",
+                    oncancel: move |_| {
+                        is_generating.set(false);
+                        generation_error.set(Some("Script generation cancelled".to_string()));
+                    }
                 }
             }
 
             if is_generating_audio() {
                 LoadingPopup {
                     message: "Generating Audio...",
-                    submessage: "Creating high-quality multi-speaker audio"
+                    submessage: "Creating high-quality multi-speaker audio",
+                    oncancel: move |_| {
+                        is_generating_audio.set(false);
+                        audio_error.set(Some("Audio generation cancelled".to_string()));
+                    }
                 }
             }
         }
@@ -396,13 +408,25 @@ pub fn Home() -> Element {
 
 // Loading Popup Component
 #[component]
-fn LoadingPopup(message: String, submessage: String) -> Element {
+fn LoadingPopup(message: String, submessage: String, oncancel: EventHandler<()>) -> Element {
     rsx! {
-        div { class: "loading-popup-overlay",
+        div { class: "loading-popup-container",
             div { class: "loading-popup-content",
-                div { class: "loading-popup-spinner" }
-                p { class: "loading-popup-text", "{message}" }
-                p { class: "loading-popup-subtext", "{submessage}" }
+                div { class: "loading-popup-header",
+                    div { class: "loading-popup-header-content",
+                        div { class: "loading-popup-spinner" }
+                        div { class: "loading-popup-text-content",
+                            p { class: "loading-popup-text", "{message}" }
+                            p { class: "loading-popup-subtext", "{submessage}" }
+                        }
+                    }
+                    button {
+                        class: "loading-popup-close",
+                        onclick: move |_| oncancel.call(()),
+                        title: "Cancel generation",
+                        "✕"
+                    }
+                }
             }
         }
     }

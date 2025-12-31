@@ -5516,6 +5516,7 @@ dependencies = [
  "gloo-net",
  "gloo-timers",
  "js-sys",
+ "once_cell",
  "reqwest",
  "serde",
  "serde_json",

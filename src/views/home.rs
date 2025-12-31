@@ -1,8 +1,11 @@
 //! Home view - IELTS Listening Practice Exercise Generator
 
 use crate::domain::{Accent, GenerationRequest, ListeningSection, SpeakerRole};
-use crate::services::{audio_generator, script_generator, topic_generator};
+use crate::services::{audio_job_manager, script_generator, topic_generator};
 use dioxus::prelude::*;
+
+#[cfg(target_arch = "wasm32")]
+use gloo_timers::future::TimeoutFuture;
 
 #[component]
 pub fn Home() -> Element {
@@ -24,6 +27,10 @@ pub fn Home() -> Element {
     let mut generation_error = use_signal(|| None::<String>);
     let mut is_generating_audio = use_signal(|| false);
     let mut audio_error = use_signal(|| None::<String>);
+
+    // State for generated audio
+    let mut generated_audio = use_signal(|| None::<Vec<u8>>);
+    let mut is_audio_playing = use_signal(|| false);
 
     // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
@@ -296,20 +303,58 @@ pub fn Home() -> Element {
                                                 None => return,
                                             };
                                             let speakers_config = speakers();
-                                            let section = selected_section();
 
                                             is_generating_audio.set(true);
                                             audio_error.set(None);
 
                                             spawn(async move {
-                                                match audio_generator::generate_audio(script.clone(), speakers_config.clone()).await {
-                                                    Ok(pcm_data) => {
-                                                        // Convert PCM to WAV
-                                                        let wav_data = audio_generator::pcm_to_wav(&pcm_data, 24000, 1, 16);
-                                                        download_audio(&wav_data, &format!("IELTS_Listening_{:?}_Audio.wav", section));
+                                                // Start background job and get job ID
+                                                match audio_job_manager::start_audio_generation(script.clone(), speakers_config.clone()).await {
+                                                    Ok(job_id) => {
+                                                        // Poll for job completion
+                                                        loop {
+                                                            // Wait 2 seconds between polls
+                                                            #[cfg(target_arch = "wasm32")]
+                                                            TimeoutFuture::new(2000).await;
+
+                                                            #[cfg(not(target_arch = "wasm32"))]
+                                                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+                                                            // Check job status
+                                                            match audio_job_manager::check_audio_job_status(job_id.clone()).await {
+                                                                Ok(job) => {
+                                                                    match job.status {
+                                                                        audio_job_manager::JobStatus::Completed => {
+                                                                            // Fetch the audio data
+                                                                            match audio_job_manager::get_audio_job_result(job_id.clone()).await {
+                                                                                Ok(audio_data) => {
+                                                                                    generated_audio.set(Some(audio_data));
+                                                                                    audio_error.set(None);
+                                                                                }
+                                                                                Err(e) => {
+                                                                                    audio_error.set(Some(format!("Failed to retrieve audio: {}", e)));
+                                                                                }
+                                                                            }
+                                                                            break;
+                                                                        }
+                                                                        audio_job_manager::JobStatus::Failed => {
+                                                                            audio_error.set(Some(job.error.unwrap_or_else(|| "Audio generation failed".to_string())));
+                                                                            break;
+                                                                        }
+                                                                        _ => {
+                                                                            // Still processing, continue polling
+                                                                        }
+                                                                    }
+                                                                }
+                                                                Err(e) => {
+                                                                    audio_error.set(Some(format!("Failed to check job status: {}", e)));
+                                                                    break;
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                     Err(e) => {
-                                                        audio_error.set(Some(format!("Audio generation failed: {}", e)));
+                                                        audio_error.set(Some(format!("Failed to start audio generation: {}", e)));
                                                     }
                                                 }
                                                 is_generating_audio.set(false);
@@ -333,8 +378,36 @@ pub fn Home() -> Element {
                                 div { class: "info-box",
                                     p { class: "info-title", "🎙️ Audio Generation" }
                                     p {
-                                        "Click 'Generate Audio' to create a high-quality multi-speaker audio file using Gemini 2.5 TTS. "
-                                        "The audio will be automatically downloaded as a WAV file."
+                                        "Click 'Generate Audio' to create a high-quality audio file using Gemini 2.5 TTS. "
+                                        "Once generated, you can play it directly or download it as a WAV file."
+                                    }
+                                }
+
+                                // Audio Player Section
+                                if let Some(audio_data) = generated_audio() {
+                                    div { class: "audio-player-section",
+                                        div { class: "audio-player",
+                                            audio {
+                                                id: "audio-element",
+                                                controls: true,
+                                                src: create_audio_url(&audio_data),
+                                                onplay: move |_| is_audio_playing.set(true),
+                                                onpause: move |_| is_audio_playing.set(false),
+                                                onended: move |_| is_audio_playing.set(false),
+                                            }
+                                        }
+                                        div { class: "audio-controls",
+                                            button {
+                                                class: "download-button primary small",
+                                                onclick: move |_| {
+                                                    if let Some(audio) = generated_audio() {
+                                                        let section = selected_section();
+                                                        download_audio(&audio, &format!("IELTS_Listening_{:?}_Audio.wav", section));
+                                                    }
+                                                },
+                                                "⬇ Download Audio"
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -395,7 +468,7 @@ pub fn Home() -> Element {
             if is_generating_audio() {
                 LoadingPopup {
                     message: "Generating Audio...",
-                    submessage: "Creating high-quality multi-speaker audio",
+                    submessage: "This may take 2-5 minutes for complex scripts. Please wait...",
                     oncancel: move |_| {
                         is_generating_audio.set(false);
                         audio_error.set(Some("Audio generation cancelled".to_string()));
@@ -704,4 +777,36 @@ fn download_audio(audio_data: &[u8], filename: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 fn download_audio(_audio_data: &[u8], _filename: &str) {
     // Download not implemented for non-wasm targets
+}
+
+// Helper function to create audio blob URL for playback
+#[cfg(target_arch = "wasm32")]
+fn create_audio_url(audio_data: &[u8]) -> String {
+    use wasm_bindgen::JsCast;
+    use web_sys::{Blob, BlobPropertyBag, Url};
+
+    // Create Uint8Array from audio data
+    let uint8_array = js_sys::Uint8Array::new_with_length(audio_data.len() as u32);
+    uint8_array.copy_from(audio_data);
+
+    // Create blob with audio/wav mime type
+    let array = js_sys::Array::new();
+    array.push(&uint8_array);
+
+    let mut blob_options = BlobPropertyBag::new();
+    blob_options.set_type("audio/wav");
+
+    if let Ok(blob) = Blob::new_with_u8_array_sequence_and_options(&array, &blob_options) {
+        if let Ok(url) = Url::create_object_url_with_blob(&blob) {
+            return url;
+        }
+    }
+
+    // Return empty string if creation fails
+    String::new()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn create_audio_url(_audio_data: &[u8]) -> String {
+    String::new()
 }

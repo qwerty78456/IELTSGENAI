@@ -142,7 +142,13 @@ pub async fn generate_audio(
             },
         };
         
-        let client = reqwest::Client::new();
+        // Create client with extended timeout (TTS can take several minutes for long scripts)
+        // Since this runs in a background job, we can afford to wait longer
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(300)) // 5 minutes
+            .build()
+            .map_err(|e| ServerFnError::new(format!("Failed to create HTTP client: {}", e)))?;
+
         let response = client
             .post(&url)
             .header("Content-Type", "application/json")
@@ -152,7 +158,14 @@ pub async fn generate_audio(
 
         let response = match response {
              Ok(r) => r,
-             Err(e) => return Err(ServerFnError::new(format!("Failed to send request: {}", e))),
+             Err(e) => {
+                 if e.is_timeout() {
+                     return Err(ServerFnError::new(
+                         "Audio generation timed out. The script may be too long or the service is busy. Please try again with a shorter script.".to_string()
+                     ));
+                 }
+                 return Err(ServerFnError::new(format!("Failed to send request: {}", e)));
+             }
         };
         
         if !response.status().is_success() {

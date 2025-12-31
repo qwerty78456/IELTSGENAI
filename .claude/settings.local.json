@@ -5,7 +5,8 @@
       "Bash(find:*)",
       "Bash(cargo check:*)",
       "Bash(wasm-objdump:*)",
-      "Bash(wasm2wat:*)"
+      "Bash(wasm2wat:*)",
+      "Bash(cargo build:*)"
     ]
   }
 }

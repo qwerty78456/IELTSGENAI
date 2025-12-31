@@ -1,99 +1,191 @@
 //! Audio generation service using Google Gemini TTS API
-
+use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use crate::domain::{SpeakerConfig, Gender, Accent};
+
+#[cfg(feature = "server")]
 use super::{api_config, rate_limiter};
 
+#[cfg(feature = "server")]
 const TTS_MODEL: &str = "gemini-2.5-pro-preview-tts";
 
-#[derive(Serialize)]
-struct TtsRequest {
-    contents: Vec<Content>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TtsRequest {
+    pub contents: Vec<Content>,
     #[serde(rename = "generationConfig")]
-    generation_config: GenerationConfig,
+    pub generation_config: GenerationConfig,
 }
 
-#[derive(Serialize)]
-struct Content {
-    parts: Vec<Part>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Content {
+    pub parts: Vec<Part>,
 }
 
-#[derive(Serialize)]
-struct Part {
-    text: String,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Part {
+    pub text: String,
 }
 
-#[derive(Serialize)]
-struct GenerationConfig {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GenerationConfig {
     #[serde(rename = "responseModalities")]
-    response_modalities: Vec<String>,
+    pub response_modalities: Vec<String>,
     #[serde(rename = "speechConfig")]
-    speech_config: SpeechConfig,
+    pub speech_config: SpeechConfig,
 }
 
-#[derive(Serialize)]
-struct SpeechConfig {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SpeechConfig {
     #[serde(rename = "multiSpeakerVoiceConfig")]
-    multi_speaker_voice_config: MultiSpeakerVoiceConfig,
+    pub multi_speaker_voice_config: MultiSpeakerVoiceConfig,
 }
 
-#[derive(Serialize)]
-struct MultiSpeakerVoiceConfig {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MultiSpeakerVoiceConfig {
     #[serde(rename = "speakerVoiceConfigs")]
-    speaker_voice_configs: Vec<SpeakerVoiceConfig>,
+    pub speaker_voice_configs: Vec<SpeakerVoiceConfig>,
 }
 
-#[derive(Serialize)]
-struct SpeakerVoiceConfig {
-    speaker: String,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SpeakerVoiceConfig {
+    pub speaker: String,
     #[serde(rename = "voiceConfig")]
-    voice_config: VoiceConfig,
+    pub voice_config: VoiceConfig,
 }
 
-#[derive(Serialize)]
-struct VoiceConfig {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VoiceConfig {
     #[serde(rename = "prebuiltVoiceConfig")]
-    prebuilt_voice_config: PrebuiltVoiceConfig,
+    pub prebuilt_voice_config: PrebuiltVoiceConfig,
 }
 
-#[derive(Serialize)]
-struct PrebuiltVoiceConfig {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrebuiltVoiceConfig {
     #[serde(rename = "voiceName")]
-    voice_name: String,
+    pub voice_name: String,
 }
 
-#[derive(Deserialize)]
-struct TtsResponse {
-    candidates: Vec<Candidate>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TtsResponse {
+    pub candidates: Vec<Candidate>,
 }
 
-#[derive(Deserialize)]
-struct Candidate {
-    content: ResponseContent,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Candidate {
+    pub content: ResponseContent,
 }
 
-#[derive(Deserialize)]
-struct ResponseContent {
-    parts: Vec<ResponsePart>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ResponseContent {
+    pub parts: Vec<ResponsePart>,
 }
 
-#[derive(Deserialize)]
-struct ResponsePart {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ResponsePart {
     #[serde(rename = "inlineData")]
-    inline_data: Option<InlineData>,
+    pub inline_data: Option<InlineData>,
 }
 
-#[derive(Deserialize)]
-struct InlineData {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct InlineData {
     #[serde(rename = "mimeType")]
-    mime_type: String,
-    data: String, // base64 encoded audio (PCM 16-bit, 24kHz)
+    pub mime_type: String,
+    pub data: String, // base64 encoded audio (PCM 16-bit, 24kHz)
 }
 
-/// Select appropriate Gemini voice based on gender and accent
+/// Generate audio using Gemini TTS API (Server Function)
+#[server(GenerateAudio)]
+pub async fn generate_audio(
+    script: String,
+    speakers: Vec<SpeakerConfig>,
+) -> Result<Vec<u8>, ServerFnError> {
+    
+    #[cfg(feature = "server")]
+    {
+        // Check rate limit
+        if let Err(e) = rate_limiter::check_audio_rate_limit() {
+            return Err(ServerFnError::new(e));
+        }
+
+        let api_key = api_config::get_api_key().map_err(|e| ServerFnError::new(e))?;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+            TTS_MODEL, api_key
+        );
+        
+        let prompt = build_tts_prompt(&script, &speakers);
+        
+        // Build speaker voice configs
+        let speaker_voice_configs: Vec<SpeakerVoiceConfig> = speakers
+            .iter()
+            .map(|speaker| SpeakerVoiceConfig {
+                speaker: speaker.name.clone(),
+                voice_config: VoiceConfig {
+                    prebuilt_voice_config: PrebuiltVoiceConfig {
+                        voice_name: select_voice(&speaker.gender, &speaker.accent).to_string(),
+                    },
+                },
+            })
+            .collect();
+        
+        let request_body = TtsRequest {
+            contents: vec![Content {
+                parts: vec![Part { text: prompt }],
+            }],
+            generation_config: GenerationConfig {
+                response_modalities: vec!["AUDIO".to_string()],
+                speech_config: SpeechConfig {
+                    multi_speaker_voice_config: MultiSpeakerVoiceConfig {
+                        speaker_voice_configs,
+                    },
+                },
+            },
+        };
+        
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .json(&request_body)
+            .send()
+            .await;
+
+        let response = match response {
+             Ok(r) => r,
+             Err(e) => return Err(ServerFnError::new(format!("Failed to send request: {}", e))),
+        };
+        
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ServerFnError::new(format!("API error: {}", error_text)));
+        }
+        
+        let tts_response: TtsResponse = response
+            .json()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Failed to parse response: {}", e)))?;
+        
+        // Extract base64 audio data
+        let audio_data = tts_response
+            .candidates
+            .first()
+            .and_then(|c| c.content.parts.first())
+            .and_then(|p| p.inline_data.as_ref())
+            .ok_or_else(|| ServerFnError::new("No audio data in response"))?;
+        
+        // Decode base64
+        let audio_bytes = decode_base64(&audio_data.data)
+            .map_err(|e| ServerFnError::new(e))?;
+        
+        Ok(audio_bytes)
+    }
+
+    #[cfg(not(feature = "server"))]
+    Err(ServerFnError::new("This function should only be called on the server"))
+}
+
+#[cfg(feature = "server")]
 fn select_voice(gender: &Gender, accent: &Accent) -> &'static str {
-    // Available voices: Zephyr, Puck, Kore, Fenrir, Leda, Aoede, Charon, etc.
-    // See: https://ai.google.dev/gemini-api/docs/speech-generation#voice_options
     match (gender, accent) {
         (Gender::Male, Accent::British) => "Puck",      // Upbeat
         (Gender::Male, Accent::American) => "Kore",     // Firm
@@ -104,11 +196,10 @@ fn select_voice(gender: &Gender, accent: &Accent) -> &'static str {
     }
 }
 
-/// Build TTS prompt with script and speaker styling
+#[cfg(feature = "server")]
 fn build_tts_prompt(script: &str, speakers: &[SpeakerConfig]) -> String {
     let mut prompt = String::from("TTS the following IELTS listening script with natural, clear pronunciation suitable for English language learners:\n\n");
     
-    // Add speaker descriptions for context
     if speakers.len() > 1 {
         prompt.push_str("SPEAKER PROFILES:\n");
         for speaker in speakers {
@@ -138,170 +229,7 @@ fn build_tts_prompt(script: &str, speakers: &[SpeakerConfig]) -> String {
     prompt
 }
 
-#[cfg(target_arch = "wasm32")]
-/// Generate audio using Gemini TTS API (WASM version)
-pub async fn generate_audio(
-    script: &str,
-    speakers: &[SpeakerConfig],
-) -> Result<Vec<u8>, String> {
-    use gloo_net::http::Request;
-    use wasm_bindgen::JsCast;
-    use web_sys::Blob;
-
-    // Check rate limit before making expensive API call
-    rate_limiter::check_audio_rate_limit()?;
-
-    let api_key = api_config::get_api_key()?;
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        TTS_MODEL, api_key
-    );
-    
-    let prompt = build_tts_prompt(script, speakers);
-    
-    // Build speaker voice configs
-    let speaker_voice_configs: Vec<SpeakerVoiceConfig> = speakers
-        .iter()
-        .map(|speaker| SpeakerVoiceConfig {
-            speaker: speaker.name.clone(),
-            voice_config: VoiceConfig {
-                prebuilt_voice_config: PrebuiltVoiceConfig {
-                    voice_name: select_voice(&speaker.gender, &speaker.accent).to_string(),
-                },
-            },
-        })
-        .collect();
-    
-    let request_body = TtsRequest {
-        contents: vec![Content {
-            parts: vec![Part { text: prompt }],
-        }],
-        generation_config: GenerationConfig {
-            response_modalities: vec!["AUDIO".to_string()],
-            speech_config: SpeechConfig {
-                multi_speaker_voice_config: MultiSpeakerVoiceConfig {
-                    speaker_voice_configs,
-                },
-            },
-        },
-    };
-    
-    let response = Request::post(&url)
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .map_err(|e| format!("Failed to serialize request: {}", e))?
-        .send()
-        .await
-        .map_err(|e| format!("API request failed: {}", e))?;
-    
-    if !response.ok() {
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(format!("API error {}: {}", response.status(), error_text));
-    }
-    
-    let tts_response: TtsResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    // Extract base64 audio data
-    let audio_data = tts_response
-        .candidates
-        .first()
-        .and_then(|c| c.content.parts.first())
-        .and_then(|p| p.inline_data.as_ref())
-        .ok_or_else(|| "No audio data in response".to_string())?;
-    
-    // Decode base64
-    let audio_bytes = decode_base64(&audio_data.data)?;
-    
-    Ok(audio_bytes)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-/// Generate audio using Gemini TTS API (native version)
-pub async fn generate_audio(
-    script: &str,
-    speakers: &[SpeakerConfig],
-) -> Result<Vec<u8>, String> {
-    // Check rate limit before making expensive API call
-    rate_limiter::check_audio_rate_limit()?;
-
-    let api_key = api_config::get_api_key()?;
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        TTS_MODEL, api_key
-    );
-    
-    let prompt = build_tts_prompt(script, speakers);
-    
-    // Build speaker voice configs
-    let speaker_voice_configs: Vec<SpeakerVoiceConfig> = speakers
-        .iter()
-        .map(|speaker| SpeakerVoiceConfig {
-            speaker: speaker.name.clone(),
-            voice_config: VoiceConfig {
-                prebuilt_voice_config: PrebuiltVoiceConfig {
-                    voice_name: select_voice(&speaker.gender, &speaker.accent).to_string(),
-                },
-            },
-        })
-        .collect();
-    
-    let request_body = TtsRequest {
-        contents: vec![Content {
-            parts: vec![Part { text: prompt }],
-        }],
-        generation_config: GenerationConfig {
-            response_modalities: vec!["AUDIO".to_string()],
-            speech_config: SpeechConfig {
-                multi_speaker_voice_config: MultiSpeakerVoiceConfig {
-                    speaker_voice_configs,
-                },
-            },
-        },
-    };
-    
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("API request failed: {}", e))?;
-    
-    if !response.status().is_success() {
-        let error_text = response
-            .text()
-            .await
-            .unwrap_or_else(|_| "Unknown error".to_string());
-        return Err(format!("API error: {}", error_text));
-    }
-    
-    let tts_response: TtsResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-    
-    // Extract base64 audio data
-    let audio_data = tts_response
-        .candidates
-        .first()
-        .and_then(|c| c.content.parts.first())
-        .and_then(|p| p.inline_data.as_ref())
-        .ok_or_else(|| "No audio data in response".to_string())?;
-    
-    // Decode base64
-    let audio_bytes = decode_base64(&audio_data.data)?;
-    
-    Ok(audio_bytes)
-}
-
-/// Decode base64 string to bytes
+#[cfg(feature = "server")]
 fn decode_base64(data: &str) -> Result<Vec<u8>, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     STANDARD

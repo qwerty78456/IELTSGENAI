@@ -1,17 +1,16 @@
 //! Simple rate limiter to prevent API abuse
+//! 
+//! This module is now server-only.
+
+#![cfg(feature = "server")]
 
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-
-#[cfg(target_arch = "wasm32")]
-use gloo_timers::callback::Timeout;
+use std::sync::OnceLock;
 
 /// Simple in-memory rate limiter
 /// Limits requests per minute to prevent API abuse when exposed publicly
 pub struct RateLimiter {
-    #[cfg(not(target_arch = "wasm32"))]
-    requests_this_minute: Arc<AtomicU32>,
-    #[cfg(target_arch = "wasm32")]
     requests_this_minute: Arc<AtomicU32>,
     max_requests_per_minute: u32,
 }
@@ -38,30 +37,15 @@ impl RateLimiter {
 
         self.requests_this_minute.fetch_add(1, Ordering::Relaxed);
 
-        // Reset counter after 60 seconds
-        #[cfg(target_arch = "wasm32")]
-        {
-            let counter = self.requests_this_minute.clone();
-            Timeout::new(60_000, move || {
-                counter.fetch_sub(1, Ordering::Relaxed);
-            })
-            .forget();
-        }
-
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let counter = self.requests_this_minute.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                counter.fetch_sub(1, Ordering::Relaxed);
-            });
-        }
+        let counter = self.requests_this_minute.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            counter.fetch_sub(1, Ordering::Relaxed);
+        });
 
         Ok(())
     }
 }
-
-use std::sync::OnceLock;
 
 // Global rate limiters for each service (thread-safe initialization)
 static TOPIC_LIMITER: OnceLock<RateLimiter> = OnceLock::new();

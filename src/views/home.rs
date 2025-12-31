@@ -51,7 +51,7 @@ pub fn Home() -> Element {
         };
 
         spawn(async move {
-            match topic_generator::generate_topic_suggestion(section_str).await {
+            match topic_generator::generate_topic_suggestion(section_str.to_string()).await {
                 Ok(generated_topic) => {
                     topic.set(generated_topic);
                     topic_error.set(None);
@@ -97,8 +97,8 @@ pub fn Home() -> Element {
         spawn(async move {
             match script_generator::generate_script(
                 current_section,
-                &current_topic,
-                &current_speakers,
+                current_topic,
+                current_speakers.clone(),
             )
             .await
             {
@@ -302,7 +302,7 @@ pub fn Home() -> Element {
                                             audio_error.set(None);
 
                                             spawn(async move {
-                                                match audio_generator::generate_audio(&script, &speakers_config).await {
+                                                match audio_generator::generate_audio(script.clone(), speakers_config.clone()).await {
                                                     Ok(pcm_data) => {
                                                         // Convert PCM to WAV
                                                         let wav_data = audio_generator::pcm_to_wav(&pcm_data, 24000, 1, 16);

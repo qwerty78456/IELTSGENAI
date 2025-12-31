@@ -1,74 +1,114 @@
 //! Script generation service using Google Gemini API
-
+use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use crate::domain::{ListeningSection, SpeakerConfig, SpeakerRole, Accent, Gender};
+
+#[cfg(feature = "server")]
 use super::{api_config, rate_limiter};
 
-#[derive(Serialize)]
-struct GeminiRequest {
-    contents: Vec<Content>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct GeminiRequest {
+    pub contents: Vec<Content>,
 }
 
-#[derive(Serialize)]
-struct Content {
-    parts: Vec<Part>,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Content {
+    pub parts: Vec<Part>,
 }
 
-#[derive(Serialize)]
-struct Part {
-    text: String,
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Part {
+    pub text: String,
 }
 
-#[derive(Deserialize)]
-struct GeminiResponse {
-    candidates: Vec<Candidate>,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct GeminiResponse {
+    pub candidates: Vec<Candidate>,
 }
 
-#[derive(Deserialize)]
-struct Candidate {
-    content: ContentResponse,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct Candidate {
+    pub content: ContentResponse,
 }
 
-#[derive(Deserialize)]
-struct ContentResponse {
-    parts: Vec<PartResponse>,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct ContentResponse {
+    pub parts: Vec<PartResponse>,
 }
 
-#[derive(Deserialize)]
-struct PartResponse {
-    text: String,
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct PartResponse {
+    pub text: String,
 }
 
 /// Generate an IELTS Listening script
+#[server(GenerateScript)]
 pub async fn generate_script(
     section: ListeningSection,
-    topic: &str,
-    speakers: &[SpeakerConfig],
-) -> Result<String, String> {
-    // Check rate limit before making API call
-    rate_limiter::check_script_rate_limit()?;
+    topic: String,
+    speakers: Vec<SpeakerConfig>,
+) -> Result<String, ServerFnError> {
+    
+    // Server-side logic only
+    #[cfg(feature = "server")]
+    {
+        // Check rate limit
+        if let Err(e) = rate_limiter::check_script_rate_limit() {
+            return Err(ServerFnError::new(e));
+        }
 
-    let prompt = build_script_prompt(section, topic, speakers);
+        let prompt = build_script_prompt(section, &topic, &speakers);
 
-    let request_body = GeminiRequest {
-        contents: vec![Content {
-            parts: vec![Part {
-                text: prompt,
+        let api_key = api_config::get_api_key().map_err(|e| ServerFnError::new(e))?;
+        let url = format!(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+            api_key
+        );
+
+        let request_body = GeminiRequest {
+            contents: vec![Content {
+                parts: vec![Part {
+                    text: prompt,
+                }],
             }],
-        }],
-    };
+        };
 
-    #[cfg(target_arch = "wasm32")]
-    {
-        generate_script_wasm(request_body).await
+        let client = reqwest::Client::new();
+        let response = client
+            .post(&url)
+            .json(&request_body)
+            .send()
+            .await;
+            
+        let response = match response {
+            Ok(r) => r,
+            Err(e) => return Err(ServerFnError::new(format!("Failed to send request: {}", e))),
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(ServerFnError::new(format!("API request failed with status {}: {}", status, error_text)));
+        }
+
+        let gemini_response: GeminiResponse = response
+            .json()
+            .await
+            .map_err(|e| ServerFnError::new(format!("Failed to parse response: {}", e)))?;
+
+        return gemini_response
+            .candidates
+            .first()
+            .and_then(|c| c.content.parts.first())
+            .map(|p| p.text.trim().to_string())
+            .ok_or_else(|| ServerFnError::new("No response from API"));
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        generate_script_native(request_body).await
-    }
+    #[cfg(not(feature = "server"))]
+    Err(ServerFnError::new("This function should only be called on the server"))
 }
 
+#[cfg(feature = "server")]
 fn build_script_prompt(section: ListeningSection, topic: &str, speakers: &[SpeakerConfig]) -> String {
     let section_description = match section {
         ListeningSection::Section1 => {
@@ -154,75 +194,4 @@ Generate the complete listening script now:"#,
         speaker_descriptions,
         duration
     )
-}
-
-#[cfg(target_arch = "wasm32")]
-async fn generate_script_wasm(request_body: GeminiRequest) -> Result<String, String> {
-    use gloo_net::http::Request;
-
-    let api_key = api_config::get_api_key()?;
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-        api_key
-    );
-
-    let response = Request::post(&url)
-        .json(&request_body)
-        .map_err(|e| format!("Failed to create request: {}", e))?
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
-
-    if !response.ok() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("API request failed with status {}: {}", status, error_text));
-    }
-
-    let gemini_response: GeminiResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-    gemini_response
-        .candidates
-        .first()
-        .and_then(|c| c.content.parts.first())
-        .map(|p| p.text.trim().to_string())
-        .ok_or_else(|| "No response from API".to_string())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-async fn generate_script_native(request_body: GeminiRequest) -> Result<String, String> {
-    let api_key = api_config::get_api_key()?;
-    let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-        api_key
-    );
-
-    let client = reqwest::Client::new();
-    let response = client
-        .post(&url)
-        .json(&request_body)
-        .send()
-        .await
-        .map_err(|e| format!("Failed to send request: {}", e))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_default();
-        return Err(format!("API request failed with status {}: {}", status, error_text));
-    }
-
-    let gemini_response: GeminiResponse = response
-        .json()
-        .await
-        .map_err(|e| format!("Failed to parse response: {}", e))?;
-
-    gemini_response
-        .candidates
-        .first()
-        .and_then(|c| c.content.parts.first())
-        .map(|p| p.text.trim().to_string())
-        .ok_or_else(|| "No response from API".to_string())
 }

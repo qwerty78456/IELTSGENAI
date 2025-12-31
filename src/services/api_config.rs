@@ -2,24 +2,27 @@
 
 /// Get the Google Gemini API key from environment
 ///
-/// For native builds: Loads from .env file using dotenvy
-/// For WASM builds: Must be set at compile time via GOOGLE_API_KEY env var
+/// Loads from .env file using dotenvy or environment variables.
+/// Safe to use on server.
+#[cfg(feature = "server")]
 pub fn get_api_key() -> Result<String, String> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        // Load from .env file for native builds
-        dotenvy::from_path(".secrets/api_key.env").ok();
-        std::env::var("google_api_key")
-            .map_err(|_| "API key not found. Please set google_api_key in .secrets/api_key.env".to_string())
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        // For WASM, key must be set at compile time
-        // This will be embedded in the binary, but at least not in source control
-        match option_env!("GOOGLE_API_KEY") {
-            Some(key) if !key.is_empty() => Ok(key.to_string()),
-            _ => Err("API key not set at compile time. Set GOOGLE_API_KEY environment variable before building.".to_string())
-        }
-    }
+    // Get the directory where the executable is located
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable path: {}", e))?;
+    let exe_dir = exe_path.parent()
+        .ok_or("Failed to get executable directory")?;
+    
+    let env_path = exe_dir.join(".secrets\\api_key.env");
+    
+    dotenvy::from_path(&env_path)
+        .map_err(|e| format!("Failed to load .env file from {:?}: {}", env_path, e))?;
+    
+    std::env::var("google_api_key")
+        .map_err(|_| format!("API key not found in {:?}. Please set google_api_key", env_path))
 }
+
+#[cfg(not(feature = "server"))]
+pub fn get_api_key() -> Result<String, String> {
+    Err("API key is only available on the server".to_string())
+}
+

@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cat:*)",
       "Bash(find:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "Bash(wasm-objdump:*)",
+      "Bash(wasm2wat:*)"
     ]
   }
 }

@@ -2,8 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use crate::domain::{ListeningSection, SpeakerConfig, SpeakerRole, Accent, Gender};
-
-const API_KEY: &str = "AIzaSyBq8ur94FNYK9odYENS4lC5YdS-k0MMdzM";
+use super::{api_config, rate_limiter};
 
 #[derive(Serialize)]
 struct GeminiRequest {
@@ -46,8 +45,11 @@ pub async fn generate_script(
     topic: &str,
     speakers: &[SpeakerConfig],
 ) -> Result<String, String> {
+    // Check rate limit before making API call
+    rate_limiter::check_script_rate_limit()?;
+
     let prompt = build_script_prompt(section, topic, speakers);
-    
+
     let request_body = GeminiRequest {
         contents: vec![Content {
             parts: vec![Part {
@@ -158,9 +160,10 @@ Generate the complete listening script now:"#,
 async fn generate_script_wasm(request_body: GeminiRequest) -> Result<String, String> {
     use gloo_net::http::Request;
 
+    let api_key = api_config::get_api_key()?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-        API_KEY
+        api_key
     );
 
     let response = Request::post(&url)
@@ -191,9 +194,10 @@ async fn generate_script_wasm(request_body: GeminiRequest) -> Result<String, Str
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn generate_script_native(request_body: GeminiRequest) -> Result<String, String> {
+    let api_key = api_config::get_api_key()?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
-        API_KEY
+        api_key
     );
 
     let client = reqwest::Client::new();

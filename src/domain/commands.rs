@@ -16,8 +16,23 @@ impl GenerationRequest {
     /// Validates that the request conforms to domain rules
     pub fn validate(&self) -> Result<(), String> {
         // Topic must not be empty
-        if self.topic.trim().is_empty() {
+        let trimmed = self.topic.trim();
+        if trimmed.is_empty() {
             return Err("Topic cannot be empty".to_string());
+        }
+
+        // Topic must be reasonable length (10-500 characters)
+        if trimmed.len() < 10 {
+            return Err("Topic is too short. Please provide at least 10 characters describing the scenario.".to_string());
+        }
+
+        if trimmed.len() > 500 {
+            return Err("Topic is too long. Please keep it under 500 characters.".to_string());
+        }
+
+        // Basic sanity check: topic should contain some letters
+        if !trimmed.chars().any(|c| c.is_alphabetic()) {
+            return Err("Topic must contain actual text, not just numbers or symbols.".to_string());
         }
 
         Ok(())

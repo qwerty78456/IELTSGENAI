@@ -2,9 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 use crate::domain::{SpeakerConfig, Gender, Accent};
+use super::{api_config, rate_limiter};
 
-const API_KEY: &str = "AIzaSyBq8ur94FNYK9odYENS4lC5YdS-k0MMdzM";
-const TTS_MODEL: &str = "gemini-2.5-flash-preview-tts";
+const TTS_MODEL: &str = "gemini-2.5-pro-preview-tts";
 
 #[derive(Serialize)]
 struct TtsRequest {
@@ -147,10 +147,14 @@ pub async fn generate_audio(
     use gloo_net::http::Request;
     use wasm_bindgen::JsCast;
     use web_sys::Blob;
-    
+
+    // Check rate limit before making expensive API call
+    rate_limiter::check_audio_rate_limit()?;
+
+    let api_key = api_config::get_api_key()?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        TTS_MODEL, API_KEY
+        TTS_MODEL, api_key
     );
     
     let prompt = build_tts_prompt(script, speakers);
@@ -223,9 +227,13 @@ pub async fn generate_audio(
     script: &str,
     speakers: &[SpeakerConfig],
 ) -> Result<Vec<u8>, String> {
+    // Check rate limit before making expensive API call
+    rate_limiter::check_audio_rate_limit()?;
+
+    let api_key = api_config::get_api_key()?;
     let url = format!(
         "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
-        TTS_MODEL, API_KEY
+        TTS_MODEL, api_key
     );
     
     let prompt = build_tts_prompt(script, speakers);

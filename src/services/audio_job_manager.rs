@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use dioxus::prelude::*;
-use crate::domain::SpeakerConfig;
+use crate::domain::{SpeakerConfig, ListeningSection};
 
 #[cfg(feature = "server")]
 use std::collections::HashMap;
@@ -46,6 +46,7 @@ static JOB_STORE: Lazy<Arc<Mutex<HashMap<String, AudioJob>>>> =
 pub async fn start_audio_generation(
     script: String,
     speakers: Vec<SpeakerConfig>,
+    section: ListeningSection,
 ) -> Result<String, ServerFnError> {
     #[cfg(feature = "server")]
     {
@@ -82,7 +83,7 @@ pub async fn start_audio_generation(
             }
 
             // Perform actual audio generation
-            match audio_generator::generate_audio(script, speakers).await {
+            match audio_generator::generate_audio(script, speakers, section).await {
                 Ok(pcm_data) => {
                     // Convert PCM to WAV
                     let wav_data = audio_generator::pcm_to_wav(&pcm_data, 24000, 1, 16);

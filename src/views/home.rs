@@ -303,13 +303,14 @@ pub fn Home() -> Element {
                                                 None => return,
                                             };
                                             let speakers_config = speakers();
+                                            let section = selected_section();
 
                                             is_generating_audio.set(true);
                                             audio_error.set(None);
 
                                             spawn(async move {
                                                 // Start background job and get job ID
-                                                match audio_job_manager::start_audio_generation(script.clone(), speakers_config.clone()).await {
+                                                match audio_job_manager::start_audio_generation(script.clone(), speakers_config.clone(), section).await {
                                                     Ok(job_id) => {
                                                         // Poll for job completion
                                                         loop {

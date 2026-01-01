@@ -1,7 +1,7 @@
 //! Audio generation service using Google Gemini TTS API
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
-use crate::domain::{SpeakerConfig, Gender, Accent};
+use crate::domain::{SpeakerConfig, Gender, Accent, ListeningSection};
 
 #[cfg(feature = "server")]
 use super::{api_config, rate_limiter};
@@ -93,11 +93,26 @@ pub struct InlineData {
     pub data: String, // base64 encoded audio (PCM 16-bit, 24kHz)
 }
 
+// Single-speaker voice config (for sections 2 and 4)
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SingleSpeakerVoiceConfig {
+    #[serde(rename = "voiceConfig")]
+    pub voice_config: VoiceConfig,
+}
+
+// Single-speaker speech config
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct SingleSpeakerSpeechConfig {
+    #[serde(rename = "voiceConfig")]
+    pub voice_config: VoiceConfig,
+}
+
 /// Generate audio using Gemini TTS API (Server Function)
 #[server(GenerateAudio)]
 pub async fn generate_audio(
     script: String,
     speakers: Vec<SpeakerConfig>,
+    section: ListeningSection,
 ) -> Result<Vec<u8>, ServerFnError> {
     
     #[cfg(feature = "server")]
@@ -112,34 +127,64 @@ pub async fn generate_audio(
             "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
             TTS_MODEL, api_key
         );
-        
-        let prompt = build_tts_prompt(&script, &speakers);
-        
-        // Build speaker voice configs
-        let speaker_voice_configs: Vec<SpeakerVoiceConfig> = speakers
-            .iter()
-            .map(|speaker| SpeakerVoiceConfig {
-                speaker: speaker.name.clone(),
-                voice_config: VoiceConfig {
-                    prebuilt_voice_config: PrebuiltVoiceConfig {
-                        voice_name: select_voice(&speaker.gender, &speaker.accent).to_string(),
-                    },
-                },
+
+        // Determine if we need single or multi-speaker based on section
+        let use_single_speaker = matches!(section, ListeningSection::Section2 | ListeningSection::Section4);
+
+        let prompt = if use_single_speaker {
+            // For single speaker, just use the script directly without speaker tags
+            format!("TTS the following IELTS listening script with natural, clear pronunciation suitable for English language learners:\n\n{}", script)
+        } else {
+            build_tts_prompt(&script, &speakers)
+        };
+
+        let request_body = if use_single_speaker {
+            // Single-speaker API (sections 2 and 4)
+            let first_speaker = speakers.first().ok_or_else(|| ServerFnError::new("No speaker config provided"))?;
+            let voice_name = select_voice(&first_speaker.gender, &first_speaker.accent);
+
+            serde_json::json!({
+                "contents": [{
+                    "parts": [{"text": prompt}]
+                }],
+                "generationConfig": {
+                    "responseModalities": ["AUDIO"],
+                    "speechConfig": {
+                        "voiceConfig": {
+                            "prebuiltVoiceConfig": {
+                                "voiceName": voice_name
+                            }
+                        }
+                    }
+                }
             })
-            .collect();
-        
-        let request_body = TtsRequest {
-            contents: vec![Content {
-                parts: vec![Part { text: prompt }],
-            }],
-            generation_config: GenerationConfig {
-                response_modalities: vec!["AUDIO".to_string()],
-                speech_config: SpeechConfig {
-                    multi_speaker_voice_config: MultiSpeakerVoiceConfig {
-                        speaker_voice_configs,
+        } else {
+            // Multi-speaker API (sections 1 and 3)
+            let speaker_voice_configs: Vec<SpeakerVoiceConfig> = speakers
+                .iter()
+                .map(|speaker| SpeakerVoiceConfig {
+                    speaker: speaker.name.clone(),
+                    voice_config: VoiceConfig {
+                        prebuilt_voice_config: PrebuiltVoiceConfig {
+                            voice_name: select_voice(&speaker.gender, &speaker.accent).to_string(),
+                        },
+                    },
+                })
+                .collect();
+
+            serde_json::to_value(TtsRequest {
+                contents: vec![Content {
+                    parts: vec![Part { text: prompt }],
+                }],
+                generation_config: GenerationConfig {
+                    response_modalities: vec!["AUDIO".to_string()],
+                    speech_config: SpeechConfig {
+                        multi_speaker_voice_config: MultiSpeakerVoiceConfig {
+                            speaker_voice_configs,
+                        },
                     },
                 },
-            },
+            }).map_err(|e| ServerFnError::new(format!("Failed to serialize request: {}", e)))?
         };
         
         // Create client with extended timeout (TTS can take several minutes for long scripts)

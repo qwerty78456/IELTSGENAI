@@ -30,6 +30,23 @@ fn main() {
     // Server-side initialization
     #[cfg(feature = "server")]
     {
+        use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+        
+        let log_dir = std::path::Path::new(r"E:\vmq_data\logs");
+        if let Err(e) = std::fs::create_dir_all(log_dir) {
+            eprintln!("Failed to create log directory: {}", e);
+        } else {
+            let file_appender = tracing_appender::rolling::daily(log_dir, "vmq-mvp.log");
+            let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+            // Leak the guard so the background logging thread stays alive for the whole program
+            let _guard = Box::leak(Box::new(_guard));
+
+            tracing_subscriber::registry()
+                .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+                .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
+                .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+                .init();
+        }
         // Bind to all interfaces on port 80 (override with IP/PORT env vars if set)
         // SAFETY: Called in main() before any threads are spawned, so no data race.
         unsafe {

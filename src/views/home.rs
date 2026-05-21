@@ -1,44 +1,70 @@
 //! Home view - IELTS Listening Practice Exercise Generator
 
-use crate::domain::{Accent, GenerationRequest, ListeningSection, SpeakerRole};
+use crate::domain::{GenerationRequest, ListeningSection, SpeakerConfig};
 use crate::services::{audio_job_manager, script_generator, topic_generator};
 use dioxus::prelude::*;
+
+use crate::components::loading_popup::LoadingPopup;
+use crate::components::speaker_modal::SpeakerEditModal;
+use crate::components::audio_player::AudioPlayerSection;
 
 #[cfg(target_arch = "wasm32")]
 use gloo_timers::future::TimeoutFuture;
 
+#[derive(Clone)]
+pub struct HomeState {
+    pub topic: String,
+    pub topic_error: Option<String>,
+    pub is_generating_topic: bool,
+    
+    pub selected_section: ListeningSection,
+    pub custom_speakers: Vec<SpeakerConfig>,
+    pub show_speakers: bool,
+    pub editing_speaker_idx: Option<usize>,
+    
+    pub is_generating_script: bool,
+    pub generation_success: bool,
+    pub generation_error: Option<String>,
+    pub generated_script: Option<String>,
+    
+    pub is_generating_audio: bool,
+    pub audio_error: Option<String>,
+    pub generated_audio: Option<Vec<u8>>,
+}
+
+impl Default for HomeState {
+    fn default() -> Self {
+        Self {
+            topic: String::new(),
+            topic_error: None,
+            is_generating_topic: false,
+            selected_section: ListeningSection::Section1,
+            custom_speakers: Vec::new(),
+            show_speakers: false,
+            editing_speaker_idx: None,
+            is_generating_script: false,
+            generation_success: false,
+            generation_error: None,
+            generated_script: None,
+            is_generating_audio: false,
+            audio_error: None,
+            generated_audio: None,
+        }
+    }
+}
+
 #[component]
 pub fn Home() -> Element {
-    // State for the form inputs
-    let mut topic = use_signal(|| String::new());
-    let mut selected_section = use_signal(|| ListeningSection::Section1);
-    let mut generation_success = use_signal(|| false);
-    let mut is_generating = use_signal(|| false);
-    let mut show_speakers = use_signal(|| false);
-
-    // State for speaker customization
-    let mut custom_speakers = use_signal(|| Vec::new());
-    let mut editing_speaker_idx = use_signal(|| None::<usize>);
-    let mut topic_error = use_signal(|| None::<String>);
-    let mut is_generating_topic = use_signal(|| false);
-
-    // State for generated script
-    let mut generated_script = use_signal(|| None::<String>);
-    let mut generation_error = use_signal(|| None::<String>);
-    let mut is_generating_audio = use_signal(|| false);
-    let mut audio_error = use_signal(|| None::<String>);
-
-    // State for generated audio
-    let mut generated_audio = use_signal(|| None::<Vec<u8>>);
-    let mut is_audio_playing = use_signal(|| false);
+    let mut state = use_signal(|| HomeState::default());
 
     // Compute speakers based on selected section or custom overrides
     let speakers = use_memo(move || {
-        if !custom_speakers().is_empty() {
-            custom_speakers()
+        let current_state = state();
+        if !current_state.custom_speakers.is_empty() {
+            current_state.custom_speakers.clone()
         } else {
             let request = GenerationRequest {
-                section: selected_section(),
+                section: current_state.selected_section,
                 topic: "temp".to_string(),
             };
             request.generate_default_speakers()
@@ -47,10 +73,10 @@ pub fn Home() -> Element {
 
     // Handle topic auto-generation
     let handle_generate_topic = move |_| {
-        topic_error.set(None);
-        is_generating_topic.set(true);
+        state.write().topic_error = None;
+        state.write().is_generating_topic = true;
 
-        let section_str = match selected_section() {
+        let section_str = match state().selected_section {
             ListeningSection::Section1 => "Section 1",
             ListeningSection::Section2 => "Section 2",
             ListeningSection::Section3 => "Section 3",
@@ -60,46 +86,48 @@ pub fn Home() -> Element {
         spawn(async move {
             match topic_generator::generate_topic_suggestion(section_str.to_string()).await {
                 Ok(generated_topic) => {
-                    topic.set(generated_topic);
-                    topic_error.set(None);
+                    state.write().topic = generated_topic;
+                    state.write().topic_error = None;
                 }
                 Err(e) => {
-                    topic_error.set(Some(format!("Failed to generate topic: {}", e)));
+                    state.write().topic_error = Some(format!("Failed to generate topic: {}", e));
                 }
             }
-            is_generating_topic.set(false);
+            state.write().is_generating_topic = false;
         });
     };
 
     // Handle generation
     let handle_generate = move |_| {
+        let current_state = state();
+        
         // Validate topic
-        if topic().trim().is_empty() {
-            generation_error.set(Some("Please enter a topic description".to_string()));
+        if current_state.topic.trim().is_empty() {
+            state.write().generation_error = Some("Please enter a topic description".to_string());
             return;
         }
 
         // Create request
         let request = GenerationRequest {
-            section: selected_section(),
-            topic: topic(),
+            section: current_state.selected_section,
+            topic: current_state.topic.clone(),
         };
 
         // Validate request
         if let Err(e) = request.validate() {
-            generation_error.set(Some(e));
+            state.write().generation_error = Some(e);
             return;
         }
 
         // Call generation service
-        generation_error.set(None);
-        is_generating.set(true);
-        generation_success.set(false);
-        generated_script.set(None);
+        state.write().generation_error = None;
+        state.write().is_generating_script = true;
+        state.write().generation_success = false;
+        state.write().generated_script = None;
 
         let current_speakers = speakers();
-        let current_section = selected_section();
-        let current_topic = topic();
+        let current_section = state().selected_section;
+        let current_topic = state().topic.clone();
 
         spawn(async move {
             match script_generator::generate_script(
@@ -110,16 +138,16 @@ pub fn Home() -> Element {
             .await
             {
                 Ok(script) => {
-                    generated_script.set(Some(script));
-                    generation_success.set(true);
-                    generation_error.set(None);
+                    state.write().generated_script = Some(script);
+                    state.write().generation_success = true;
+                    state.write().generation_error = None;
                 }
                 Err(e) => {
-                    generation_error.set(Some(format!("Failed to generate script: {}", e)));
-                    generation_success.set(false);
+                    state.write().generation_error = Some(format!("Failed to generate script: {}", e));
+                    state.write().generation_success = false;
                 }
             }
-            is_generating.set(false);
+            state.write().is_generating_script = false;
         });
     };
 
@@ -147,20 +175,20 @@ pub fn Home() -> Element {
                         textarea {
                             class: "input-textarea",
                             placeholder: "Example: A phone conversation about booking a driving lesson.",
-                            value: "{topic}",
+                            value: "{state().topic}",
                             oninput: move |evt| {
-                                topic.set(evt.value());
-                                topic_error.set(None);
+                                state.write().topic = evt.value();
+                                state.write().topic_error = None;
                             },
                         }
 
                         button {
                             class: "auto-generate-button",
-                            disabled: is_generating_topic(),
+                            disabled: state().is_generating_topic,
                             onclick: handle_generate_topic,
                             title: "Auto-generate topic using AI",
 
-                            if is_generating_topic() {
+                            if state().is_generating_topic {
                                 "✨ Generating..."
                             } else {
                                 "✨ Auto-generate"
@@ -168,7 +196,7 @@ pub fn Home() -> Element {
                         }
                     }
 
-                    if let Some(error) = topic_error() {
+                    if let Some(error) = state().topic_error.clone() {
                         div { class: "error-message",
                             "{error}"
                         }
@@ -187,9 +215,9 @@ pub fn Home() -> Element {
                         div { class: "select-wrapper",
                             select {
                                 class: "section-select",
-                                value: "{section_to_string(selected_section())}",
+                                value: "{section_to_string(state().selected_section)}",
                                 onchange: move |evt| {
-                                    selected_section.set(string_to_section(&evt.value()));
+                                    state.write().selected_section = string_to_section(&evt.value());
                                 },
 
                                 option { value: "section1", "Section 1: Transactional Conversation" }
@@ -203,12 +231,15 @@ pub fn Home() -> Element {
                     div { class: "customize-section",
                         button {
                             class: "customize-toggle",
-                            onclick: move |_| show_speakers.set(!show_speakers()),
+                            onclick: move |_| {
+                                let current = state().show_speakers;
+                                state.write().show_speakers = !current;
+                            },
                             span { "Customize speakers ⚙" }
-                            span { class: "toggle-icon", if show_speakers() { "▼" } else { "▶" } }
+                            span { class: "toggle-icon", if state().show_speakers { "▼" } else { "▶" } }
                         }
 
-                        if show_speakers() {
+                        if state().show_speakers {
                             div { class: "speakers-list",
                                 for (idx, speaker) in speakers().iter().enumerate() {
                                     {
@@ -225,7 +256,7 @@ pub fn Home() -> Element {
                                                     div { class: "speaker-name", "{speaker.name}" }
                                                     button {
                                                         class: "edit-button",
-                                                        onclick: move |_| editing_speaker_idx.set(Some(idx)),
+                                                        onclick: move |_| state.write().editing_speaker_idx = Some(idx),
                                                         "✏️ Edit"
                                                     }
                                                 }
@@ -242,16 +273,16 @@ pub fn Home() -> Element {
                         }
 
                         // Speaker edit modal
-                        if let Some(idx) = editing_speaker_idx() {
+                        if let Some(idx) = state().editing_speaker_idx {
                             if let Some(speaker) = speakers().get(idx) {
                                 SpeakerEditModal {
                                     speaker: speaker.clone(),
-                                    onclose: move |_| editing_speaker_idx.set(None),
+                                    onclose: move |_| state.write().editing_speaker_idx = None,
                                     onsave: move |updated_speaker| {
                                         let mut speakers_vec = speakers().clone();
                                         speakers_vec[idx] = updated_speaker;
-                                        custom_speakers.set(speakers_vec);
-                                        editing_speaker_idx.set(None);
+                                        state.write().custom_speakers = speakers_vec;
+                                        state.write().editing_speaker_idx = None;
                                     }
                                 }
                             }
@@ -263,15 +294,15 @@ pub fn Home() -> Element {
                 div { class: "generator-panel",
                     h2 { class: "panel-header", "Generation Results" }
 
-                    if let Some(error) = generation_error() {
+                    if let Some(error) = state().generation_error.clone() {
                         div { class: "error-box",
                             span { class: "error-icon", "⚠" }
                             span { "{error}" }
                         }
                     }
 
-                    if generation_success() {
-                        if let Some(ref script) = generated_script() {
+                    if state().generation_success {
+                        if let Some(ref script) = state().generated_script {
                             div { class: "script-result",
                                 div { class: "success-banner",
                                     span { class: "success-icon", "✓" }
@@ -287,8 +318,8 @@ pub fn Home() -> Element {
                                     button {
                                         class: "download-button primary",
                                         onclick: move |_| {
-                                            if let Some(script) = generated_script() {
-                                                download_script(&script, &format!("IELTS_Listening_{:?}_Script.txt", selected_section()));
+                                            if let Some(script) = state().generated_script.clone() {
+                                                download_script(&script, &format!("IELTS_Listening_{:?}_Script.txt", state().selected_section));
                                             }
                                         },
                                         "📄 Download Script"
@@ -296,17 +327,17 @@ pub fn Home() -> Element {
 
                                     button {
                                         class: "download-button secondary",
-                                        disabled: is_generating_audio(),
+                                        disabled: state().is_generating_audio,
                                         onclick: move |_| {
-                                            let script = match generated_script() {
+                                            let script = match state().generated_script.clone() {
                                                 Some(s) => s,
                                                 None => return,
                                             };
                                             let speakers_config = speakers();
-                                            let section = selected_section();
+                                            let section = state().selected_section;
 
-                                            is_generating_audio.set(true);
-                                            audio_error.set(None);
+                                            state.write().is_generating_audio = true;
+                                            state.write().audio_error = None;
 
                                             spawn(async move {
                                                 // Start background job and get job ID
@@ -318,7 +349,7 @@ pub fn Home() -> Element {
                                                         loop {
                                                             poll_attempts += 1;
                                                             if poll_attempts > max_poll_attempts {
-                                                                audio_error.set(Some("Audio generation timed out after 5 minutes. Please try again.".to_string()));
+                                                                state.write().audio_error = Some("Audio generation timed out after 5 minutes. Please try again.".to_string());
                                                                 break;
                                                             }
                                                             // Wait 2 seconds between polls
@@ -336,17 +367,17 @@ pub fn Home() -> Element {
                                                                             // Fetch the audio data
                                                                             match audio_job_manager::get_audio_job_result(job_id.clone()).await {
                                                                                 Ok(audio_data) => {
-                                                                                    generated_audio.set(Some(audio_data));
-                                                                                    audio_error.set(None);
+                                                                                    state.write().generated_audio = Some(audio_data);
+                                                                                    state.write().audio_error = None;
                                                                                 }
                                                                                 Err(e) => {
-                                                                                    audio_error.set(Some(format!("Failed to retrieve audio: {}", e)));
+                                                                                    state.write().audio_error = Some(format!("Failed to retrieve audio: {}", e));
                                                                                 }
                                                                             }
                                                                             break;
                                                                         }
                                                                         audio_job_manager::JobStatus::Failed => {
-                                                                            audio_error.set(Some(job.error.unwrap_or_else(|| "Audio generation failed".to_string())));
+                                                                            state.write().audio_error = Some(job.error.unwrap_or_else(|| "Audio generation failed".to_string()));
                                                                             break;
                                                                         }
                                                                         _ => {
@@ -355,20 +386,20 @@ pub fn Home() -> Element {
                                                                     }
                                                                 }
                                                                 Err(e) => {
-                                                                    audio_error.set(Some(format!("Failed to check job status: {}", e)));
+                                                                    state.write().audio_error = Some(format!("Failed to check job status: {}", e));
                                                                     break;
                                                                 }
                                                             }
                                                         }
                                                     }
                                                     Err(e) => {
-                                                        audio_error.set(Some(format!("Failed to start audio generation: {}", e)));
+                                                        state.write().audio_error = Some(format!("Failed to start audio generation: {}", e));
                                                     }
                                                 }
-                                                is_generating_audio.set(false);
+                                                state.write().is_generating_audio = false;
                                             });
                                         },
-                                        if is_generating_audio() {
+                                        if state().is_generating_audio {
                                             "🎵 Generating Audio..."
                                         } else {
                                             "🎵 Generate Audio"
@@ -376,7 +407,7 @@ pub fn Home() -> Element {
                                     }
                                 }
 
-                                if let Some(error) = audio_error() {
+                                if let Some(error) = state().audio_error.clone() {
                                     div { class: "error-box",
                                         span { class: "error-icon", "⚠" }
                                         span { "{error}" }
@@ -392,41 +423,21 @@ pub fn Home() -> Element {
                                 }
 
                                 // Audio Player Section
-                                if let Some(audio_data) = generated_audio() {
-                                    div { class: "audio-player-section",
-                                        div { class: "audio-player",
-                                            audio {
-                                                id: "audio-element",
-                                                controls: true,
-                                                src: create_audio_url(&audio_data),
-                                                onplay: move |_| is_audio_playing.set(true),
-                                                onpause: move |_| is_audio_playing.set(false),
-                                                onended: move |_| is_audio_playing.set(false),
-                                            }
-                                        }
-                                        div { class: "audio-controls",
-                                            button {
-                                                class: "download-button primary small",
-                                                onclick: move |_| {
-                                                    if let Some(audio) = generated_audio() {
-                                                        let section = selected_section();
-                                                        download_audio(&audio, &format!("IELTS_Listening_{:?}_Audio.wav", section));
-                                                    }
-                                                },
-                                                "⬇ Download Audio"
-                                            }
-                                        }
+                                if let Some(audio_data) = state().generated_audio.clone() {
+                                    AudioPlayerSection {
+                                        audio_data: audio_data,
+                                        section: state().selected_section,
                                     }
                                 }
                             }
                         }
-                    } else if !is_generating() && generation_error().is_none() {
+                    } else if !state().is_generating_script && state().generation_error.is_none() {
                         div { class: "empty-state",
                             p { "Results will appear here after generation." }
                         }
                     }
 
-                    if is_generating() {
+                    if state().is_generating_script {
                         div { class: "loading-state",
                             div { class: "spinner" }
                             p { "Generating script... This may take 30-60 seconds." }
@@ -439,10 +450,10 @@ pub fn Home() -> Element {
             div { class: "generate-button-container",
                 button {
                     class: "generate-button",
-                    disabled: is_generating(),
+                    disabled: state().is_generating_script,
                     onclick: handle_generate,
 
-                    if is_generating() {
+                    if state().is_generating_script {
                         "Generating..."
                     } else {
                         "Generate Exercise"
@@ -451,191 +462,35 @@ pub fn Home() -> Element {
             }
 
             // Loading Popups
-            if is_generating_topic() {
+            if state().is_generating_topic {
                 LoadingPopup {
-                    message: "Generating Topic...",
-                    submessage: "Creating a relevant topic suggestion",
+                    message: "Generating Topic...".to_string(),
+                    submessage: "Creating a relevant topic suggestion".to_string(),
                     oncancel: move |_| {
-                        is_generating_topic.set(false);
-                        topic_error.set(Some("Topic generation cancelled".to_string()));
+                        state.write().is_generating_topic = false;
+                        state.write().topic_error = Some("Topic generation cancelled".to_string());
                     }
                 }
             }
 
-            if is_generating() {
+            if state().is_generating_script {
                 LoadingPopup {
-                    message: "Generating Script...",
-                    submessage: "This may take 30-60 seconds",
+                    message: "Generating Script...".to_string(),
+                    submessage: "This may take 30-60 seconds".to_string(),
                     oncancel: move |_| {
-                        is_generating.set(false);
-                        generation_error.set(Some("Script generation cancelled".to_string()));
+                        state.write().is_generating_script = false;
+                        state.write().generation_error = Some("Script generation cancelled".to_string());
                     }
                 }
             }
 
-            if is_generating_audio() {
+            if state().is_generating_audio {
                 LoadingPopup {
-                    message: "Generating Audio...",
-                    submessage: "This may take 2-5 minutes for complex scripts. Please wait...",
+                    message: "Generating Audio...".to_string(),
+                    submessage: "This may take 2-5 minutes for complex scripts. Please wait...".to_string(),
                     oncancel: move |_| {
-                        is_generating_audio.set(false);
-                        audio_error.set(Some("Audio generation cancelled".to_string()));
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Loading Popup Component
-#[component]
-fn LoadingPopup(message: String, submessage: String, oncancel: EventHandler<()>) -> Element {
-    rsx! {
-        div { class: "loading-popup-container",
-            div { class: "loading-popup-content",
-                div { class: "loading-popup-header",
-                    div { class: "loading-popup-header-content",
-                        div { class: "loading-popup-spinner" }
-                        div { class: "loading-popup-text-content",
-                            p { class: "loading-popup-text", "{message}" }
-                            p { class: "loading-popup-subtext", "{submessage}" }
-                        }
-                    }
-                    button {
-                        class: "loading-popup-close",
-                        onclick: move |_| oncancel.call(()),
-                        title: "Cancel generation",
-                        "✕"
-                    }
-                }
-            }
-        }
-    }
-}
-
-// Speaker Edit Modal Component
-#[component]
-fn SpeakerEditModal(
-    speaker: crate::domain::SpeakerConfig,
-    onclose: EventHandler<()>,
-    onsave: EventHandler<crate::domain::SpeakerConfig>,
-) -> Element {
-    use crate::domain::{Gender, SpeakerRole};
-
-    let speaker_name = speaker.name.clone();
-    let mut edited_gender = use_signal(|| speaker.gender);
-    let mut edited_accent = use_signal(|| speaker.accent);
-    let mut edited_role = use_signal(|| speaker.role.clone());
-    let mut custom_role_text = use_signal(|| match &speaker.role {
-        SpeakerRole::Other(s) => s.clone(),
-        _ => String::new(),
-    });
-
-    let handle_save = move |_| {
-        let final_role = match edited_role() {
-            SpeakerRole::Other(_) => SpeakerRole::Other(custom_role_text()),
-            other => other,
-        };
-
-        onsave.call(crate::domain::SpeakerConfig {
-            name: speaker.name.clone(),
-            gender: edited_gender(),
-            accent: edited_accent(),
-            role: final_role,
-        });
-    };
-
-    rsx! {
-        div { class: "modal-overlay",
-            onclick: move |_| onclose.call(()),
-
-            div { class: "modal-content",
-                onclick: move |e| e.stop_propagation(),
-
-                div { class: "modal-header",
-                    h3 { "Edit {speaker_name}" }
-                    button {
-                        class: "modal-close",
-                        onclick: move |_| onclose.call(()),
-                        "×"
-                    }
-                }
-
-                div { class: "modal-body",
-                    div { class: "form-group",
-                        label { "Gender:" }
-                        select {
-                            class: "form-select",
-                            value: if matches!(edited_gender(), Gender::Male) { "male" } else { "female" },
-                            onchange: move |evt| {
-                                edited_gender.set(if evt.value() == "male" {
-                                    Gender::Male
-                                } else {
-                                    Gender::Female
-                                });
-                            },
-                            option { value: "male", "Male" }
-                            option { value: "female", "Female" }
-                        }
-                    }
-
-                    div { class: "form-group",
-                        label { "Accent:" }
-                        select {
-                            class: "form-select",
-                            value: "{accent_to_string(edited_accent())}",
-                            onchange: move |evt| {
-                                edited_accent.set(string_to_accent(&evt.value()));
-                            },
-                            option { value: "british", "British" }
-                            option { value: "american", "American" }
-                            option { value: "australian", "Australian" }
-                            option { value: "canadian", "Canadian" }
-                            option { value: "newzealand", "New Zealand" }
-                        }
-                    }
-
-                    div { class: "form-group",
-                        label { "Role:" }
-                        select {
-                            class: "form-select",
-                            value: "{role_to_string(&edited_role())}",
-                            onchange: move |evt| {
-                                edited_role.set(string_to_role(&evt.value()));
-                            },
-                            option { value: "student", "Student" }
-                            option { value: "professor", "Professor" }
-                            option { value: "clerk", "Clerk" }
-                            option { value: "receptionist", "Receptionist" }
-                            option { value: "guide", "Guide" }
-                            option { value: "other", "Other" }
-                        }
-                    }
-
-                    if matches!(edited_role(), SpeakerRole::Other(_)) {
-                        div { class: "form-group",
-                            label { "Custom Role:" }
-                            input {
-                                class: "form-input",
-                                r#type: "text",
-                                value: "{custom_role_text}",
-                                oninput: move |evt| custom_role_text.set(evt.value()),
-                                placeholder: "Enter custom role..."
-                            }
-                        }
-                    }
-                }
-
-                div { class: "modal-footer",
-                    button {
-                        class: "button-secondary",
-                        onclick: move |_| onclose.call(()),
-                        "Cancel"
-                    }
-                    button {
-                        class: "button-primary",
-                        onclick: handle_save,
-                        "Save Changes"
+                        state.write().is_generating_audio = false;
+                        state.write().audio_error = Some("Audio generation cancelled".to_string());
                     }
                 }
             }
@@ -659,51 +514,6 @@ fn string_to_section(s: &str) -> ListeningSection {
         "section3" => ListeningSection::Section3,
         "section4" => ListeningSection::Section4,
         _ => ListeningSection::Section1,
-    }
-}
-
-// Helper functions for accent
-fn accent_to_string(accent: Accent) -> &'static str {
-    match accent {
-        Accent::British => "british",
-        Accent::American => "american",
-        Accent::Australian => "australian",
-        Accent::Canadian => "canadian",
-        Accent::NewZealand => "newzealand",
-    }
-}
-
-fn string_to_accent(s: &str) -> Accent {
-    match s {
-        "american" => Accent::American,
-        "australian" => Accent::Australian,
-        "canadian" => Accent::Canadian,
-        "newzealand" => Accent::NewZealand,
-        _ => Accent::British,
-    }
-}
-
-// Helper functions for role
-fn role_to_string(role: &SpeakerRole) -> &'static str {
-    match role {
-        SpeakerRole::Student => "student",
-        SpeakerRole::Professor => "professor",
-        SpeakerRole::Clerk => "clerk",
-        SpeakerRole::Receptionist => "receptionist",
-        SpeakerRole::Guide => "guide",
-        SpeakerRole::Other(_) => "other",
-    }
-}
-
-fn string_to_role(s: &str) -> SpeakerRole {
-    match s {
-        "student" => SpeakerRole::Student,
-        "professor" => SpeakerRole::Professor,
-        "clerk" => SpeakerRole::Clerk,
-        "receptionist" => SpeakerRole::Receptionist,
-        "guide" => SpeakerRole::Guide,
-        "other" => SpeakerRole::Other(String::new()),
-        _ => SpeakerRole::Student,
     }
 }
 
@@ -743,78 +553,4 @@ fn download_script(content: &str, filename: &str) {
 #[cfg(not(target_arch = "wasm32"))]
 fn download_script(_content: &str, _filename: &str) {
     // Download not implemented for non-wasm targets
-}
-
-// Helper function to download audio as WAV file
-#[cfg(target_arch = "wasm32")]
-fn download_audio(audio_data: &[u8], filename: &str) {
-    use wasm_bindgen::JsCast;
-    use web_sys::{Blob, BlobPropertyBag, HtmlAnchorElement, Url, window};
-
-    if let Some(window) = window() {
-        if let Some(document) = window.document() {
-            // Create Uint8Array from audio data
-            let uint8_array = js_sys::Uint8Array::new_with_length(audio_data.len() as u32);
-            uint8_array.copy_from(audio_data);
-
-            // Create blob with audio/wav mime type
-            let array = js_sys::Array::new();
-            array.push(&uint8_array);
-
-            let mut blob_options = BlobPropertyBag::new();
-            blob_options.set_type("audio/wav");
-
-            if let Ok(blob) = Blob::new_with_u8_array_sequence_and_options(&array, &blob_options) {
-                if let Ok(url) = Url::create_object_url_with_blob(&blob) {
-                    // Create temporary anchor element
-                    if let Ok(anchor) = document.create_element("a") {
-                        let anchor: HtmlAnchorElement = anchor.unchecked_into();
-                        anchor.set_href(&url);
-                        anchor.set_download(filename);
-                        anchor.click();
-
-                        // Clean up
-                        let _ = Url::revoke_object_url(&url);
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn download_audio(_audio_data: &[u8], _filename: &str) {
-    // Download not implemented for non-wasm targets
-}
-
-// Helper function to create audio blob URL for playback
-#[cfg(target_arch = "wasm32")]
-fn create_audio_url(audio_data: &[u8]) -> String {
-    use wasm_bindgen::JsCast;
-    use web_sys::{Blob, BlobPropertyBag, Url};
-
-    // Create Uint8Array from audio data
-    let uint8_array = js_sys::Uint8Array::new_with_length(audio_data.len() as u32);
-    uint8_array.copy_from(audio_data);
-
-    // Create blob with audio/wav mime type
-    let array = js_sys::Array::new();
-    array.push(&uint8_array);
-
-    let mut blob_options = BlobPropertyBag::new();
-    blob_options.set_type("audio/wav");
-
-    if let Ok(blob) = Blob::new_with_u8_array_sequence_and_options(&array, &blob_options) {
-        if let Ok(url) = Url::create_object_url_with_blob(&blob) {
-            return url;
-        }
-    }
-
-    // Return empty string if creation fails
-    String::new()
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn create_audio_url(_audio_data: &[u8]) -> String {
-    String::new()
 }

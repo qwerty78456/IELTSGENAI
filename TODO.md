@@ -1,6 +1,6 @@
 # CẨM NANG HÀNH XÁC: ĐỘ THÀNH MVP "RA HỒN"
 
-Dành cho thợ code Rust đang rảnh rỗi sinh nông nổi, muốn đấm nhau với Borrow Checker xuyên đêm. Dưới đây là list các nghiệp chướng cần độ hóa trước khi xách con app này đi deploy lên con máy Win 10 cỏ Port 80.
+Dành cho thợ code Rust đang rảnh rỗi sinh nông nổi, muốn đấm nhau với Borrow Checker xuyên đêm suốt sáng. Dưới đây là danh sách các nghiệp chướng cần độ hóa trước khi xách con app này đi deploy lên con máy Win 10 cỏ Port 80.
 
 ## 1. Dẹp ngay cái trò lưu Job Queue và Audio File vào RAM (In-memory)
 **Độ ngu:** 10/10. Máy Win 10 cỏ mở app lên một lúc, người ta render 10 bài nghe mỗi bài 30MB là tràn RAM, app crash bay sạch data, về máng lợn.
@@ -38,5 +38,6 @@ Dành cho thợ code Rust đang rảnh rỗi sinh nông nổi, muốn đấm nha
 
 ---
 **CHỐT LẠI**: 
-Đêm nay pha một bình cà phê đen thật đặc, khoá cửa phòng, mở nhạc Doom Slayer lên và ôm lấy con laptop mà sửa cho xong đống nợ nghiệp này. 
-Sửa xong thì cái mớ hỗn độn này mới tạm coi là một "MVP ra hồn". Chúc thợ code bình an vô sự bước qua ải Borrow Checker!
+Đêm nay pha một bình cà phê đen thật đặc, khoá cửa phòng, mở Công Chúa Bong Bóng lên và ôm lấy con laptop mà sửa cho xong đống nợ nghiệp này. 
+Sửa xong thì cái mớ hỗn độn này mới tạm coi là một "MVP ra hồn". (có cứt ấy đm hardcode mẹ path ổ E r, khách đéo j cái sql server cám lợn của bệnh viện từ năm 2008 bắt máy phải phân vùng mẹ ra 1 cái ổ D trên cùng đĩa cứng vật lý với ổ C không???)
+nch là gvien tiếng Anh đua đòi lập trình chỉ thế thôi

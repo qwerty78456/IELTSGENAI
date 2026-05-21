@@ -1,4 +1,5 @@
 //! Result types for domain operations
+#![allow(dead_code)]
 
 use super::types::*;
 use serde::{Deserialize, Serialize};

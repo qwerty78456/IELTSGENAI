@@ -312,8 +312,15 @@ pub fn Home() -> Element {
                                                 // Start background job and get job ID
                                                 match audio_job_manager::start_audio_generation(script.clone(), speakers_config.clone(), section).await {
                                                     Ok(job_id) => {
-                                                        // Poll for job completion
+                                                        // Poll for job completion (max 5 minutes)
+                                                        let mut poll_attempts = 0u32;
+                                                        let max_poll_attempts = 150u32; // 150 × 2s = 5 minutes
                                                         loop {
+                                                            poll_attempts += 1;
+                                                            if poll_attempts > max_poll_attempts {
+                                                                audio_error.set(Some("Audio generation timed out after 5 minutes. Please try again.".to_string()));
+                                                                break;
+                                                            }
                                                             // Wait 2 seconds between polls
                                                             #[cfg(target_arch = "wasm32")]
                                                             TimeoutFuture::new(2000).await;

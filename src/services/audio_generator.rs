@@ -1,7 +1,9 @@
 //! Audio generation service using Google Gemini TTS API
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
-use crate::domain::{SpeakerConfig, Gender, Accent, ListeningSection};
+use crate::domain::{SpeakerConfig, ListeningSection};
+
+#[cfg(feature = "server")]
+use crate::domain::{Gender, Accent};
 
 #[cfg(feature = "server")]
 use super::{api_config, rate_limiter};
@@ -9,106 +11,100 @@ use super::{api_config, rate_limiter};
 #[cfg(feature = "server")]
 const TTS_MODEL: &str = "gemini-2.5-pro-preview-tts";
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TtsRequest {
-    pub contents: Vec<Content>,
-    #[serde(rename = "generationConfig")]
-    pub generation_config: GenerationConfig,
+#[cfg(feature = "server")]
+mod tts_types {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct TtsRequest {
+        pub contents: Vec<Content>,
+        #[serde(rename = "generationConfig")]
+        pub generation_config: GenerationConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Content {
+        pub parts: Vec<Part>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Part {
+        pub text: String,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct GenerationConfig {
+        #[serde(rename = "responseModalities")]
+        pub response_modalities: Vec<String>,
+        #[serde(rename = "speechConfig")]
+        pub speech_config: SpeechConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct SpeechConfig {
+        #[serde(rename = "multiSpeakerVoiceConfig")]
+        pub multi_speaker_voice_config: MultiSpeakerVoiceConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct MultiSpeakerVoiceConfig {
+        #[serde(rename = "speakerVoiceConfigs")]
+        pub speaker_voice_configs: Vec<SpeakerVoiceConfig>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct SpeakerVoiceConfig {
+        pub speaker: String,
+        #[serde(rename = "voiceConfig")]
+        pub voice_config: VoiceConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct VoiceConfig {
+        #[serde(rename = "prebuiltVoiceConfig")]
+        pub prebuilt_voice_config: PrebuiltVoiceConfig,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct PrebuiltVoiceConfig {
+        #[serde(rename = "voiceName")]
+        pub voice_name: String,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct TtsResponse {
+        pub candidates: Vec<Candidate>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Candidate {
+        pub content: ResponseContent,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct ResponseContent {
+        pub parts: Vec<ResponsePart>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct ResponsePart {
+        #[serde(rename = "inlineData")]
+        pub inline_data: Option<InlineData>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct InlineData {
+        #[serde(rename = "mimeType")]
+        pub mime_type: String,
+        pub data: String, // base64 encoded audio (PCM 16-bit, 24kHz)
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Content {
-    pub parts: Vec<Part>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Part {
-    pub text: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct GenerationConfig {
-    #[serde(rename = "responseModalities")]
-    pub response_modalities: Vec<String>,
-    #[serde(rename = "speechConfig")]
-    pub speech_config: SpeechConfig,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SpeechConfig {
-    #[serde(rename = "multiSpeakerVoiceConfig")]
-    pub multi_speaker_voice_config: MultiSpeakerVoiceConfig,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct MultiSpeakerVoiceConfig {
-    #[serde(rename = "speakerVoiceConfigs")]
-    pub speaker_voice_configs: Vec<SpeakerVoiceConfig>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SpeakerVoiceConfig {
-    pub speaker: String,
-    #[serde(rename = "voiceConfig")]
-    pub voice_config: VoiceConfig,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct VoiceConfig {
-    #[serde(rename = "prebuiltVoiceConfig")]
-    pub prebuilt_voice_config: PrebuiltVoiceConfig,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct PrebuiltVoiceConfig {
-    #[serde(rename = "voiceName")]
-    pub voice_name: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TtsResponse {
-    pub candidates: Vec<Candidate>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Candidate {
-    pub content: ResponseContent,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ResponseContent {
-    pub parts: Vec<ResponsePart>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ResponsePart {
-    #[serde(rename = "inlineData")]
-    pub inline_data: Option<InlineData>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct InlineData {
-    #[serde(rename = "mimeType")]
-    pub mime_type: String,
-    pub data: String, // base64 encoded audio (PCM 16-bit, 24kHz)
-}
-
-// Single-speaker voice config (for sections 2 and 4)
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SingleSpeakerVoiceConfig {
-    #[serde(rename = "voiceConfig")]
-    pub voice_config: VoiceConfig,
-}
-
-// Single-speaker speech config
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SingleSpeakerSpeechConfig {
-    #[serde(rename = "voiceConfig")]
-    pub voice_config: VoiceConfig,
-}
+#[cfg(feature = "server")]
+use tts_types::*;
 
 /// Generate audio using Gemini TTS API (Server Function)
-#[server(GenerateAudio)]
+#[server]
 pub async fn generate_audio(
     script: String,
     speakers: Vec<SpeakerConfig>,
@@ -138,10 +134,12 @@ pub async fn generate_audio(
             build_tts_prompt(&script, &speakers)
         };
 
+        let voice_mappings = load_voice_mappings();
+
         let request_body = if use_single_speaker {
             // Single-speaker API (sections 2 and 4)
             let first_speaker = speakers.first().ok_or_else(|| ServerFnError::new("No speaker config provided"))?;
-            let voice_name = select_voice(&first_speaker.gender, &first_speaker.accent);
+            let voice_name = select_voice(&voice_mappings, &first_speaker.gender, &first_speaker.accent);
 
             serde_json::json!({
                 "contents": [{
@@ -166,7 +164,7 @@ pub async fn generate_audio(
                     speaker: speaker.name.clone(),
                     voice_config: VoiceConfig {
                         prebuilt_voice_config: PrebuiltVoiceConfig {
-                            voice_name: select_voice(&speaker.gender, &speaker.accent).to_string(),
+                            voice_name: select_voice(&voice_mappings, &speaker.gender, &speaker.accent).to_string(),
                         },
                     },
                 })
@@ -194,29 +192,44 @@ pub async fn generate_audio(
             .build()
             .map_err(|e| ServerFnError::new(format!("Failed to create HTTP client: {}", e)))?;
 
-        let response = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .json(&request_body)
-            .send()
-            .await;
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut backoff_ms = 1000;
 
-        let response = match response {
-             Ok(r) => r,
-             Err(e) => {
-                 if e.is_timeout() {
-                     return Err(ServerFnError::new(
-                         "Audio generation timed out. The script may be too long or the service is busy. Please try again with a shorter script.".to_string()
-                     ));
-                 }
-                 return Err(ServerFnError::new(format!("Failed to send request: {}", e)));
-             }
+        let response = loop {
+            match client.post(&url).header("Content-Type", "application/json").json(&request_body).send().await {
+                Ok(r) => {
+                    if r.status().is_success() {
+                        break r;
+                    } else if r.status().as_u16() == 429 || r.status().as_u16() == 503 {
+                        if retries >= max_retries {
+                            return Err(ServerFnError::new("The server is currently experiencing heavy load. Please try again later."));
+                        }
+                        tracing::warn!("API limit/unavailable (status {}). Retrying in {}ms...", r.status(), backoff_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                        retries += 1;
+                        backoff_ms *= 2;
+                    } else {
+                        let status = r.status();
+                        let error_text = r.text().await.unwrap_or_default();
+                        return Err(ServerFnError::new(format!("API Connection Error ({}): {}", status, error_text)));
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        if retries >= max_retries {
+                            return Err(ServerFnError::new("Audio generation timed out. The script may be too long or the service is busy. Please try again with a shorter script."));
+                        }
+                        tracing::warn!("API timeout. Retrying in {}ms...", backoff_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                        retries += 1;
+                        backoff_ms *= 2;
+                    } else {
+                        return Err(ServerFnError::new(format!("Network error: {}", e)));
+                    }
+                }
+            }
         };
-        
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(ServerFnError::new(format!("API error: {}", error_text)));
-        }
         
         let tts_response: TtsResponse = response
             .json()
@@ -243,15 +256,77 @@ pub async fn generate_audio(
 }
 
 #[cfg(feature = "server")]
-fn select_voice(gender: &Gender, accent: &Accent) -> &'static str {
-    match (gender, accent) {
-        (Gender::Male, Accent::British) => "Puck",      // Upbeat
-        (Gender::Male, Accent::American) => "Kore",     // Firm
-        (Gender::Male, _) => "Fenrir",                         // Excitable
-        (Gender::Female, Accent::British) => "Zephyr", // Bright
-        (Gender::Female, Accent::American) => "Leda",  // Youthful
-        (Gender::Female, _) => "Aoede",                        // Breezy
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct VoiceMappings {
+    pub male: std::collections::HashMap<String, String>,
+    pub female: std::collections::HashMap<String, String>,
+}
+
+#[cfg(feature = "server")]
+impl Default for VoiceMappings {
+    fn default() -> Self {
+        let mut male = std::collections::HashMap::new();
+        male.insert("british".to_string(), "Puck".to_string());
+        male.insert("american".to_string(), "Orus".to_string());
+        male.insert("australian".to_string(), "Fenrir".to_string());
+        male.insert("canadian".to_string(), "Puck".to_string());
+        male.insert("newzealand".to_string(), "Fenrir".to_string());
+        male.insert("default".to_string(), "Puck".to_string());
+
+        let mut female = std::collections::HashMap::new();
+        female.insert("british".to_string(), "Zephyr".to_string());
+        female.insert("american".to_string(), "Leda".to_string());
+        female.insert("australian".to_string(), "Aoede".to_string());
+        female.insert("canadian".to_string(), "Zephyr".to_string());
+        female.insert("newzealand".to_string(), "Aoede".to_string());
+        female.insert("default".to_string(), "Zephyr".to_string());
+
+        Self { male, female }
     }
+}
+
+#[cfg(feature = "server")]
+fn load_voice_mappings() -> VoiceMappings {
+    let path = std::path::Path::new(r"E:\vmq_data\voices.json");
+    if let Ok(contents) = std::fs::read_to_string(path) {
+        if let Ok(mappings) = serde_json::from_str::<VoiceMappings>(&contents) {
+            return mappings;
+        } else {
+            tracing::error!("Failed to parse voices.json, falling back to default mappings.");
+        }
+    } else {
+        // Create default mapping file if missing
+        let default_mappings = VoiceMappings::default();
+        if let Ok(json) = serde_json::to_string_pretty(&default_mappings) {
+            let _ = std::fs::create_dir_all(path.parent().unwrap());
+            let _ = std::fs::write(path, json);
+        }
+    }
+    VoiceMappings::default()
+}
+
+#[cfg(feature = "server")]
+fn select_voice<'a>(mappings: &'a VoiceMappings, gender: &Gender, accent: &Accent) -> &'a str {
+    let accent_str = match accent {
+        Accent::British => "british",
+        Accent::American => "american",
+        Accent::Australian => "australian",
+        Accent::Canadian => "canadian",
+        Accent::NewZealand => "newzealand",
+    };
+    
+    let map = match gender {
+        Gender::Male => &mappings.male,
+        Gender::Female => &mappings.female,
+    };
+    
+    map.get(accent_str)
+        .or_else(|| map.get("default"))
+        .map(|s| s.as_str())
+        .unwrap_or(match gender {
+            Gender::Male => "Puck",
+            Gender::Female => "Zephyr",
+        })
 }
 
 #[cfg(feature = "server")]
@@ -296,6 +371,7 @@ fn decode_base64(data: &str) -> Result<Vec<u8>, String> {
 }
 
 /// Convert raw PCM audio to WAV format
+#[cfg(feature = "server")]
 pub fn pcm_to_wav(pcm_data: &[u8], sample_rate: u32, channels: u16, bits_per_sample: u16) -> Vec<u8> {
     let mut wav = Vec::new();
     

@@ -26,21 +26,20 @@ impl RateLimiter {
     /// Check if a request is allowed
     /// Returns Ok(()) if allowed, Err with retry message if rate limited
     pub fn check_rate_limit(&self) -> Result<(), String> {
-        let current = self.requests_this_minute.load(Ordering::Relaxed);
-
-        if current >= self.max_requests_per_minute {
+        let prev = self.requests_this_minute.fetch_add(1, Ordering::SeqCst);
+        if prev >= self.max_requests_per_minute {
+            // Rollback — we exceeded the limit
+            self.requests_this_minute.fetch_sub(1, Ordering::SeqCst);
             return Err(format!(
                 "Rate limit exceeded. Maximum {} requests per minute. Please try again later.",
                 self.max_requests_per_minute
             ));
         }
 
-        self.requests_this_minute.fetch_add(1, Ordering::Relaxed);
-
         let counter = self.requests_this_minute.clone();
         tokio::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
-            counter.fetch_sub(1, Ordering::Relaxed);
+            counter.fetch_sub(1, Ordering::SeqCst);
         });
 
         Ok(())
@@ -54,13 +53,8 @@ static AUDIO_LIMITER: OnceLock<RateLimiter> = OnceLock::new();
 
 /// Initialize rate limiters (call once at startup)
 pub fn init_rate_limiters() {
-    // Conservative limits to prevent abuse
-    // Topic generation: 20/min (cheap, fast)
-    let _ = TOPIC_LIMITER.set(RateLimiter::new(20));
-    // Script generation: 15/min (moderate cost)
-    let _ = SCRIPT_LIMITER.set(RateLimiter::new(15));
-    // Audio generation: 5/min (expensive, slow)
-    let _ = AUDIO_LIMITER.set(RateLimiter::new(5));
+    // Rate limiters are lazily initialized via get_or_init() in each check function.
+    // This function exists for forward-compatibility if eager init is needed later.
 }
 
 pub fn check_topic_rate_limit() -> Result<(), String> {

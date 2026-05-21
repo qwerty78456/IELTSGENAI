@@ -1,184 +1,160 @@
-# Deployment Guide - Cloudflare Tunnel Setup
+# Deployment Guide — VMQ MVP
 
-## ⚠️ CRITICAL: API Key Security
+## Quick Start (Public Internet via Cloudflare)
 
-Your Google Gemini API key is now loaded from environment variables instead of being hardcoded. **DO NOT push the old commits with hardcoded keys to GitHub.**
+### Prerequisites
+- Static WAN IPv4 address
+- Cloudflare account with a domain
+- Google Gemini API key
+- Windows 10/11
 
----
+### Step 1: Run the Setup Script
 
-## Setup for Local Development (Desktop Build)
+Right-click `setup.bat` and **Run as Administrator**. This opens firewall ports and creates the audio storage directory.
 
-### 1. Ensure your `.secrets/api_key.env` file exists:
+### Step 2: Configure API Key
 
-```bash
-# File: .secrets/api_key.env
-google_api_key="YOUR_GOOGLE_GEMINI_API_KEY_HERE"
+Create the file `.secrets/api_key.env`:
+```
+GEMINI_API_KEY=your_google_gemini_api_key_here
 ```
 
-### 2. Build and run locally:
+### Step 3: Router Port Forwarding
 
-```bash
-# Desktop build (reads from .env file)
-dx serve --platform desktop
-```
+In your router admin panel, forward:
+- **TCP port 80** → your laptop's LAN IP
+- **TCP port 443** → your laptop's LAN IP (optional, for direct HTTPS)
 
----
+### Step 4: Cloudflare DNS Setup
 
-## Setup for Cloudflare Tunnel (Public Access)
+1. Go to Cloudflare Dashboard → your domain → DNS
+2. Add an **A record**: `@` (or a subdomain like `ielts`) → your static WAN IP
+3. Enable the **orange proxy cloud** (Cloudflare Proxy)
+4. Go to **SSL/TLS** → set mode to **Flexible** (Cloudflare handles HTTPS, connects to your server via HTTP on port 80)
 
-### Option A: Desktop Build (Recommended - Key stays on your machine)
+### Step 5: Build and Run
 
-**How it works:** Run the desktop app locally, tunnel only exposes the HTTP server.
+```powershell
+# Development (hot-reload)
+dx serve --platform web
 
-```bash
-# 1. Build desktop version
-dx build --platform desktop --release
-
-# 2. Run the desktop app
-./target/release/vmq_mvp
-
-# 3. In another terminal, create Cloudflare Tunnel
-cloudflared tunnel --url http://localhost:8080
-```
-
-**Security:** ✅ API key stays in your `.env` file on your machine
-**Cost Protection:** ✅ Rate limited (5 audio/min, 15 scripts/min, 20 topics/min)
-
----
-
-### Option B: Web Build (Key embedded in WASM - Less secure)
-
-⚠️ **WARNING:** The API key will be embedded in the WASM binary and can be extracted.
-
-```bash
-# 1. Set API key as environment variable
-export GOOGLE_API_KEY="YOUR_API_KEY_HERE"
-
-# 2. Build WASM with embedded key
+# Production build
 dx build --platform web --release
-
-# 3. Serve the built files
-cd dist
-python -m http.server 8080
-
-# 4. In another terminal, create Cloudflare Tunnel
-cloudflared tunnel --url http://localhost:8080
+.\target\release\vmq_mvp.exe
 ```
 
-**Security:** ⚠️ API key is in the WASM file (extractable)
-**Cost Protection:** ✅ Rate limited
+The app binds to `0.0.0.0:80` by default. Override with environment variables:
+```powershell
+$env:IP = "0.0.0.0"
+$env:PORT = "8080"
+.\target\release\vmq_mvp.exe
+```
 
 ---
 
-## Rate Limits (Prevents API Abuse)
+## API Key Security
 
-The app now has built-in rate limiting:
+The API key is loaded from `.secrets/api_key.env` (git-ignored). It is **never sent to the browser** — all API calls happen server-side via `#[server]` functions.
 
-- **Topic Generation:** 20 requests/minute
-- **Script Generation:** 15 requests/minute
-- **Audio Generation:** 5 requests/minute (most expensive)
-
-Users will see "Rate limit exceeded" messages if they spam requests.
+The app accepts both `GEMINI_API_KEY` and `google_api_key` env var names (backward compatibility).
 
 ---
 
-## Input Validation
+## Rate Limits
 
-Topics now require:
-- Minimum 10 characters
-- Maximum 500 characters
-- Must contain actual text (not just numbers/symbols)
+Built-in rate limiting prevents API abuse:
 
-This prevents API abuse and prompt injection attacks.
+| Endpoint | Limit |
+|---|---|
+| Topic Generation | 20 requests/min |
+| Script Generation | 15 requests/min |
+| Audio Generation | 5 requests/min |
+
+To adjust, edit the values in `src/services/rate_limiter.rs` and rebuild.
 
 ---
 
-## Monitoring Costs
+## Audio Storage
 
-1. Check your Google Cloud Console regularly
-2. Set up billing alerts in GCP
-3. Monitor the logs for suspicious activity:
-   - Rapid-fire requests (should be blocked by rate limiter)
-   - Unusual topics (potential abuse)
+Generated audio files are written to `E:\vmq_data\audio\` as WAV files.
+- A background task cleans up files older than **24 hours** automatically
+- Maximum **10 concurrent** audio generation jobs
+- Audio files are typically 5-30 MB each
+
+To change the storage path, edit `audio_dir()` in `src/services/audio_job_manager.rs`.
+
+---
+
+## Running as a Windows Service (NSSM)
+
+To keep the app running across reboots and auto-restart on crash:
+
+### 1. Download NSSM
+Download from https://nssm.cc/download and extract to a folder (e.g., `C:\tools\nssm\`).
+
+### 2. Build a Release Binary
+```powershell
+dx build --platform web --release
+```
+
+### 3. Install as Service
+Open **PowerShell as Administrator**:
+```powershell
+# Install the service
+C:\tools\nssm\win64\nssm.exe install "VMQ-MVP" "E:\vmq_mvp 01-01-2026\target\release\vmq_mvp.exe"
+
+# Set the working directory (important for .secrets/ to be found)
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppDirectory "E:\vmq_mvp 01-01-2026"
+
+# Set environment variables
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppEnvironmentExtra "IP=0.0.0.0" "PORT=80"
+
+# Configure auto-restart on failure
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppRestartDelay 5000
+
+# Set up log files
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppStdout "E:\vmq_data\logs\vmq_stdout.log"
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppStderr "E:\vmq_data\logs\vmq_stderr.log"
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppRotateFiles 1
+C:\tools\nssm\win64\nssm.exe set "VMQ-MVP" AppRotateBytes 10485760
+
+# Create the logs directory
+mkdir "E:\vmq_data\logs" -Force
+
+# Start the service
+C:\tools\nssm\win64\nssm.exe start "VMQ-MVP"
+```
+
+### 4. Manage the Service
+```powershell
+# Check status
+C:\tools\nssm\win64\nssm.exe status "VMQ-MVP"
+
+# Stop
+C:\tools\nssm\win64\nssm.exe stop "VMQ-MVP"
+
+# Restart
+C:\tools\nssm\win64\nssm.exe restart "VMQ-MVP"
+
+# Remove the service entirely
+C:\tools\nssm\win64\nssm.exe remove "VMQ-MVP" confirm
+```
 
 ---
 
 ## Emergency: API Key Compromised
 
-If your API key gets exposed:
-
 1. **Revoke the key immediately** in Google Cloud Console
 2. Generate a new key
-3. Update `.secrets/api_key.env` with new key
-4. Restart your application
+3. Update `.secrets/api_key.env`
+4. Restart the app (or NSSM service)
 5. Check billing for unexpected charges
 
 ---
 
-## Cloudflare Tunnel Setup (First Time)
+## Monitoring
 
-```bash
-# Install cloudflared
-# Windows: https://github.com/cloudflare/cloudflared/releases
-# Mac: brew install cloudflare/cloudflare/cloudflared
-# Linux: Check Cloudflare docs
-
-# Login to Cloudflare
-cloudflared tunnel login
-
-# Create a tunnel
-cloudflared tunnel create vmq-mvp
-
-# Run the tunnel (temporary)
-cloudflared tunnel --url http://localhost:8080
-
-# OR create a config for permanent tunnel
-cloudflared tunnel route dns vmq-mvp vmq.yourdomain.com
-cloudflared tunnel run vmq-mvp
-```
-
----
-
-## Recommended Setup
-
-For maximum security:
-
-1. Use **Desktop build** with local `.env` file
-2. Run desktop app: `./target/release/vmq_mvp`
-3. Tunnel to localhost: `cloudflared tunnel --url http://localhost:8080`
-4. Monitor costs daily for first week
-5. Adjust rate limits if needed (in `src/services/rate_limiter.rs`)
-
----
-
-## If Costs Get High
-
-Adjust rate limits lower:
-
-```rust
-// In src/services/rate_limiter.rs
-let _ = TOPIC_LIMITER.set(RateLimiter::new(10));   // Was 20
-let _ = SCRIPT_LIMITER.set(RateLimiter::new(5));    // Was 15
-let _ = AUDIO_LIMITER.set(RateLimiter::new(2));     // Was 5
-```
-
-Then rebuild and restart.
-
----
-
-## What Got Fixed
-
-✅ Removed hardcoded API keys from source code
-✅ API key now loaded from environment variables
-✅ Added rate limiting (5-20 requests/min per endpoint)
-✅ Added input validation (10-500 characters, must contain text)
-✅ Improved error messages
-✅ Code compiles without errors
-
-Still vulnerable (if using web build):
-⚠️ API key embedded in WASM binary (use desktop build to avoid this)
-
-Not fixed (would require backend):
-❌ Request timeouts
-❌ Cancel button actually aborting requests
-❌ True API key security (need backend proxy)
+- **Logs**: If using NSSM, check `E:\vmq_data\logs\vmq_stdout.log` and `vmq_stderr.log`
+- **Audio files**: Check `E:\vmq_data\audio\` for generated files
+- **Google Cloud Console**: Monitor API usage and billing
+- **Cloudflare Dashboard**: Monitor traffic, threats, and analytics

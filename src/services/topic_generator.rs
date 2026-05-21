@@ -1,47 +1,54 @@
 //! Topic generation service using Google Gemini API
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "server")]
 use super::{api_config, rate_limiter};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct GeminiRequest {
-    pub contents: Vec<Content>,
+#[cfg(feature = "server")]
+mod gemini_types {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct GeminiRequest {
+        pub contents: Vec<Content>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Content {
+        pub parts: Vec<Part>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Part {
+        pub text: String,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct GeminiResponse {
+        pub candidates: Vec<Candidate>,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct Candidate {
+        pub content: ContentResponse,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct ContentResponse {
+        pub parts: Vec<PartResponse>,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct PartResponse {
+        pub text: String,
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Content {
-    pub parts: Vec<Part>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Part {
-    pub text: String,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct GeminiResponse {
-    pub candidates: Vec<Candidate>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct Candidate {
-    pub content: ContentResponse,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct ContentResponse {
-    pub parts: Vec<PartResponse>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct PartResponse {
-    pub text: String,
-}
+#[cfg(feature = "server")]
+use gemini_types::*;
 
 /// Generate a topic suggestion for IELTS Listening Practice
-#[server(GenerateTopic)]
+#[server]
 pub async fn generate_topic_suggestion(section: String) -> Result<String, ServerFnError> {
     // Everything inside this function body runs ONLY on the server
 
@@ -127,7 +134,7 @@ pub async fn generate_topic_suggestion(section: String) -> Result<String, Server
     {
         let api_key = api_config::get_api_key().map_err(|e| ServerFnError::new(e))?;
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={}",
             api_key
         );
 
@@ -137,23 +144,48 @@ pub async fn generate_topic_suggestion(section: String) -> Result<String, Server
             }],
         };
 
-        let client = reqwest::Client::new();
-        let response = client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await;
-            
-        let response = match response {
-            Ok(r) => r,
-             Err(e) => return Err(ServerFnError::new(format!("Failed to send request: {}", e))),
-        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| ServerFnError::new(format!("Failed to create HTTP client: {}", e)))?;
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut backoff_ms = 1000;
 
-        if !response.status().is_success() {
-             let status = response.status();
-             let error_text = response.text().await.unwrap_or_default();
-             return Err(ServerFnError::new(format!("API request failed with status {}: {}", status, error_text)));
-        }
+        let response = loop {
+            match client.post(&url).json(&request_body).send().await {
+                Ok(r) => {
+                    if r.status().is_success() {
+                        break r;
+                    } else if r.status().as_u16() == 429 || r.status().as_u16() == 503 {
+                        if retries >= max_retries {
+                            return Err(ServerFnError::new("The server is currently experiencing heavy load. Please try again later."));
+                        }
+                        tracing::warn!("API limit/unavailable (status {}). Retrying in {}ms...", r.status(), backoff_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                        retries += 1;
+                        backoff_ms *= 2;
+                    } else {
+                        let status = r.status();
+                        let error_text = r.text().await.unwrap_or_default();
+                        return Err(ServerFnError::new(format!("API Connection Error ({}): {}", status, error_text)));
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        if retries >= max_retries {
+                            return Err(ServerFnError::new("Connection timeout. The server is currently experiencing heavy load. Please try again later."));
+                        }
+                        tracing::warn!("API timeout. Retrying in {}ms...", backoff_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                        retries += 1;
+                        backoff_ms *= 2;
+                    } else {
+                        return Err(ServerFnError::new(format!("Network error: {}", e)));
+                    }
+                }
+            }
+        };
 
         let gemini_response: GeminiResponse = response
             .json()

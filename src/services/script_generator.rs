@@ -1,48 +1,58 @@
 //! Script generation service using Google Gemini API
 use dioxus::prelude::*;
-use serde::{Deserialize, Serialize};
-use crate::domain::{ListeningSection, SpeakerConfig, SpeakerRole, Accent, Gender};
+use crate::domain::{ListeningSection, SpeakerConfig};
+
+#[cfg(feature = "server")]
+use crate::domain::{SpeakerRole, Accent, Gender};
 
 #[cfg(feature = "server")]
 use super::{api_config, rate_limiter};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct GeminiRequest {
-    pub contents: Vec<Content>,
+#[cfg(feature = "server")]
+mod gemini_types {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct GeminiRequest {
+        pub contents: Vec<Content>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Content {
+        pub parts: Vec<Part>,
+    }
+
+    #[derive(Serialize, Deserialize, Clone, Debug)]
+    pub struct Part {
+        pub text: String,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct GeminiResponse {
+        pub candidates: Vec<Candidate>,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct Candidate {
+        pub content: ContentResponse,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct ContentResponse {
+        pub parts: Vec<PartResponse>,
+    }
+
+    #[derive(Deserialize, Serialize, Clone, Debug)]
+    pub struct PartResponse {
+        pub text: String,
+    }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Content {
-    pub parts: Vec<Part>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Part {
-    pub text: String,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct GeminiResponse {
-    pub candidates: Vec<Candidate>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct Candidate {
-    pub content: ContentResponse,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct ContentResponse {
-    pub parts: Vec<PartResponse>,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct PartResponse {
-    pub text: String,
-}
+#[cfg(feature = "server")]
+use gemini_types::*;
 
 /// Generate an IELTS Listening script
-#[server(GenerateScript)]
+#[server]
 pub async fn generate_script(
     section: ListeningSection,
     topic: String,
@@ -61,7 +71,7 @@ pub async fn generate_script(
 
         let api_key = api_config::get_api_key().map_err(|e| ServerFnError::new(e))?;
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={}",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent?key={}",
             api_key
         );
 
@@ -73,23 +83,48 @@ pub async fn generate_script(
             }],
         };
 
-        let client = reqwest::Client::new();
-        let response = client
-            .post(&url)
-            .json(&request_body)
-            .send()
-            .await;
-            
-        let response = match response {
-            Ok(r) => r,
-            Err(e) => return Err(ServerFnError::new(format!("Failed to send request: {}", e))),
-        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| ServerFnError::new(format!("Failed to create HTTP client: {}", e)))?;
+        let mut retries = 0;
+        let max_retries = 3;
+        let mut backoff_ms = 1000;
 
-        if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(ServerFnError::new(format!("API request failed with status {}: {}", status, error_text)));
-        }
+        let response = loop {
+            match client.post(&url).json(&request_body).send().await {
+                Ok(r) => {
+                    if r.status().is_success() {
+                        break r;
+                    } else if r.status().as_u16() == 429 || r.status().as_u16() == 503 {
+                        if retries >= max_retries {
+                            return Err(ServerFnError::new("The server is currently experiencing heavy load. Please try again later."));
+                        }
+                        tracing::warn!("API limit/unavailable (status {}). Retrying in {}ms...", r.status(), backoff_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                        retries += 1;
+                        backoff_ms *= 2;
+                    } else {
+                        let status = r.status();
+                        let error_text = r.text().await.unwrap_or_default();
+                        return Err(ServerFnError::new(format!("API Connection Error ({}): {}", status, error_text)));
+                    }
+                }
+                Err(e) => {
+                    if e.is_timeout() {
+                        if retries >= max_retries {
+                            return Err(ServerFnError::new("Connection timeout. The server is currently experiencing heavy load. Please try again later."));
+                        }
+                        tracing::warn!("API timeout. Retrying in {}ms...", backoff_ms);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
+                        retries += 1;
+                        backoff_ms *= 2;
+                    } else {
+                        return Err(ServerFnError::new(format!("Network error: {}", e)));
+                    }
+                }
+            }
+        };
 
         let gemini_response: GeminiResponse = response
             .json()
@@ -159,8 +194,8 @@ fn build_script_prompt(section: ListeningSection, topic: &str, speakers: &[Speak
         };
         
         speaker_descriptions.push_str(&format!(
-            "- {}: {} {}, {} accent, Role: {}\n",
-            speaker.name, gender_str, accent_str, accent_str, role_str
+            "- {}: {}, {} accent, Role: {}\n",
+            speaker.name, gender_str, accent_str, role_str
         ));
     }
 
@@ -182,11 +217,11 @@ REQUIREMENTS:
 5. Include appropriate hesitations, filler words, and natural speech patterns where suitable
 6. Ensure content difficulty and vocabulary are appropriate for IELTS Listening
 7. The script should contain information that could later be used to create test questions (numbers, names, dates, specific details, opinions, main ideas)
-8. Format: Use "Speaker Name: [their complete dialogue]" for each speaking turn
+8. CRITICAL FORMAT RULE: Each speaking turn MUST begin with the EXACT speaker label from the SPEAKERS list above (e.g. "Speaker A:", "Speaker B:"). Do NOT substitute role names, character names, or any other labels. Use ONLY "Speaker A:", "Speaker B:", etc.
 9. Do NOT include any instructions, notes, or commentary - ONLY the spoken script
 
 OUTPUT FORMAT:
-Provide ONLY the listening script with speaker names and their complete dialogue. Do not include any other text, explanations, or meta-commentary.
+Provide ONLY the listening script using the exact speaker labels (Speaker A, Speaker B, etc.) followed by their dialogue. Do not include any other text, explanations, or meta-commentary.
 
 Generate the complete listening script now:"#,
         section_description,

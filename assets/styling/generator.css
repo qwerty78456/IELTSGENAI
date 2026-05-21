@@ -265,27 +265,6 @@ body {
 }
 
 /* Results Panel */
-.success-message {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    padding: 1rem;
-    background: #d4edda;
-    border: 1px solid #c3e6cb;
-    border-radius: 4px;
-    color: #155724;
-}
-
-.success-icon {
-    font-size: 1.5rem;
-}
-
-.empty-state {
-    text-align: center;
-    padding: 2rem;
-    color: #6c757d;
-}
-
 /* Generate Button */
 .generate-button-container {
     text-align: center;

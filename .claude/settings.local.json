@@ -6,7 +6,9 @@
       "Bash(cargo check:*)",
       "Bash(wasm-objdump:*)",
       "Bash(wasm2wat:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "Bash(Get-ChildItem -Path \"e:\\\\vmq_mvp 01-01-2026\" -Force)",
+      "Bash(Select-Object Name, FullName)"
     ]
   }
 }

@@ -27,13 +27,36 @@ const FAVICON: Asset = asset!("/assets/favicon.ico");
 const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 
 fn main() {
-    // Initialize rate limiters to prevent API abuse
+    // Server-side initialization
     #[cfg(feature = "server")]
-    services::rate_limiter::init_rate_limiters();
+    {
+        // Bind to all interfaces on port 80 (override with IP/PORT env vars if set)
+        // SAFETY: Called in main() before any threads are spawned, so no data race.
+        unsafe {
+            if std::env::var("IP").is_err() {
+                std::env::set_var("IP", "0.0.0.0");
+            }
+            if std::env::var("PORT").is_err() {
+                std::env::set_var("PORT", "80");
+            }
+        }
 
-    // The `launch` function is the main entry point for a dioxus app. It takes a component and renders it with the platform feature
-    // you have enabled
+        // Initialize rate limiters
+        services::rate_limiter::init_rate_limiters();
+
+        // Ensure audio storage directory exists
+        if let Err(e) = services::audio_job_manager::ensure_audio_dir() {
+            eprintln!("WARNING: {}", e);
+            eprintln!("Audio generation may fail. Please create the directory manually.");
+        }
+    }
+
+    // Launch the Dioxus app
     dioxus::launch(App);
+
+    // Start background cleanup task (must be after launch initializes the Tokio runtime)
+    // Note: In Dioxus fullstack, the server-side runtime is set up by launch().
+    // The cleanup task is started within the audio_job_manager module's lazy init instead.
 }
 
 /// App is the main component of our app. Components are the building blocks of dioxus apps. Each component is a function

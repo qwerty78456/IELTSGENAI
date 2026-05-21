@@ -18,6 +18,7 @@ pub enum ListeningSection {
 
 impl ListeningSection {
     /// Returns the required number of speakers for this section
+    #[allow(dead_code)]
     pub fn required_speaker_count(&self) -> usize {
         match self {
             ListeningSection::Section1 => 2,
@@ -28,6 +29,7 @@ impl ListeningSection {
     }
 
     /// Returns a description of this section
+    #[allow(dead_code)]
     pub fn description(&self) -> &'static str {
         match self {
             ListeningSection::Section1 => "Transactional Conversation (2 speakers, everyday context)",
@@ -80,6 +82,7 @@ pub struct SpeakerConfig {
 }
 
 /// A single line of dialogue or monologue
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScriptLine {
     /// Reference to a SpeakerConfig name
@@ -95,6 +98,7 @@ pub struct ScriptLine {
 }
 
 /// The generated text content before audio synthesis
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListeningScript {
     /// Which section this script represents
@@ -107,6 +111,7 @@ pub struct ListeningScript {
     pub estimated_duration: Duration,
 }
 
+#[allow(dead_code)]
 impl ListeningScript {
     /// Validates that the script conforms to section rules
     pub fn validate(&self, speakers: &[SpeakerConfig]) -> Result<(), String> {
@@ -144,6 +149,7 @@ impl ListeningScript {
 }
 
 /// The final audio output
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AudioTrack {
     /// Audio format (e.g., "mp3", "wav")

@@ -37,7 +37,7 @@ Tải `NSSM` (Non-Sucking Service Manager) về, trỏ thẳng vào cái file `.
 Giờ thì app của bạn đã chính thức hóa kiếp thành một Windows Service chạy ngầm. Dù máy bị dở chứng tự restart thì nó vẫn sẽ tự động sống lại.
 
 ### 4. Thư Mục Dữ Liệu
-App sẽ tự động tạo và sử dụng ổ `E:` để làm nhà của nó (không được xóa nha):
+App sẽ tự động tạo và sử dụng ổ `E:` để làm nhà của nó (không được xóa nha) (chúa tể works on my machine):
 - `E:\vmq_data\audio_jobs.db` -> File CSDL SQLite.
 - `E:\vmq_data\audio\` -> Thư mục chứa các file bài nghe `.wav` siêu to khổng lồ.
 - `E:\vmq_data\voices.json` -> Nơi bạn vào để chỉnh chọt cấu hình giọng đọc của Gemini.
@@ -46,4 +46,4 @@ App sẽ tự động tạo và sử dụng ổ `E:` để làm nhà của nó (
 ---
 
 **LỜI KẾT**: 
-Code đã viết, nghiệp đã độ. Nếu bạn cần bảo trì hay sửa đổi con app này trong tương lai, hãy pha một cốc cà phê đen thật đặc, bật nhạc Doom Slayer lên và chuẩn bị sẵn tinh thần. Chúc bình an vô sự bước qua ải Borrow Checker!
+Code đã viết, nghiệp đã độ. Nếu bạn cần bảo trì hay sửa đổi con app này trong tương lai, hãy pha một cốc cà phê đen thật đặc, bật skibidi toilet lên và chuẩn bị sẵn tinh thần. Chúc bình an vô sự bước qua ải Borrow Checker!

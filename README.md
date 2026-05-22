@@ -1,88 +1,49 @@
-# VMQ MVP - IELTS Listening Audio Generator
+# VMQ MVP: Ứng Dụng Sinh Bài Nghe IELTS (Bản Độ "Chống Cháy")
 
-VMQ MVP is a full-stack web application built with **Rust** and **Dioxus**. It leverages the **Google Gemini TTS API** to generate high-quality, multi-speaker IELTS listening audio scripts. 
+Chào mừng đến với VMQ MVP - một con app Dioxus Fullstack (Rust) chuyên dùng để tự động sinh đề thi IELTS Listening bằng sức mạnh của Google Gemini API. 
 
-The application is designed to be highly concurrent, managing long-running audio generation tasks in the background using `sqlx` and `tokio`, ensuring a smooth user experience without request timeouts.
+Nếu bạn đang đọc cái này, tức là bạn chuẩn bị đối mặt với Borrow Checker hoặc đang thắc mắc tại sao con máy cỏ Win 10 của mình lại gánh được cái hệ thống này mà không bốc khói.
 
-## ✨ Features
+## Tính Năng "Ra Hồn" (Sau khi đã độ lại)
 
-- **Multi-Speaker TTS**: Supports generating audio with multiple distinct voices, accents (British, American, Australian, etc.), and roles (Student, Professor, Guide, etc.) mimicking real IELTS listening tests.
-- **Asynchronous Background Processing**: Uses an Async SQLite-backed job queue to process heavy TTS requests in the background, preventing timeouts and UI blocking.
-- **Dioxus Fullstack**: A unified codebase for both the frontend (WebAssembly/HTML) and backend server logic in pure Rust.
-- **Docker Ready**: Fully containerized with a multi-stage Dockerfile for easy deployment to any Linux server (e.g., Ubuntu).
-- **Automated Cleanup**: Built-in background tasks automatically clean up temporary audio files and database records older than 24 hours.
+Hồi xưa con app này lưu file vào RAM, mỗi lần văng là đi tong. Bây giờ thì nó đã thành một MVP thực thụ, đủ sức sống sót qua đêm:
 
-## 🚀 Quick Start (Docker - Recommended)
+- **Lưu trữ bằng SQLite (`rusqlite`)**: Mọi metadata, trạng thái, Job ID của bài nghe đều được nhét gọn vào `E:\vmq_data\audio_jobs.db`. Rút điện máy tính cắm lại vẫn không mất data!
+- **Chống Dội Bom API (Exponential Backoff)**: Chấp Gemini dở chứng báo lỗi 429 hay 503, hệ thống sẽ tự động chờ và thử lại (retries) đàng hoàng thay vì crash tung tóe như trước.
+- **Thay Giọng Đọc Nóng (Hot-swap)**: Không còn hardcode mấy giọng "Puck", "Zephyr" trong code nữa. Bạn có thể mở file `E:\vmq_data\voices.json`, đổi tên giọng, lưu lại và hệ thống sẽ ăn ngay lập tức mà không cần khởi động lại app.
+- **Xóa Rác Tự Động**: Tích hợp luồng chạy ngầm (background task) để tự động dọn các file audio (`.wav`) cũ hơn 24h. Cứu rỗi cái ổ cứng bé tí của máy Win 10 cỏ.
+- **Log Điều Tra Án Mạng**: App tự động lưu Rolling Logs theo ngày tại `E:\vmq_data\logs\vmq-mvp.log.*`. App có chết cứng giữa đêm thì sáng ra mở log lên vẫn biết đứa nào ám hại mình.
+- **Frontend Xịn Xò**: 19 cái `use_signal` lộn xộn đã bị tiễn vong. State giờ được quản lý tập trung và Component hóa gọn gàng để tránh render lại cả một cục to đùng khi chỉ cần bấm Play/Pause nhạc.
 
-The easiest way to run the application is using Docker and Docker Compose.
+## Hướng Dẫn Cài Đặt (Dành cho máy Windows 10 Cỏ)
 
-1. **Clone the repository**:
-   ```bash
-   git clone <your-repo-url>
-   cd vmq_mvp
-   ```
+Dưới đây là cẩm nang để vứt con app này lên máy cá nhân (Port 80) chạy 24/7.
 
-2. **Configure Environment Variables**:
-   Copy the example environment file and add your Gemini API key:
-   ```bash
-   cp .env.example .env
-   # Edit .env and set your GEMINI_API_KEY
-   ```
+### 1. Build Tối Ưu (Release Mode)
+Đừng có chạy `cargo run` nữa, build bản release để tối ưu hiệu năng:
+```powershell
+cargo build --release --features server
+```
 
-3. **Start the application**:
-   ```bash
-   docker compose up -d
-   ```
-   The application will be available at `http://localhost:8080` (or whichever port you specified).
+### 2. Mở Cửa Sổ Tường Lửa (Firewall)
+Chạy file script `setup.bat` (Run as Administrator) để đục lỗ Port 80 và 443, cho phép thế giới bên ngoài truy cập vào máy bạn.
 
-## 🛠️ Local Development
+### 3. Treo App Xuyên Đêm (Daemonize)
+Tải `NSSM` (Non-Sucking Service Manager) về, trỏ thẳng vào cái file `.exe` vừa build xong (thường nằm ở `target/dx/vmq_mvp/release/web/server.exe` nếu build bằng dx, hoặc `target/release/vmq_mvp.exe`):
+```powershell
+.\nssm.exe install "VMQ-MVP" "E:\vmq_mvp 01-01-2026\target\dx\vmq_mvp\release\web\server.exe"
+.\nssm.exe start "VMQ-MVP"
+```
+Giờ thì app của bạn đã chính thức hóa kiếp thành một Windows Service chạy ngầm. Dù máy bị dở chứng tự restart thì nó vẫn sẽ tự động sống lại.
 
-### Prerequisites
+### 4. Thư Mục Dữ Liệu
+App sẽ tự động tạo và sử dụng ổ `E:` để làm nhà của nó (không được xóa nha) (chúa tể works on my machine):
+- `E:\vmq_data\audio_jobs.db` -> File CSDL SQLite.
+- `E:\vmq_data\audio\` -> Thư mục chứa các file bài nghe `.wav` siêu to khổng lồ.
+- `E:\vmq_data\voices.json` -> Nơi bạn vào để chỉnh chọt cấu hình giọng đọc của Gemini.
+- `E:\vmq_data\logs\` -> Nghĩa trang chứa log file.
 
-- **Rust**: Ensure you have the latest stable Rust toolchain installed.
-- **Dioxus CLI**: Install the Dioxus CLI tool:
-  ```bash
-  cargo install dioxus-cli --version 0.6.1
-  ```
-- **System Dependencies**: You may need `pkg-config` and OpenSSL headers installed on your system (e.g., `libssl-dev` on Ubuntu).
+---
 
-### Running Locally
-
-1. Create a `.env` file in the root directory:
-   ```env
-   GEMINI_API_KEY=your_gemini_api_key_here
-   PORT=8080
-   DATA_DIR=./data
-   ```
-
-2. Run the application using the Dioxus CLI:
-   ```bash
-   dx serve
-   ```
-   *Note: Using `dx serve` will run both the frontend and backend server concurrently with hot-reloading enabled.*
-
-## 📁 Project Structure
-
-- `src/views/` - Frontend components, pages, and UI layouts.
-- `src/components/` - Reusable UI components.
-- `src/services/` - Backend logic, including API integrations, database management (`sqlx`), and job queuing.
-- `src/domain/` - Shared domain logic and types (models) used by both frontend and backend.
-- `data/` - (Auto-generated) Local storage for the SQLite database, generated WAV files, and logs.
-- `voices.json` - Configuration file for mapping specific accents and genders to Gemini TTS voices.
-
-## ⚙️ Configuration Variables
-
-| Variable | Description | Default |
-| :--- | :--- | :--- |
-| `GEMINI_API_KEY` | **(Required)** Your Google Gemini API Key | *None* |
-| `PORT` | The port the application server will listen on | `8080` |
-| `IP` | The interface IP to bind to (use `0.0.0.0` for Docker) | `127.0.0.1` |
-| `DATA_DIR` | Directory to store SQLite DB, audio files, and logs | `./data` |
-
-## 🤝 Contributing
-
-Contributions, issues, and feature requests are welcome. Feel free to check the issues page if you want to contribute.
-
-## 📝 License
-
-This project is licensed under the MIT License.
+**LỜI KẾT**: 
+Code đã viết, nghiệp đã độ. Nếu bạn cần bảo trì hay sửa đổi con app này trong tương lai, hãy pha một cốc cà phê đen thật đặc, bật skibidi toilet lên và chuẩn bị sẵn tinh thần. Chúc bình an vô sự bước qua ải Borrow Checker!

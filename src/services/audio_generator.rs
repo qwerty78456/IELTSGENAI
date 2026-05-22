@@ -287,7 +287,7 @@ impl Default for VoiceMappings {
 
 #[cfg(feature = "server")]
 fn load_voice_mappings() -> VoiceMappings {
-    let path = std::path::Path::new(r"E:\vmq_data\voices.json");
+    let path = std::path::Path::new("voices.json");
     if let Ok(contents) = std::fs::read_to_string(path) {
         if let Ok(mappings) = serde_json::from_str::<VoiceMappings>(&contents) {
             return mappings;

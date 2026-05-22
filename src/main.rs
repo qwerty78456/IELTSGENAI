@@ -32,7 +32,9 @@ fn main() {
     {
         use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
         
-        let log_dir = std::path::Path::new(r"E:\vmq_data\logs");
+        let data_dir = std::env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string());
+        let log_dir_path = format!("{}/logs", data_dir);
+        let log_dir = std::path::Path::new(&log_dir_path);
         if let Err(e) = std::fs::create_dir_all(log_dir) {
             eprintln!("Failed to create log directory: {}", e);
         } else {
@@ -47,16 +49,7 @@ fn main() {
                 .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
                 .init();
         }
-        // Bind to all interfaces on port 80 (override with IP/PORT env vars if set)
-        // SAFETY: Called in main() before any threads are spawned, so no data race.
-        unsafe {
-            if std::env::var("IP").is_err() {
-                std::env::set_var("IP", "0.0.0.0");
-            }
-            if std::env::var("PORT").is_err() {
-                std::env::set_var("PORT", "80");
-            }
-        }
+        // Removed unsafe set_var. IP and PORT should be set via environment variables.
 
         // Initialize rate limiters
         services::rate_limiter::init_rate_limiters();

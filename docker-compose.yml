@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  vmq_mvp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: vmq_mvp:latest
+    container_name: vmq_mvp_app
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - IP=0.0.0.0
+      - DATA_DIR=/app/data
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+    volumes:
+      - vmq_data:/app/data
+      # Mount voices.json directly if you want to edit it easily from host
+      # - ./voices.json:/app/voices.json
+
+volumes:
+  vmq_data:
+    name: vmq_mvp_data

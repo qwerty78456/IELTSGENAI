@@ -8,43 +8,64 @@ The application is designed to be highly concurrent, managing long-running audio
 - **Docker Ready**: Fully containerized with a multi-stage Dockerfile for easy deployment to any Linux server (e.g., Ubuntu).
 - **Automated Cleanup**: Built-in background tasks automatically clean up temporary audio files and database records older than 24 hours.
 ## 🚀 Quick Start (Docker - Recommended)
-The easiest way to run the application is using Docker and Docker Compose.
+Docker is the easiest way to run this app.
+
 1. **Clone the repository**:
    ```bash
    git clone <your-repo-url>
    cd vmq_mvp
    ```
-2. **Configure Environment Variables**:
-   Copy the example environment file and add your Gemini API key:
-   ```bash
-   cp .env.example .env
-   # Edit .env and set your GEMINI_API_KEY
-   ```
+
+2. **Set up your environment variables**:
+   - **Ubuntu/Debian:**
+     ```bash
+     cp .env.example .env
+     ```
+   - **Windows (PowerShell):**
+     ```powershell
+     copy .env.example .env
+     ```
+   Open `.env` in a text editor and set your `GEMINI_API_KEY`.
+
 3. **Start the application**:
    ```bash
    docker compose up -d
    ```
-   The application will be available at `http://localhost:8080` (or whichever port you specified).
+   The app will run at `http://localhost:8080`.
+
 ## 🛠️ Local Development
-### Prerequisites
-- **Rust**: Ensure you have the latest stable Rust toolchain installed.
-- **Dioxus CLI**: Install the Dioxus CLI tool:
-  ```bash
-  cargo install dioxus-cli --version 0.6.1
-  ```
-- **System Dependencies**: You may need `pkg-config` and OpenSSL headers installed on your system (e.g., `libssl-dev` on Ubuntu).
-### Running Locally
-1. Create a `.env` file in the root directory:
-   ```env
-   GEMINI_API_KEY=your_gemini_api_key_here
-   PORT=8080
-   DATA_DIR=./data
+
+### 1. Install Prerequisites
+
+**Ubuntu/Debian:**
+```bash
+sudo apt update
+sudo apt install pkg-config libssl-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install dioxus-cli --version 0.6.1
+```
+
+**Windows:**
+1. Install [Rust](https://rustup.rs/) (this will prompt you to install Visual Studio C++ Build Tools).
+2. Install `dioxus-cli` via PowerShell:
+   ```powershell
+   cargo install dioxus-cli --version 0.6.1
    ```
-2. Run the application using the Dioxus CLI:
-   ```bash
-   dx serve
-   ```
-   *Note: Using `dx serve` will run both the frontend and backend server concurrently with hot-reloading enabled.*
+*(Note: Native Windows compilation might require OpenSSL depending on features. Using WSL2 on Windows is highly recommended for a smoother experience.)*
+
+### 2. Configure Environment
+Create a `.env` file in the project root:
+```env
+GEMINI_API_KEY=your_gemini_api_key_here
+PORT=8080
+DATA_DIR=./data
+```
+
+### 3. Run the App
+```bash
+dx serve
+```
+This runs both frontend and backend concurrently with hot-reloading.
 ## 📁 Project Structure
 - `src/views/` - Frontend components, pages, and UI layouts.
 - `src/components/` - Reusable UI components.

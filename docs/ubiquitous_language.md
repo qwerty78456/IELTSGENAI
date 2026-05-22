@@ -24,15 +24,9 @@ These terms must be used consistently across all communication, documentation, a
 
 - **Definition:** The command object initiated by a teacher to start the content generation process.
 
-- **Context:** Contains the `GenerationConfig` and `SpeakerConfig`.
+- **Context:** Contains the selected `ListeningSection` and `Topic`. Speaker configurations are automatically derived based on the selected section.
 
-- **Invariant:** Must specify a target `ListeningSection`.
-
-### GenerationConfig
-
-- **Definition:** The set of parameters controlling the generation logic.
-
-- **Attributes:** Topic, Target Duration.
+- **Invariant:** Must specify a target `ListeningSection` and a valid `Topic`.
 
 ### Speaker
 

@@ -37,7 +37,7 @@ To provide IELTS teachers with an endless supply of high-quality, realistic list
 ### 3. Teacher Configuration
 
 - **Topic Selection:** Free-text input for the subject matter.
-- **Speaker Customization:** Selection of gender and role.
+- **Automatic Speaker Assignment:** Default speaker roles, genders, and accents are automatically assigned based on the selected section type.
 
 ## Out-of-Scope Features (Explicit)
 

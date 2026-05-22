@@ -12,7 +12,7 @@ Docker is the easiest way to run this app.
 
 1. **Clone the repository**:
    ```bash
-   git clone <your-repo-url>
+   git clone <https://github.com/qwerty78456/IELTSGENAI>
    cd vmq_mvp
    ```
 

@@ -3,7 +3,7 @@
 [web.app]
 
 # HTML title tag content
-title = "vmq_mvp"
+title = "IELTS AI Test Generator Test"
 
 # include `assets` in web platform
 [web.resource]

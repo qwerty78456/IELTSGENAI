@@ -3,7 +3,7 @@
 [web.app]
 
 # HTML title tag content
-title = "IELTS AI Test Generator Test"
+title = "Listening Exam Generator"
 
 # include `assets` in web platform
 [web.resource]

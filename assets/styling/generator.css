@@ -784,3 +784,19 @@ body {
         max-width: 100%;
     }
 }
+
+/* Validator findings */
+.issue-list {
+    list-style: none;
+    padding: 0;
+    margin: 0.75rem 0;
+}
+
+.issue-item {
+    background: #fff8e1;
+    border-left: 3px solid #f5b400;
+    padding: 0.4rem 0.6rem;
+    margin-bottom: 0.3rem;
+    font-size: 0.85rem;
+    color: #5a4a00;
+}

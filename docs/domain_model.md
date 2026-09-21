@@ -1,154 +1,113 @@
 # Domain Model
 
-This document defines the core data structures and types for the **Listening Content Generation** bounded context.
-It serves as the blueprint for the Rust implementation.
+Types of the **Listening Assessment Generation** context, as implemented in
+`src/domain/`. Every type is plain data with `serde` derives; rules live in
+`validation.rs` and in the `validate()` methods of the commands.
 
-## Core Types
+## Format (the blueprint)
 
-### ListeningSection
+### `FormatId`
+`IeltsListening` | `HsgNational`. `FormatId::format()` returns the preset.
 
-- **Type:** Enum
+### `ExamFormat`
+- `id`, `name`
+- `total_points` (IELTS 40, HSG 5.0), `listening_minutes`, `check_minutes`
+- `parts: Vec<PartSpec>`
+- `check_consistency()`: numbering contiguous from 1, every part has tasks
+  and the right number of default voices.
 
-- **Variants:**
+### `PartSpec`
+- `number`, `title`
+- `passage: PassageKind` — `Conversation { speakers }`, `Interview { guests }`,
+  `Monologue`, `Excerpt`
+- `brief` — genre guidance used in prompts
+- `playback: PlayCount` — `Once` | `Twice`
+- `min_minutes`, `max_minutes`
+- `default_speakers: Vec<SpeakerConfig>`
+- `tasks: Vec<TaskSpec>`
 
-  - `Section1`: Transactional Conversation (2 speakers)
-  - `Section2`: Guided Monologue (1 speaker)
-  - `Section3`: Academic Discussion (2 speakers)
-  - `Section4`: Academic Lecture (1 speaker)
+### `TaskSpec`
+`kind: TaskKind`, `first`, `last` (inclusive item numbers).
 
-### SpeakerRole
+### `TaskKind`
+`TrueFalseNotGiven`, `WhoMentioned { guests }`, `MultipleSelect { choose, options }`,
+`MultipleChoice { options }`, `ShortAnswer(WordLimit)`, `SummaryCompletion(WordLimit)`,
+`NoteCompletion(WordLimit)`, `SentenceCompletion(WordLimit)`, `Matching { options }`.
 
-- **Type:** Enum
+### `WordLimit`
+`max_words`, `allow_number`; renders as "NO MORE THAN TWO WORDS AND/OR A NUMBER".
 
-- **Variants:**
+## Voices
 
-  - `Student`
-  - `Professor`
-  - `Clerk`
-  - `Receptionist`
-  - `Guide`
-  - `Other(String)`
+### `SpeakerConfig`
+- `label` — "Speaker A"; the only thing that appears as a turn marker
+- `gender: Gender` — Male | Female
+- `accent: Accent` — British | American | Australian | Canadian | NewZealand
+- `role: SpeakerRole` — Student, Professor, Clerk, Receptionist, Guide, Host,
+  Expert, Guest, Reporter, Narrator, Other(String)
 
-### Accent
+## Content
 
-- **Type:** Enum
+### `Passage`
+`part`, `topic`, `lines: Vec<Line { speaker, text }>`.
+`Passage::parse` reads "Speaker A: ..." text; `script_text()` is the canonical
+form sent to TTS; `plain_text()` is used for grounding; `estimated_minutes()`
+assumes 150 words per minute.
 
-- **Variants:**
+### `Task`
+`spec`, `instruction`, `shared_options: Vec<Choice>`, `summary: Option<String>`
+(paragraph or notes with `(n)______` gaps), `items: Vec<Item>`.
 
-  - `British`
-  - `American`
-  - `Australian`
-  - `Canadian`
-  - `NewZealand`
+### `Item`
+`number`, `stem`, `options: Vec<Choice>` (multiple choice only), `answer: Answer`,
+`evidence` (verbatim quote from the passage).
 
-### Gender
+### `Answer`
+Tagged JSON `{ "kind": ..., "value": ... }`:
+- `letters` → `["B"]` or `["B", "D"]`
+- `text` → accepted spellings, first is canonical
+- `tfng` → `"T"`, `"F"`, `"NG"`
 
-- **Type:** Enum
+## Aggregate
 
-- **Variants:**
+### `Exam`
+`id: Uuid`, `format`, `title`, `theme`, `parts: Vec<ExamPart>`.
+`answer_key()` flattens every item in number order; `is_complete()` when every
+part has a passage and every `TaskSpec` has a `Task`.
 
-  - `Male`
-  - `Female`
+### `ExamPart`
+`spec`, `speakers`, `passage: Option<Passage>`, `tasks: Vec<Task>`,
+`audio: Option<AudioTrack>`.
 
-## Value Objects
+## Audio
 
-### SpeakerConfig
+### `AudioTrack`
+`container`, `sample_rate`, `duration_ms`, `location` (job id or path). Never bytes.
 
-- **Description:** Configuration for a single speaker voice.
+### `AudioProgram` / `AudioSegment`
+`AudioProgram::for_format(&ExamFormat)` yields the ordered segments:
+`Music`, `Tone`, `Silence { ms }`, `Announcement(String)`, `Passage { part }`,
+with a replay for `Twice` parts and the checking time at the end.
 
-- **Fields:**
+## Commands
 
-  - `name`: String (Internal identifier, e.g., "Speaker A")
-  - `gender`: Gender
-  - `accent`: Accent
-  - `role`: SpeakerRole
+| Command            | Validates                                              |
+|--------------------|--------------------------------------------------------|
+| `PassageRequest`   | topic length/content, part exists, speaker count/labels |
+| `TaskRequest`      | part and task index exist, passage not empty            |
+| `AudioRequest`     | passage not empty, every used label has a voice         |
+| `ExamAudioRequest` | one valid `AudioRequest` per part of the format         |
 
-### ScriptLine
+## Validation
 
-- **Description:** A single line of dialogue or monologue.
+`validate_speakers`, `validate_passage`, `validate_task` return
+`Vec<ValidationIssue { severity, item, message }>`. `Severity::Error` means
+the key is unusable; `Warning` means look at it. The grounding rule: text
+keys and evidence must occur in the normalised passage text.
 
-- **Fields:**
+## Failures
 
-  - `speaker_id`: String (Reference to a SpeakerConfig name)
-  - `text`: String (The spoken content)
-  - `start_time`: Duration (Optional, for alignment)
-  - `end_time`: Duration (Optional, for alignment)
-
-## Aggregates / Entities
-
-### ListeningScript
-
-- **Description:** The generated text content before audio synthesis.
-
-- **Fields:**
-
-  - `section`: ListeningSection
-  - `topic`: String
-  - `lines`: List of ScriptLine
-  - `estimated_duration`: Duration
-
-- **Invariants:**
-
-  - Must have at least one line.
-  - Speakers referenced in `lines` must exist in the request configuration.
-  - Speaker count must match `section` rules.
-
-### AudioTrack
-
-- **Description:** The final audio output.
-
-- **Fields:**
-
-  - `format`: String (e.g., "mp3", "wav")
-  - `duration`: Duration
-  - `url`: String (Path or URL to the file)
-  - `metadata`: Map from String to String
-
-## Commands (DTOs)
-
-### GenerationRequest
-
-- **Description:** The input payload to trigger generation.
-
-- **Fields:**
-
-  - `section`: ListeningSection
-  - `topic`: String
-
-- **Validation:**
-
-  - `topic` must not be empty.
-
-- **Note:** Speaker configurations are automatically generated based on the selected `section` type.
-
-## Results
-
-### GenerationResult
-
-- **Description:** The success response.
-
-- **Fields:**
-
-  - `request_id`: UUID
-  - `script`: ListeningScript
-  - `audio`: AudioTrack
-
-### GenerationFailure
-
-- **Description:** The error response.
-
-- **Fields:**
-
-  - `reason`: FailureReason (Enum)
-  - `message`: String (User-friendly message)
-
-### FailureReason
-
-- **Type:** Enum
-
-- **Variants:**
-
-  - `InvalidConfiguration`: The request parameters violate section rules.
-  - `ScriptGenerationError`: The LLM failed to produce a valid script.
-  - `AudioSynthesisError`: The TTS service failed.
-  - `SystemError`: Unexpected internal error.
+`DomainError::{InvalidRequest, InvalidPassage, InvalidTask}(String)` —
+teacher-readable, no HTTP codes, no stack traces. Infrastructure errors
+(`LlmError`, `TtsError`, `AudioError`) are converted to messages at the
+application boundary.

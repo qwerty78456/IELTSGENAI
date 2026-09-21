@@ -1,49 +1,38 @@
 # --- BUILD STAGE ---
-FROM rust:1.80-slim-bookworm AS builder
+# Edition 2024 needs Rust >= 1.85; the crate is developed on 1.92.
+FROM rust:1.92-slim-bookworm AS builder
 
-# Install required dependencies for building (like pkg-config, libssl-dev for sqlx/reqwest)
-RUN apt-get update && apt-get install -y pkg-config libssl-dev build-essential
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config libssl-dev build-essential ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
 
-# We need dioxus-cli to build the fullstack app
-# We can download a pre-built binary to save time, or install via cargo
-RUN cargo install dioxus-cli --version 0.6.1 || cargo install dioxus-cli
+# The browser bundle is wasm; dx needs the target and wasm-bindgen (dx fetches the latter).
+RUN rustup target add wasm32-unknown-unknown
+# Same minor as Cargo.toml's dioxus (0.7.x).
+RUN cargo install dioxus-cli --version 0.7.9 --locked
 
 WORKDIR /app
-
-# Copy the source code
 COPY . .
 
-# Build the Dioxus fullstack app for release
-# This will output to target/dx/vmq_mvp/release/web (client) and target/dx/vmq_mvp/release/server (server binary)
-# Note: Since the app uses Dioxus 0.7.2, we should just use standard dx build
+# Fullstack release build: server binary + public/ folder under target/dx/<crate>/release/web/
 RUN dx build --release
 
 # --- RUNTIME STAGE ---
 FROM debian:bookworm-slim
 
-WORKDIR /app
-
-# Install runtime dependencies (OpenSSL and CA certificates for HTTPS requests to Gemini)
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    libssl3 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the built server binary and web assets from the builder stage
-# Dioxus CLI typically places the release artifacts in target/dx/vmq_mvp/release/
-COPY --from=builder /app/target/dx/vmq_mvp/release/server ./server
-COPY --from=builder /app/target/dx/vmq_mvp/release/web ./public
+WORKDIR /app
 
-# Provide sensible defaults
-ENV PORT=8080
+# dx 0.7 layout: target/dx/vmq_mvp/release/web/{server, public/}
+COPY --from=builder /app/target/dx/vmq_mvp/release/web/ ./
+
 ENV IP=0.0.0.0
+ENV PORT=8080
 ENV DATA_DIR=/app/data
-
-# Expose port
-EXPOSE 8080
-
-# Make sure the data directory exists
 RUN mkdir -p /app/data
 
-# Run the server binary
+EXPOSE 8080
 CMD ["./server"]

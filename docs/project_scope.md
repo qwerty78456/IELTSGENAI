@@ -1,69 +1,40 @@
-# Project Scope & Boundaries
+# Project Scope
 
-This document explicitly defines the boundaries of the **VMQ MVP** project.
-It serves as a contract to prevent scope creep and ensure focus on the core value proposition.
+## Purpose
 
-## Project Vision
+Give a teacher who prepares students for listening exams a tool that
+produces, from a topic, a complete draft of one exam part in a chosen
+format: script, questions, key, transcript and audio. The teacher reviews
+and edits; the tool never claims to produce an official exam.
 
-To provide IELTS teachers with an endless supply of high-quality, realistic listening practice materials, customized to specific topics, eliminating the need to search for or manually record content.
+## In scope
 
-## Bounded Context
+- Formats as data: IELTS Listening and HSG Quốc gia (Listening) ship;
+  teacher-defined formats are the same type.
+- Script generation shaped by the part (conversation, interview, monologue,
+  excerpt) and by the tasks that will follow.
+- Question generation per task kind with a validator that grounds every key
+  in the script and enforces word limits, option letters and numbering.
+- Paper, key and transcript export (Markdown now, DOCX on the roadmap).
+- Audio: per-part recordings and the full exam recording with announcements,
+  tones, pauses and replays, as background jobs.
+- Deployment as one container behind a reverse proxy.
 
-- **Name:** Listening Content Generation
+## Out of scope
 
-- **Responsibility:**
-  - Taking a configuration (Topic, Section, Speakers).
-  - Generating a valid IELTS-style script.
-  - Synthesizing realistic audio.
+- Grading, scoring, candidate accounts, analytics.
+- Reading, writing, speaking.
+- Any claim of equivalence with an official paper.
+- Real-time collaboration.
 
-- **Everything else is external to this context.**
+## Non-goals for the next milestone
 
-## In-Scope Features (MVP)
+- Multi-tenant SaaS features (billing, organisations).
+- Fine-tuned models; prompts plus validation are the quality lever.
 
-### 1. Script Generation
+## Quality bar
 
-- **Section 1:** Transactional dialogues (e.g., booking a hotel).
-- **Section 2:** Guided monologues (e.g., tour guide speech).
-- **Section 3:** Academic discussions (e.g., student & tutor).
-- **Section 4:** Academic lectures (e.g., university professor).
-- **Constraint:** Scripts must adhere to the strict structural rules of each section.
-
-### 2. Audio Synthesis
-
-- **Multi-Speaker Support:** Ability to distinctively render different voices in the same track.
-- **Accent Variety:** Support for British, American, and Australian accents.
-- **Pacing Control:** Speech rate appropriate for the target section (e.g., slower for Section 1, faster for Section 4).
-
-### 3. Teacher Configuration
-
-- **Topic Selection:** Free-text input for the subject matter.
-- **Automatic Speaker Assignment:** Default speaker roles, genders, and accents are automatically assigned based on the selected section type.
-
-## Out-of-Scope Features (Explicit)
-
-### 1. Assessment & Grading
-
-- **Excluded:** The system will **NOT** grade student answers.
-- **Excluded:** The system will **NOT** provide feedback on student performance.
-- **Reason:** This is a content generation tool, not a testing platform.
-
-### 2. Question Generation
-
-- **Excluded:** The system will **NOT** generate multiple-choice, fill-in-the-blank, or matching questions.
-- **Reason:** Generating high-quality, unambiguous IELTS questions is a separate, complex domain. The MVP focuses solely on the *listening passage*.
-
-### 3. Exam Simulation
-
-- **Excluded:** The system will **NOT** simulate a full timed exam environment for students.
-- **Reason:** The target user is the **Teacher**, not the Student.
-
-### 4. User Management
-
-- **Excluded:** Complex role-based access control, payment processing, or social login.
-- **Reason:** MVP will run locally or as a simple hosted tool.
-
-## MVP Success Criteria
-
-- A teacher can generate a valid Section 3 audio track about "Climate Change" in under 10 minutes.
-- The generated audio sounds natural enough to be used in a classroom setting.
-- The script follows the structural conventions of IELTS (e.g., turn-taking, vocabulary).
+- Every generated key passes the validator or is flagged with an issue the
+  teacher can see.
+- The domain layer is unit-tested and compiles for wasm and the server.
+- No secret in URLs or logs; the Gemini key travels in a header.

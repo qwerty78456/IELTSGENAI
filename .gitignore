@@ -8,3 +8,6 @@
 
 # Custom ignore rules can be added below this line
 .secrets/
+# Runtime data and secrets
+/data/
+.env

@@ -1,75 +1,87 @@
-# VMQ MVP - IELTS Listening Audio Generator
-VMQ MVP is a full-stack web application built with **Rust** and **Dioxus**. It leverages the **Google Gemini TTS API** to generate high-quality, multi-speaker IELTS listening audio scripts. 
-The application is designed to be highly concurrent, managing long-running audio generation tasks in the background using `sqlx` and `tokio`, ensuring a smooth user experience without request timeouts.
-## ✨ Features
-- **Multi-Speaker TTS**: Supports generating audio with multiple distinct voices, accents (British, American, Australian, etc.), and roles (Student, Professor, Guide, etc.) mimicking real IELTS listening tests.
-- **Asynchronous Background Processing**: Uses an Async SQLite-backed job queue to process heavy TTS requests in the background, preventing timeouts and UI blocking.
-- **Dioxus Fullstack**: A unified codebase for both the frontend (WebAssembly/HTML) and backend server logic in pure Rust.
-- **Docker Ready**: Fully containerized with a multi-stage Dockerfile for easy deployment to any Linux server (e.g., Ubuntu).
-- **Automated Cleanup**: Built-in background tasks automatically clean up temporary audio files and database records older than 24 hours.
-## 🚀 Quick Start (Docker - Recommended)
-Docker is the easiest way to run this app.
+# Listening Exam Generator
 
-1. **Clone the repository**:
-   ```bash
-   git clone <https://github.com/qwerty78456/IELTSGENAI>
-   cd vmq_mvp
-   ```
+One Rust binary (Dioxus 0.7 fullstack) that turns a topic into a complete
+draft of a **listening exam part**: script, questions, answer key,
+transcript and audio. The exam **format** is data; two ship:
 
-2. **Set up your environment variables**:
-   - **Ubuntu/Debian:**
-     ```bash
-     cp .env.example .env
-     ```
-   - **Windows (PowerShell):**
-     ```powershell
-     copy .env.example .env
-     ```
-   Open `.env` in a text editor and set your `GEMINI_API_KEY`.
+- **IELTS Listening** (4 parts, 40 items, everything played once)
+- **HSG Quốc gia – Listening** (4 parts, 35 items, parts 3–4 played twice,
+  transcribed from the official 2025–2026 paper)
 
-3. **Start the application**:
-   ```bash
-   docker compose up -d
-   ```
-   The app will run at `http://localhost:8080`.
+Generation uses Google Gemini for text and speech. Every generated key is
+checked against the script by a validator; problems are shown next to the
+draft. The teacher edits; nothing is final until they say so.
 
-## 🛠️ Local Development
+Read `docs/architecture.md` first. `docs/domain_model.md` and
+`docs/ubiquitous_language.md` define the types and words used everywhere.
 
-### 1. Install Prerequisites
+## Run locally
 
-**Ubuntu/Debian:**
+Prerequisites: Rust 1.85+ (edition 2024; developed on 1.92), the Dioxus CLI
+0.7.x (`cargo install dioxus-cli --version 0.7.9 --locked`), the
+`wasm32-unknown-unknown` target, and on Linux `pkg-config libssl-dev`.
+
 ```bash
-sudo apt update
-sudo apt install pkg-config libssl-dev
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-cargo install dioxus-cli --version 0.6.1
+cp .env.example .env      # set GEMINI_API_KEY
+dx serve                  # http://localhost:8080, hot reload
 ```
 
-**Windows:**
-1. Install [Rust](https://rustup.rs/) (this will prompt you to install Visual Studio C++ Build Tools).
-2. Install `dioxus-cli` via PowerShell:
-   ```powershell
-   cargo install dioxus-cli --version 0.6.1
-   ```
-*(Note: Native Windows compilation might require OpenSSL depending on features. Using WSL2 on Windows is highly recommended for a smoother experience.)*
+Checks that must stay green:
 
-### 2. Configure Environment
-Create a `.env` file in the project root:
-```env
-GEMINI_API_KEY=your_gemini_api_key_here
-PORT=8080
-DATA_DIR=./data
-```
-
-### 3. Run the App
 ```bash
-dx serve
+cargo check                                          # browser side (default feature: web)
+cargo check --features server --no-default-features  # server side
+cargo test  --features server --no-default-features  # unit tests (domain, export, audio, prompts)
 ```
-This runs both frontend and backend concurrently with hot-reloading.
-## 📁 Project Structure
-- `src/views/` - Frontend components, pages, and UI layouts.
-- `src/components/` - Reusable UI components.
-- `src/services/` - Backend logic, including API integrations, database management (`sqlx`), and job queuing.
-- `src/domain/` - Shared domain logic and types (models) used by both frontend and backend.
-- `data/` - (Auto-generated) Local storage for the SQLite database, generated WAV files, and logs.
-- `voices.json` - Configuration file for mapping specific accents and genders to Gemini TTS voices.
+
+## Run in Docker
+
+```bash
+cp .env.example .env      # set GEMINI_API_KEY
+docker compose up -d --build
+```
+
+The container listens on `127.0.0.1:8080`. Put a reverse proxy with TLS and
+**authentication** in front (Caddy with `basic_auth`, or Cloudflare Access):
+the app rate-limits but has no login, and every request spends API credit.
+Data (job database, WAVs, logs) lives in the `generator_data` volume;
+recordings older than 24 hours are purged.
+
+## Configuration
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `GEMINI_API_KEY` | — | required |
+| `GEMINI_TEXT_MODEL` | `gemini-flash-latest` | scripts, topics, questions; alias hot-swapped by Google to the newest Flash release (`gemini-3.8-flash` at the time of writing) |
+| `GEMINI_TTS_MODEL` | `gemini-2.5-pro-preview-tts` | speech; paid tier only, on Google's deprecation list (successor `gemini-3.1-flash-tts-preview`), no shutdown date |
+| `DATA_DIR` | `./data` | jobs.db, audio/, logs/ |
+| `VOICES_PATH` | `$DATA_DIR/voices.json` | gender + accent → voice name; written with defaults if missing |
+| `MUSIC_PATH` | unset | 24 kHz mono 16-bit WAV for the start/end of a full exam recording |
+| `IP`, `PORT` | `0.0.0.0`, `8080` | bind address |
+
+Model facts checked on ai.google.dev, 2026-09-21: the TTS model takes at most
+two voices and 8,192 input tokens per request (longer scripts and three-voice
+parts are read turn by turn), returns 24 kHz mono 16-bit PCM, and is not on
+the free tier. Audio output is billed at 25 tokens per second of audio. The
+`generateContent` endpoint the client uses is now labelled "Legacy" by
+Google beside the newer `interactions` API; it is still documented and
+served.
+
+## Layout
+
+```
+src/domain/          pure types and rules (formats, passage, tasks, exam, validation, audio programme)
+src/application/     #[server] use cases the UI calls
+src/infrastructure/  server only: Gemini client, prompts, TTS, WAV, SQLite jobs, config
+src/export/          Markdown paper / key / transcript
+src/ui/              Dioxus components and views
+docs/                architecture, domain model, ubiquitous language, scope
+```
+
+## Status
+
+The restructure into these layers is complete and all checks pass. The UI
+drives one part at a time; the server already supports rendering the full
+exam recording (`start_exam_audio`). See the roadmap at the end of
+`docs/architecture.md` for what comes next: exam-level UI, persistence,
+DOCX export, MP3, authentication.

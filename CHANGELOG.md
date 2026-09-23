@@ -3,70 +3,125 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
-## [0.5.0] – 2026-09-23 — Bản portable cho Windows và Linux
+## [0.5.0] – 2026-09-23 — 🚀 "Một file. Bấm đúp. Chạy."
 
-Ứng dụng chạy được như một file duy nhất: **EXE cho Windows 10/11 x64** và
-**AppImage cho Linux x86-64** (nền Ubuntu 22.04). Người dùng không cần Rust,
-Dioxus CLI hay Docker. Bấm chạy thì server cục bộ khởi động và trình duyệt mở
-`http://127.0.0.1:8080`. Cấu hình và dữ liệu nằm cạnh file gốc.
+Trước bản này, muốn dùng được app phải có Rust, Dioxus CLI hoặc Docker, tức là
+một lập trình viên ngồi cạnh. **Từ 0.5.0 thì không cần nữa.** Giáo viên chỉ
+cần **một file duy nhất**: `.exe` 7,4 MB cho Windows 10/11 hoặc `.AppImage`
+11,4 MB cho Linux. Bấm đúp: server khởi động, trình duyệt tự mở, ra đề. Không
+cài đặt, không cần quyền admin, không cài thêm phần mềm nào. Cấu hình và dữ
+liệu nằm ngay cạnh file chạy; chép cả thư mục sang máy khác là dùng tiếp.
 
-### Điểm nhấn
+### ✨ Điểm nhấn
 
-- **Lần chạy đầu tạo `.env` và `voices.json`** cạnh file EXE/AppImage (tạo
-  độc quyền, không bao giờ ghi đè), rồi dừng với hướng dẫn điền
-  `GEMINI_API_KEY`. File thiếu được tạo lại; file có sẵn được giữ nguyên.
-- **Lỗi khởi động rõ ràng, không panic.** Sai cú pháp dotenv, sai mã hoá,
-  thiếu key, model/IP/PORT/RUST_LOG không hợp lệ, `voices.json` hỏng hoặc có
-  tên giọng rỗng, file nhạc sai định dạng, thư mục data/log hoặc SQLite không
-  ghi được, cổng đã bị chiếm: đều báo lỗi kèm đường dẫn/biến liên quan và thoát
-  với mã khác 0. Thông báo lỗi không bao giờ chứa nội dung `.env` hay giá trị key.
-- **EXE Windows là launcher nhỏ viết bằng Rust** chứa nguyên server và
-  `public/` khớp phiên bản. Launcher giải nén vào thư mục tạm riêng, chạy server
-  với thư mục cấu hình gốc, trả lại mã thoát và dọn thư mục tạm, kể cả khi người
-  dùng đóng cửa sổ console bằng nút X. Khi chạy bằng double-click, lỗi khởi động
-  được giữ trên màn hình cho tới khi nhấn Enter.
-- **AppImage Type 2** chứa server, tài sản web, các thư viện không thuộc hệ
-  thống (libssl, libcrypto, libgcc_s), icon, desktop entry, CA fallback và giấy
-  phép. `AppRun` dùng `APPIMAGE` để tìm thư mục cấu hình cạnh file gốc.
+- **Hướng dẫn cài đặt gói gọn trong một câu.** Lần đầu bấm đúp, app tự tạo
+  `.env` và `voices.json` cạnh file chạy, rồi chỉ đích danh dòng cần sửa:
+  *"Edit .env, replace your_api_key_here with your key, then restart."* Điền
+  key, bấm lại là trình duyệt mở `http://127.0.0.1:8080`.
+- **Lỗi được báo rõ, không crash.** Dotenv sai cú pháp hay sai mã hoá, thiếu key,
+  model/IP/PORT/RUST_LOG vớ vẩn, `voices.json` hỏng hoặc có tên giọng rỗng,
+  file nhạc không phải WAV 24 kHz, thư mục data/log không ghi được, database
+  chỉ đọc, cổng 8080 đã có người chiếm: **mỗi lỗi một câu, chỉ đúng file hoặc
+  biến cần sửa, thoát với mã 1.** Không stack trace, không panic, và không
+  bao giờ lộ nội dung `.env` hay giá trị key ra màn hình.
+- **Không bao giờ ghi đè file của người dùng.** Template được tạo bằng
+  `create_new` (độc quyền, kể cả khi hai lần chạy tranh nhau). File thiếu thì
+  tạo lại; file có sẵn, kể cả file hỏng, được giữ nguyên từng byte để người
+  dùng tự sửa.
+- **Double-click cũng không bị mất lỗi.** Khi console tự mở rồi tự đóng, lỗi
+  khởi động vẫn nằm trên màn hình cho tới khi nhấn Enter. Chạy từ terminal
+  có sẵn hoặc với `--non-interactive` thì thoát ngay, không chờ.
+- **Tắt kiểu nào cũng sạch.** Ctrl+C, Ctrl+Break hay bấm nút X của cửa sổ đều
+  dừng server và trả cổng; trên Windows thư mục tạm luôn được dọn. Mở trình
+  duyệt thất bại thì URL vẫn in ra, server vẫn chạy.
+- **Mang đi đâu cũng chạy.** Đường dẫn có dấu cách và Unicode (`résumé`,
+  `ư`), chạy từ thư mục khác, chuyển cả thư mục app sang chỗ mới: đều đã test.
+  Đường dẫn tương đối trong `.env` luôn tính từ chỗ đặt file chạy, không phụ
+  thuộc thư mục hiện hành.
+
+### 🧰 Bên trong hai gói
+
+- **Windows:** một launcher Rust nhỏ, console subsystem, CRT liên kết tĩnh,
+  **chỉ gọi DLL hệ thống của Windows**. Bên trong chứa trọn `server.exe` và
+  `public/` cùng phiên bản; khi chạy thì giải nén vào thư mục tạm riêng, gọi
+  server với đúng thư mục gốc, trả lại mã thoát rồi dọn sạch.
+- **Linux:** AppImage Type 2, chạy trên Ubuntu 22.04 trở lên (cần glibc từ
+  2.34; Ubuntu 22.04 có 2.35). Mang theo libssl, libcrypto, libgcc_s, bộ CA
+  dự phòng cho máy tối giản, icon, desktop entry và đầy đủ giấy phép. Không có
+  FUSE thì dùng `APPIMAGE_EXTRACT_AND_RUN=1`.
+- **Build lặp lại được:** `packaging/build-windows.ps1` build trên máy,
+  `packaging/build-linux.ps1` build trong container Ubuntu 22.04 qua Podman.
+  Rust 1.92.0, Dioxus CLI 0.7.9, lockfile và hash của appimagetool/runtime
+  đều được ghim cố định. Script chỉ gửi vào builder một danh sách file cho
+  phép, không bao giờ gửi `.env`, `.git` hay `data/`.
+
+### 🕵️ Hậu trường: những bug bị tóm trước khi tới tay giáo viên
+
+- **Mỗi lần tắt app bằng nút X bị mất 19,8 MB ổ đĩa.** Windows kết thúc
+  launcher trước khi nó kịp dọn thư mục tạm. Giờ launcher giữ hạn chót của sự
+  kiện close/logoff/shutdown cho tới khi dọn xong: 10/10 lần đóng, 0 byte sót.
+  Nếu cửa sổ bị đóng ngay lúc đang giải nén, launcher không khởi động server
+  nữa, nên không có server nào chạy ngầm giữ cổng 8080.
+- **`voices.json` hỏng từng bị lặng lẽ bỏ qua**, giọng đọc tự quay về mặc định
+  mà không ai biết. Giờ file được kiểm tra một lần lúc khởi động và báo đúng
+  dòng, cột bị lỗi.
+- **Database chỉ đọc từng chỉ lộ ra ở job đầu tiên.** Giờ lúc khởi động có
+  một lần ghi thử rồi rollback, trước khi nhận request.
+- **WAV bị cắt cụt** giờ bị từ chối gọn gàng thay vì có thể gây panic; có test
+  thử cắt ở từng byte một.
+
+### 📊 Con số biết nói
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba |
+| `cargo test --features server --no-default-features` | **42/42** (0.4.0: 28, thêm 14 test) |
+| `smoke.py` trên file EXE thật, Windows 11 | ✅ đạt |
+| `smoke.py` trên AppImage thật, Ubuntu **22.04** và **24.04** sạch, user `nobody` | ✅ đạt |
+| Đóng cửa sổ console bằng nút X | 10/10 lần, 0 thư mục tạm sót lại |
+| Double-click khi thiếu key | lỗi ở lại màn hình tới khi nhấn Enter, thoát mã 1 |
+| Tự mở trình duyệt mặc định | ✅ Firefox mở và kết nối được |
+| Nội dung gói | không có `.env`, key, bản ghi âm, database hay mã nguồn |
+| Tiền Gemini tốn cho toàn bộ bộ test | **0 đồng** (key giả, fixture audio và SQLite cục bộ) |
+
+Smoke test chạy trên chính file phát hành, trong đường dẫn có dấu cách và
+Unicode. Nó kiểm tra lần chạy đầu, cấu hình hỏng, việc giữ file có sẵn, lỗi
+quyền ghi data/log/database, cổng bị chiếm, `/` và `/exam`, JS/WASM/CSS, một
+server function, tải WAV kèm HTTP Range, tắt êm, chuyển thư mục và
+`--config-dir`. Biên bản đầy đủ nằm ở `docs/portable-verification-v0.5.0.md`.
 
 ### Thêm
 
-- `src/infrastructure/startup.rs`: tuỳ chọn `--portable`, `--config-dir`,
-  `--no-open`, `--non-interactive`; listener tự quản lý, mở trình duyệt sau
-  khi khởi tạo xong (nếu không mở được thì vẫn in URL và server vẫn chạy),
-  tắt êm bằng Ctrl+C.
-- `tools/portable-launcher/` (launcher Windows), `packaging/` (script build
-  PowerShell/Linux, Containerfile Ubuntu 22.04, AppRun, smoke test
-  `smoke.py` chạy trên gói thật không gọi Gemini, `test-linux.ps1` cho
-  Ubuntu 22.04/24.04, giấy phép thư viện).
-- Test mới cho cấu hình lần đầu, file thiếu một phần, giữ file có sẵn,
-  dotenv/JSON hỏng, sai mã hoá, đường dẫn tương đối, không lộ key, WAV bị
-  cắt cụt, SQLite chỉ đọc (42 test tổng).
-- `docs/portable.md`, `docs/portable-verification-v0.5.0.md`.
+- `src/infrastructure/startup.rs`: `--portable`, `--config-dir`, `--no-open`,
+  `--non-interactive`; tự bind listener, mở trình duyệt sau khi khởi tạo xong,
+  tắt êm.
+- `tools/portable-launcher/`, `packaging/` (script build/test, Containerfile,
+  AppRun, desktop entry, icon, giấy phép), `docs/portable.md`.
 
 ### Thay đổi
 
-- Cấu hình và `voices.json` được kiểm tra một lần lúc khởi động và giữ trong
-  bộ nhớ; sửa file thì phải khởi động lại. Không còn lặng lẽ quay về giọng mặc
-  định khi file hỏng.
-- SQLite và log được khởi tạo (kèm một lần ghi thử rồi rollback) trước khi
-  nhận request. `JobStore::global` không còn tự mở database.
-- Biến môi trường vẫn ghi đè giá trị trong file (tương thích Docker), nhưng
-  file cấu hình sai cú pháp luôn bị từ chối.
-- `dx serve` (debug) vẫn đi qua `dioxus::serve` nên hot reload giữ nguyên;
-  dev và Docker không tự mở trình duyệt.
+- Cấu hình và `voices.json` được kiểm tra một lần lúc khởi động, giữ trong bộ
+  nhớ; sửa file thì khởi động lại.
+- SQLite và log được khởi tạo trước khi nhận request; `JobStore::global` không
+  còn tự mở database giữa chừng.
+- Biến môi trường vẫn ghi đè giá trị trong file (Docker không phải đổi gì),
+  nhưng file sai cú pháp luôn bị từ chối.
+- `dx serve` vẫn hot reload như cũ; dev và Docker không tự mở trình duyệt.
 
-### Thay đổi không tương thích
+### ⚠️ Thay đổi không tương thích
 
-- Mọi chế độ server đều bắt buộc có `GEMINI_API_KEY` lúc khởi động (tính hợp
-  lệ với Google vẫn chỉ được kiểm tra khi sinh đề).
+- Mọi chế độ server đều bắt buộc có `GEMINI_API_KEY` lúc khởi động. Key có
+  hợp lệ với Google hay không vẫn chỉ được kiểm tra khi sinh đề.
 - `.env` chỉ được đọc từ thư mục cấu hình đã chọn, không còn tìm ngược lên thư
   mục cha.
 
-### Chưa làm trong bản này
+### Biết rồi, để bản sau
 
-- Chưa lưu đề qua lần đóng trình duyệt; audio vẫn hết hạn sau 24 giờ.
-- Chưa ký số, chưa có ARM64, chưa tự cập nhật.
+- Chưa lưu đề khi đóng trình duyệt; audio vẫn hết hạn sau 24 giờ.
+- WASM chưa được `wasm-opt` nén (~2,7 MB, phục vụ từ localhost nên gần như
+  không ảnh hưởng): bản binaryen mà dx tải về bị crash trên Windows.
+- Chưa test mount FUSE thật hay mở trình duyệt trên desktop Linux, chưa test
+  Windows 10. Chưa ký số, chưa có ARM64, chưa tự cập nhật.
 
 ## [0.4.0] – 2026-09-22 — "Trọn một đề, một file WAV"
 

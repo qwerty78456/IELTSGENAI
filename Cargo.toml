@@ -1,6 +1,6 @@
 [package]
 name = "vmq_mvp"
-version = "0.5.0"
+version = "0.6.0"
 authors = ["Trong-Nghia Be <benghia1st@gmail.com> & Vũ Mạnh Quân <taladinhcao@gmail.com>"]
 edition = "2024"
 
@@ -9,6 +9,8 @@ edition = "2024"
 [dependencies]
 base64 = "0.22.1"
 dioxus = { version = "0.7.2", features = ["router", "fullstack"] }
+# Pure Rust DOCX writer (zip + quick-xml); `image` stays off so it builds for wasm.
+docx-rs = { version = "0.4.22", default-features = false }
 futures-util = "0.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"

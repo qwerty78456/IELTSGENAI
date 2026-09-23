@@ -2,4 +2,5 @@
 //! (download buttons) and on the server alike.
 #![allow(dead_code)]
 
+pub mod docx;
 pub mod markdown;

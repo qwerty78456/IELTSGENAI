@@ -33,9 +33,9 @@ use crate::domain::{
     AudioRequest, AudioTrack, Exam, ExamAudioRequest, FormatId, PassageRequest, TaskRequest,
     ValidationIssue, has_errors, validate_exam, validate_passage, validate_task,
 };
-use crate::export::markdown;
+use crate::export::{docx, markdown};
 use crate::ui::clock::local_time;
-use crate::ui::components::audio_player::{AudioPlayerSection, download_text};
+use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, download_text};
 use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
@@ -768,7 +768,8 @@ pub fn ExamView() -> Element {
                 div { class: "generator-panel",
                     h2 { class: "panel-header", "Paper, key and transcripts" }
                     p { class: "panel-help",
-                        "One Markdown document: every part's questions, the answer key and the transcripts."
+                        "One document, as Word (DOCX, laid out like the paper with answer boxes) or Markdown: \
+                         every part's questions, the answer key and the transcripts."
                     }
                     IssueList { issues: exam_issues.clone() }
                     div { class: "download-buttons",
@@ -776,11 +777,25 @@ pub fn ExamView() -> Element {
                             class: "download-button primary",
                             disabled: !has_any_script,
                             onclick: {
-                                let document = markdown::render_exam(&current.exam);
-                                let name = format!("{file_prefix}.md");
-                                move |_| download_text(&document, &name)
+                                let name = format!("{file_prefix}.docx");
+                                move |_| {
+                                    let bytes = docx::render_exam_docx(&state.peek().exam);
+                                    download_bytes(&bytes, docx::DOCX_MIME, &name);
+                                }
                             },
-                            if exam_issues.is_empty() { "Download exam (Markdown)" } else { "Download draft (incomplete)" }
+                            if exam_issues.is_empty() { "Download exam (DOCX)" } else { "Download draft (DOCX, incomplete)" }
+                        }
+                        button {
+                            class: "download-button info",
+                            disabled: !has_any_script,
+                            onclick: {
+                                let name = format!("{file_prefix}.md");
+                                move |_| {
+                                    let document = markdown::render_exam(&state.peek().exam);
+                                    download_text(&document, &name);
+                                }
+                            },
+                            "Download exam (Markdown)"
                         }
                     }
                 }

@@ -17,8 +17,8 @@ use crate::domain::{
     AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
     ValidationIssue, has_errors,
 };
-use crate::export::markdown;
-use crate::ui::components::audio_player::{AudioPlayerSection, download_text};
+use crate::export::{docx, markdown};
+use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, download_text};
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::SpeakerEditModal;
@@ -568,9 +568,10 @@ pub fn Home() -> Element {
                                         let tasks = state().tasks.clone();
                                         let paper = markdown::render_part_paper(&spec, &tasks);
                                         let key = markdown::render_key(&tasks);
-                                        let transcript = markdown::render_transcript(&passage, &speakers());
-                                        let document = format!("{paper}\n### Key\n\n{key}\n{transcript}");
-                                        let name = format!("{file_prefix}_paper.md");
+                                        let docx_spec = spec.clone();
+                                        let docx_name = format!("{file_prefix}_paper.docx");
+                                        let markdown_spec = spec.clone();
+                                        let markdown_name = format!("{file_prefix}_paper.md");
                                         rsx! {
                                             IssueList { issues: state().task_issues.clone() }
                                             div { class: "script-preview",
@@ -582,7 +583,28 @@ pub fn Home() -> Element {
                                             div { class: "download-buttons",
                                                 button {
                                                     class: "download-button primary",
-                                                    onclick: move |_| download_text(&document, &name),
+                                                    onclick: move |_| {
+                                                        let s = state.peek();
+                                                        let voices = speakers.peek();
+                                                        let transcript = s.passage.as_ref().map(|p| (p, voices.as_slice()));
+                                                        let bytes = docx::render_part_docx(&docx_spec, &s.tasks, transcript);
+                                                        download_bytes(&bytes, docx::DOCX_MIME, &docx_name);
+                                                    },
+                                                    "Download paper + key + transcript (DOCX)"
+                                                }
+                                                button {
+                                                    class: "download-button info",
+                                                    onclick: move |_| {
+                                                        let s = state.peek();
+                                                        let paper = markdown::render_part_paper(&markdown_spec, &s.tasks);
+                                                        let key = markdown::render_key(&s.tasks);
+                                                        let transcript = s
+                                                            .passage
+                                                            .as_ref()
+                                                            .map(|p| markdown::render_transcript(p, &speakers.peek()))
+                                                            .unwrap_or_default();
+                                                        download_text(&format!("{paper}\n### Key\n\n{key}\n{transcript}"), &markdown_name);
+                                                    },
                                                     "Download paper + key + transcript (Markdown)"
                                                 }
                                             }

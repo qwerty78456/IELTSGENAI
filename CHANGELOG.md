@@ -101,8 +101,9 @@ audio đi theo.
 - Xoá đề khi bản ghi âm còn đang render: job bị bỏ ghim và chờ retention dọn;
   với `AUDIO_RETENTION_HOURS=0` thì hàng và file ở lại tới khi xoá tay.
 - Chưa có đăng nhập: ai vào được server là thấy mọi đề đã lưu (roadmap mục 2).
-- Gói portable chưa build lại cho 0.6.0; `packaging/smoke.py` đã biết biến mới
-  nhưng chưa chạy trên file phát hành.
+- Bản Windows 0.6.0 (`.exe` 8,5 MB) đã build và qua `packaging/smoke.py` trên
+  chính file phát hành. AppImage Linux 0.6.0 chưa build; bản 0.5.0 là bản Linux
+  mới nhất.
 
 ## [0.5.0] – 2026-09-23 — 🚀 "Một file. Bấm đúp. Chạy."
 

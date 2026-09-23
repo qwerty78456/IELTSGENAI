@@ -10,7 +10,6 @@ use crate::domain::{Line, Passage, SpeakerConfig};
 use super::super::audio::{Pcm16, SAMPLE_RATE};
 use super::super::config::{TTS_MAX_INPUT_TOKENS, config};
 use super::super::llm::{GeminiClient, LlmError, VoiceAssignment};
-use super::voices::VoiceMappings;
 
 /// Gemini limit for `multiSpeakerVoiceConfig`.
 pub const MAX_MULTI_SPEAKER_VOICES: usize = 2;
@@ -38,7 +37,7 @@ pub async fn synthesize_passage(
     passage: &Passage,
     speakers: &[SpeakerConfig],
 ) -> Result<Pcm16, TtsError> {
-    let voices = VoiceMappings::load(&config().voices_path);
+    let voices = &config().voices;
     let used = passage.speakers_used();
     let assignments: Vec<VoiceAssignment> = used
         .iter()
@@ -93,7 +92,7 @@ pub async fn synthesize_passage(
 
 /// The announcer voice reading an instruction.
 pub async fn synthesize_announcement(client: &GeminiClient, text: &str) -> Result<Pcm16, TtsError> {
-    let voices = VoiceMappings::load(&config().voices_path);
+    let voices = &config().voices;
     let assignment = VoiceAssignment {
         label: "Announcer".into(),
         voice: voices.announcer.clone(),

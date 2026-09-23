@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Listening Exam Generator
+Exec=AppRun
+Icon=listening-exam-generator
+Terminal=true
+Categories=Education;

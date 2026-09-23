@@ -3,6 +3,21 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.5.0] – 2026-09-23 — Portable releases
+
+- Portable Windows x64 EXE and Linux x86-64 AppImage packaging, with local
+  browser/server startup and configuration beside the original package.
+- First-run .env and voices.json templates; strict validation and clear console
+  errors for invalid configuration, inaccessible storage and occupied ports.
+- Validated voice mappings cached at startup; no silent fallback for invalid files.
+- SQLite and logging initialization before serving; graceful portable shutdown.
+- Repeatable build scripts, dependency notices, checksums and packaged smoke tests.
+- Startup rejects read-only databases and malformed/truncated music without panics;
+  configuration encoding errors and diagnostics do not expose API-key values.
+- Breaking startup change: all server modes now require a configured API key.
+  Dotenv loads only from the chosen configuration directory; no parent search.
+- Portable configuration does not add saved exams or change 24-hour audio retention.
+
 ## [0.4.0] – 2026-09-22 — "Trọn một đề, một file WAV"
 
 Roadmap mục 1 đã xong: trang **`/exam`** nhận một chủ đề cho mỗi part, một

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::domain::{Accent, Gender};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VoiceMappings {
     pub male: HashMap<String, String>,
     pub female: HashMap<String, String>,
@@ -53,25 +54,35 @@ impl Default for VoiceMappings {
 }
 
 impl VoiceMappings {
-    /// Reads the mapping file, writing the defaults there when it is missing.
-    /// A malformed file falls back to the defaults with an error in the log.
-    pub fn load(path: &Path) -> Self {
-        match std::fs::read_to_string(path) {
-            Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
-                tracing::error!("{} is not valid: {e}; using default voices", path.display());
-                Self::default()
-            }),
-            Err(_) => {
-                let defaults = Self::default();
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                if let Ok(json) = serde_json::to_string_pretty(&defaults) {
-                    let _ = std::fs::write(path, json);
-                }
-                defaults
+    pub fn create_missing(path: &Path) -> Result<(), String> {
+        let json = serde_json::to_vec_pretty(&Self::default())
+            .map_err(|_| "Cannot serialize default voices")?;
+        super::super::config::create_missing(path, &json)
+    }
+
+    pub fn load(path: &Path) -> Result<Self, String> {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
+        let voices: Self = serde_json::from_slice(&bytes).map_err(|e| format!(
+            "{}: invalid voice JSON at line {}, column {} (check male/female maps and announcer).",
+            path.display(), e.line(), e.column()
+        ))?;
+        for (gender, map) in [("male", &voices.male), ("female", &voices.female)] {
+            if !map.contains_key("default")
+                || map
+                    .iter()
+                    .any(|(key, voice)| key.trim().is_empty() || voice.trim().is_empty())
+            {
+                return Err(format!(
+                    "{}: {gender} requires a default voice and nonempty mapping names and values",
+                    path.display()
+                ));
             }
         }
+        if voices.announcer.trim().is_empty() {
+            return Err(format!("{}: announcer must not be empty", path.display()));
+        }
+        Ok(voices)
     }
 
     pub fn voice_for(&self, gender: Gender, accent: Accent) -> String {
@@ -82,9 +93,30 @@ impl VoiceMappings {
         map.get(accent.key())
             .or_else(|| map.get("default"))
             .cloned()
-            .unwrap_or_else(|| match gender {
-                Gender::Male => "Puck".to_string(),
-                Gender::Female => "Zephyr".to_string(),
-            })
+            .expect("voice mappings validated before server starts")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_voice_structure_and_empty_names_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voices.json");
+        for json in [
+            r#"{"male": {}, "female": {"default": "Zephyr"}}"#,
+            r#"{"male": {"default": " "}, "female": {"default": "Zephyr"}}"#,
+            r#"{"male": {"default": "Puck"}, "female": {"default": "Zephyr"}, "announcer": ""}"#,
+            r#"{"male": {"default": "Puck"}, "female": {"default": "Zephyr"}, "anouncer": "Charon"}"#,
+            r#"{"male": "secret-never-print", "female": {}}"#,
+        ] {
+            std::fs::write(&path, json).unwrap();
+            let error = VoiceMappings::load(&path).unwrap_err();
+            assert!(error.contains("voices.json"));
+            assert!(!error.contains("secret-never-print"));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), json);
+        }
     }
 }

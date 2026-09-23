@@ -15,6 +15,32 @@ draft. The teacher edits; nothing is final until they say so.
 Read `docs/architecture.md` first. `docs/domain_model.md` and
 `docs/ubiquitous_language.md` define the types and words used everywhere.
 
+## Portable Windows and Linux applications
+
+Version 0.5.0 supports a single Windows x64 EXE and a Linux x86-64 AppImage
+(Ubuntu 22.04 baseline). Put the package in a writable folder and run it.
+First launch creates .env and voices.json beside the package, then stops
+with instructions to set GEMINI_API_KEY. Edit .env and run again; the app
+opens your browser at http://127.0.0.1:8080. Keep the console open; Ctrl+C stops it.
+No Rust or Docker installation is needed by users. Generation still needs
+internet access and a Gemini API key.
+
+Missing configuration files are recreated; existing invalid files are never
+replaced. Syntax errors, invalid settings, inaccessible storage, and occupied
+ports fail startup with a console message and nonzero exit status. Windows
+double-click errors wait for Enter. Run the AppImage in a terminal for errors;
+its desktop entry also requests a terminal.
+
+Options: --no-open, --non-interactive, --config-dir PATH. Relative paths
+are resolved against the configuration directory. Environment values override
+file settings, but malformed files always fail. Configuration is loaded once;
+restart after edits. API-key validity with Google is checked when generating.
+This release does not add saved exams; audio still expires after 24 hours.
+
+Build instructions and verification are in [docs/portable.md](docs/portable.md).
+Builds go to ignored dist/, with SHA-256 checksums and startup instructions.
+Do not distribute your .env or generated data/.
+
 ## Run locally
 
 Prerequisites: Rust 1.85+ (edition 2024; developed on 1.92), the Dioxus CLI

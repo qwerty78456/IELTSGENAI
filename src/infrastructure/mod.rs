@@ -1,6 +1,4 @@
-//! Server-only adapters. Nothing in here is compiled into the browser bundle,
-//! and nothing in here defines a `#[server]` function: that is the
-//! application layer's job.
+//! Server-only adapters and process startup.
 #![cfg(feature = "server")]
 
 pub mod audio;
@@ -9,30 +7,43 @@ pub mod jobs;
 pub mod llm;
 pub mod prompts;
 pub mod rate_limiter;
+pub mod startup;
 pub mod tts;
 
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-/// Process-wide setup before the Dioxus server starts: configuration, data
-/// directories and logging. Async resources (the job store) initialise lazily
-/// on first use because `dioxus::launch` owns the Tokio runtime.
-pub fn bootstrap() {
-    let cfg = config::config();
+pub fn bootstrap(
+    options: &config::StartupOptions,
+) -> Result<tracing_appender::non_blocking::WorkerGuard, String> {
+    let base = options.directory()?;
+    let cfg = config::AppConfig::load(&base, options.portable, &config::environment()?)?;
     for dir in [cfg.audio_dir(), cfg.logs_dir()] {
-        if let Err(e) = std::fs::create_dir_all(&dir) {
-            eprintln!("WARNING: cannot create {}: {e}", dir.display());
-        }
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+        tempfile::NamedTempFile::new_in(&dir)
+            .map_err(|e| format!("Cannot write {}: {e}", dir.display()))?;
     }
-
-    let file_appender = tracing_appender::rolling::daily(cfg.logs_dir(), "listening-generator.log");
+    // SAFETY: called on the main thread before logger/runtime threads exist.
+    // Dioxus's development launcher reads these two variables.
+    unsafe {
+        std::env::set_var("IP", cfg.address.ip().to_string());
+        std::env::set_var("PORT", cfg.address.port().to_string());
+    }
+    let file_appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("listening-generator.log")
+        .build(cfg.logs_dir())
+        .map_err(|e| {
+            format!(
+                "Cannot initialize logs at {}: {e}",
+                cfg.logs_dir().display()
+            )
+        })?;
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-    // Keep the writer thread alive for the whole process.
-    Box::leak(Box::new(guard));
-
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_new(&cfg.log_filter)
+                .map_err(|_| "Invalid RUST_LOG")?,
         )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stdout))
         .with(
@@ -40,15 +51,9 @@ pub fn bootstrap() {
                 .with_writer(non_blocking)
                 .with_ansi(false),
         )
-        .init();
-
-    if cfg.gemini_api_key.is_none() {
-        tracing::warn!("GEMINI_API_KEY is not set; generation requests will fail until it is");
-    }
-    tracing::info!(
-        data_dir = %cfg.data_dir.display(),
-        text_model = %cfg.text_model,
-        tts_model = %cfg.tts_model,
-        "configuration loaded"
-    );
+        .try_init()
+        .map_err(|_| "Cannot initialize logging")?;
+    config::initialize(cfg)?;
+    println!("Configuration: {}", base.display());
+    Ok(guard)
 }

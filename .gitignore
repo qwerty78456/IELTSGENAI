@@ -11,3 +11,6 @@
 # Runtime data and secrets
 /data/
 .env
+/dist/
+/tools/portable-launcher/target/
+__pycache__/

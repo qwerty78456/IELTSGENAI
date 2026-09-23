@@ -1,6 +1,6 @@
 //! SQLite-backed job table. Outputs live on disk under `DATA_DIR/audio`.
 
-use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
+use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use tokio::sync::OnceCell;
 
 use super::super::config::config;
@@ -83,25 +83,33 @@ pub fn now_secs() -> i64 {
 }
 
 impl JobStore {
-    /// The process-wide store, opened on first use.
+    /// Initialized before accepting requests. This accessor cannot perform fallible I/O.
     pub async fn global() -> &'static JobStore {
         STORE
-            .get_or_init(|| async {
-                let path = config().db_path();
-                if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                JobStore::open(&format!("sqlite://{}?mode=rwc", path.to_string_lossy()))
-                    .await
-                    .expect("cannot open the job database")
-            })
-            .await
+            .get()
+            .expect("job store initialized before server starts")
     }
 
-    pub async fn open(url: &str) -> Result<Self, sqlx::Error> {
+    pub async fn initialize() -> Result<(), String> {
+        let path = config().db_path();
+        STORE
+            .get_or_try_init(|| async {
+                Self::open_options(
+                    SqliteConnectOptions::new()
+                        .filename(&path)
+                        .create_if_missing(true),
+                )
+                .await
+                .map_err(|e| format!("Cannot open job database {}: {e}", path.display()))
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn open_options(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect(url)
+            .connect_with(options)
             .await?;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS jobs (
@@ -116,6 +124,14 @@ impl JobStore {
         )
         .execute(&pool)
         .await?;
+        // SQLite can open an existing database read-only despite requesting writes.
+        // Exercise a real write and roll it back before accepting any requests.
+        let mut transaction = pool.begin().await?;
+        sqlx::query("INSERT INTO jobs (id, kind, state, progress, created_at_secs) VALUES (?1, 'startup_check', 'pending', 0, 0)")
+            .bind(uuid::Uuid::new_v4().to_string())
+            .execute(&mut *transaction)
+            .await?;
+        transaction.rollback().await?;
         Ok(Self { pool })
     }
 
@@ -205,5 +221,43 @@ impl JobStore {
             paths.extend(path);
         }
         Ok(paths)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn startup_write_probe_leaves_no_jobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.db");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let store = JobStore::open_options(options.clone()).await.unwrap();
+        assert_eq!(store.active_count().await.unwrap(), 0);
+        let id = store.create(JobKind::PartAudio).await.unwrap();
+        store.pool.close().await;
+        let restarted = JobStore::open_options(options).await.unwrap();
+        assert_eq!(restarted.active_count().await.unwrap(), 1);
+        assert!(restarted.get(&id).await.unwrap().is_some());
+        restarted.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn existing_readonly_database_is_rejected_at_startup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs.db");
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
+        let store = JobStore::open_options(options.clone()).await.unwrap();
+        store.pool.close().await;
+        assert!(
+            JobStore::open_options(options.read_only(true))
+                .await
+                .is_err()
+        );
     }
 }

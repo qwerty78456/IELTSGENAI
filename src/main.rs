@@ -35,17 +35,10 @@ const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 fn main() {
     #[cfg(feature = "server")]
     {
-        infrastructure::bootstrap();
-        // The Dioxus router plus one plain axum route that streams finished
-        // recordings. The closure runs inside the Tokio runtime, so the hourly
-        // clean-up starts here rather than on the first request.
-        dioxus::serve(|| async {
-            infrastructure::jobs::ensure_cleanup_running();
-            Ok(dioxus::server::router(App).route(
-                application::audio::AUDIO_ROUTE,
-                dioxus::server::axum::routing::get(infrastructure::jobs::serve_audio),
-            ))
-        });
+        if let Err(error) = infrastructure::startup::run(App) {
+            eprintln!("ERROR: {error}");
+            std::process::exit(1);
+        }
     }
 
     #[cfg(not(feature = "server"))]

@@ -1,0 +1,10 @@
+AppImage runtime: https://github.com/AppImage/type2-runtime/commit/75849dc
+Build scripts and source: https://github.com/AppImage/type2-runtime/tree/75849dc
+Bundled license snapshots (runtime dependencies):
+AppImage-runtime.txt: https://raw.githubusercontent.com/AppImage/type2-runtime/75849dc/LICENSE
+libfuse-LGPL2.txt: https://raw.githubusercontent.com/libfuse/libfuse/fuse-3.15.0/LGPL2.txt
+squashfuse.txt: https://raw.githubusercontent.com/vasi/squashfuse/0.5.2/LICENSE
+musl.txt: https://git.musl-libc.org/cgit/musl/plain/COPYRIGHT?h=v1.2.5
+zstd.txt: https://raw.githubusercontent.com/facebook/zstd/v1.5.6/LICENSE
+zlib.txt: https://raw.githubusercontent.com/madler/zlib/v1.3.1/LICENSE
+mimalloc.txt: https://raw.githubusercontent.com/microsoft/mimalloc/v2.1.7/LICENSE

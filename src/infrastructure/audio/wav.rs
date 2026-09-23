@@ -101,7 +101,10 @@ impl Pcm16 {
                 bytes[pos + 7],
             ]) as usize;
             let body = pos + 8;
-            let end = (body + size).min(bytes.len());
+            let end = body
+                .checked_add(size)
+                .filter(|end| *end <= bytes.len())
+                .ok_or("truncated WAV chunk")?;
             match id {
                 b"fmt " => {
                     if size < 16 {
@@ -125,6 +128,9 @@ impl Pcm16 {
                 }
                 b"data" => {
                     let rate = sample_rate.ok_or("data chunk before fmt chunk")?;
+                    if size % 2 != 0 {
+                        return Err("incomplete 16-bit WAV sample".into());
+                    }
                     return Ok(Self::from_le_bytes(&bytes[body..end], rate));
                 }
                 _ => {}
@@ -181,5 +187,13 @@ mod tests {
         let mut wav = Pcm16::silence(1, SAMPLE_RATE).to_wav();
         wav[22] = 2; // channels
         assert!(Pcm16::from_wav(&wav).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_chunks_without_panicking() {
+        let wav = Pcm16::silence(1, SAMPLE_RATE).to_wav();
+        for length in 0..wav.len() {
+            assert!(Pcm16::from_wav(&wav[..length]).is_err(), "length {length}");
+        }
     }
 }

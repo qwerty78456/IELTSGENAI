@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+appdir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+export LD_LIBRARY_PATH="$appdir/usr/lib"
+export DIOXUS_PUBLIC_PATH="$appdir/usr/bin/public"
+if [ ! -r /etc/ssl/certs/ca-certificates.crt ] && [ -z "$(printenv SSL_CERT_FILE || true)" ]; then
+    export SSL_CERT_FILE="$appdir/usr/share/ca-certificates.crt"
+fi
+image_path="$(printenv APPIMAGE || true)"
+if [ -n "$image_path" ]; then
+    config_dir="$(dirname -- "$image_path")"
+else
+    config_dir="$(dirname -- "$appdir")"
+fi
+exec "$appdir/usr/bin/server" --portable --config-dir "$config_dir" "$@"

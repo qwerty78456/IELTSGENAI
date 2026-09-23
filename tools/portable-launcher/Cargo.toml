@@ -1,0 +1,12 @@
+[package]
+name = "listening-exam-generator"
+version = "0.5.0"
+edition = "2024"
+[dependencies]
+tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Console", "Win32_Foundation"] }
+[profile.release]
+strip = true
+[workspace]

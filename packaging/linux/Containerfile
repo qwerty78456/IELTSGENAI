@@ -1,0 +1,19 @@
+FROM docker.io/library/ubuntu:22.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libssl-dev ca-certificates curl git python3 unzip \
+    file binutils squashfs-tools patchelf zstd \
+    && rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:/usr/local/bin:/usr/bin:/bin
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs -o /tmp/rustup.sh \
+    && sh /tmp/rustup.sh -y --profile minimal --default-toolchain 1.92.0 \
+    && rustup target add wasm32-unknown-unknown
+# Official prebuilt dx requires a newer glibc; compile the tool on the baseline.
+RUN cargo install dioxus-cli --version 0.7.9 --locked
+RUN rustup component add rustfmt
+RUN curl -fL https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage -o /opt/appimagetool \
+    && echo 'ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  /opt/appimagetool' | sha256sum -c - \
+    && chmod +x /opt/appimagetool \
+    && curl -fL https://github.com/AppImage/type2-runtime/releases/download/continuous/runtime-x86_64 -o /opt/runtime-x86_64 \
+    && echo '1cc49bcf1e2ccd593c379adb17c9f85a36d619088296504de95b1d06215aebbf  /opt/runtime-x86_64' | sha256sum -c -
+WORKDIR /build

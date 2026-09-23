@@ -83,6 +83,8 @@ part has a passage and every `TaskSpec` has a `Task`.
 
 ### `AudioTrack`
 `container`, `sample_rate`, `duration_ms`, `location` (job id or path). Never bytes.
+Built by `audio_job_status` once a job completes; `location` is the job id and
+`application::audio::audio_url(location)` is where the browser streams it.
 
 ### `AudioProgram` / `AudioSegment`
 `AudioProgram::for_format(&ExamFormat)` yields the ordered segments:
@@ -104,6 +106,11 @@ with a replay for `Twice` parts and the checking time at the end.
 `Vec<ValidationIssue { severity, item, message }>`. `Severity::Error` means
 the key is unusable; `Warning` means look at it. The grounding rule: text
 keys and evidence must occur in the normalised passage text.
+
+`validate_exam(&Exam)` checks structural completeness before export or the
+full recording: every part has a passage, every `TaskSpec` has a task and,
+once nothing is missing, item numbers run from 1 to the format's total in
+order. Content issues stay with the drafts that produced them.
 
 ## Failures
 

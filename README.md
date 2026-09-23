@@ -80,8 +80,12 @@ docs/                architecture, domain model, ubiquitous language, scope
 
 ## Status
 
-The restructure into these layers is complete and all checks pass. The UI
-drives one part at a time; the server already supports rendering the full
-exam recording (`start_exam_audio`). See the roadmap at the end of
-`docs/architecture.md` for what comes next: exam-level UI, persistence,
-DOCX export, MP3, authentication.
+The restructure into these layers is complete and all checks pass. Two pages:
+the part page generates one part's script, then its questions and recording
+side by side, with the transcript downloadable as soon as the script exists
+(each piece can still be regenerated alone); the exam page (`/exam`) takes a
+topic per part and produces the whole paper, the answer key, every
+transcript and one exam recording with announcements, pauses and replays,
+streamed from `/audio/{job_id}`. See the roadmap at the end of
+`docs/architecture.md` for what comes next: persistence, DOCX export, MP3,
+authentication.

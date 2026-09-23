@@ -76,7 +76,10 @@ pub struct JobStore {
 static STORE: OnceCell<JobStore> = OnceCell::const_new();
 
 pub fn now_secs() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 impl JobStore {
@@ -96,7 +99,10 @@ impl JobStore {
     }
 
     pub async fn open(url: &str) -> Result<Self, sqlx::Error> {
-        let pool = SqlitePoolOptions::new().max_connections(5).connect(url).await?;
+        let pool = SqlitePoolOptions::new()
+            .max_connections(5)
+            .connect(url)
+            .await?;
         sqlx::query(
             "CREATE TABLE IF NOT EXISTS jobs (
                 id TEXT PRIMARY KEY,
@@ -126,9 +132,10 @@ impl JobStore {
     }
 
     pub async fn active_count(&self) -> Result<i64, sqlx::Error> {
-        let (count,): (i64,) = sqlx::query_as("SELECT count(*) FROM jobs WHERE state IN ('pending', 'processing')")
-            .fetch_one(&self.pool)
-            .await?;
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT count(*) FROM jobs WHERE state IN ('pending', 'processing')")
+                .fetch_one(&self.pool)
+                .await?;
         Ok(count)
     }
 
@@ -169,15 +176,17 @@ impl JobStore {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
-        Ok(row.map(|(id, kind, state, progress, error, output_path, created_at_secs)| JobRecord {
-            id,
-            kind: JobKind::parse(&kind),
-            state: JobState::parse(&state),
-            progress,
-            error,
-            output_path,
-            created_at_secs,
-        }))
+        Ok(row.map(
+            |(id, kind, state, progress, error, output_path, created_at_secs)| JobRecord {
+                id,
+                kind: JobKind::parse(&kind),
+                state: JobState::parse(&state),
+                progress,
+                error,
+                output_path,
+                created_at_secs,
+            },
+        ))
     }
 
     /// Deletes jobs created before `cutoff_secs` and returns their output paths for removal.
@@ -189,7 +198,10 @@ impl JobStore {
                 .await?;
         let mut paths = Vec::new();
         for (id, path) in rows {
-            sqlx::query("DELETE FROM jobs WHERE id = ?1").bind(&id).execute(&self.pool).await?;
+            sqlx::query("DELETE FROM jobs WHERE id = ?1")
+                .bind(&id)
+                .execute(&self.pool)
+                .await?;
             paths.extend(path);
         }
         Ok(paths)

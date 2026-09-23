@@ -14,7 +14,9 @@ pub const MAX_TOPIC_CHARS: usize = 500;
 pub fn validate_topic(topic: &str) -> Result<(), DomainError> {
     let trimmed = topic.trim();
     if trimmed.is_empty() {
-        return Err(DomainError::InvalidRequest("Please describe the topic or scenario".into()));
+        return Err(DomainError::InvalidRequest(
+            "Please describe the topic or scenario".into(),
+        ));
     }
     if trimmed.chars().count() < MIN_TOPIC_CHARS {
         return Err(DomainError::InvalidRequest(format!(
@@ -27,17 +29,17 @@ pub fn validate_topic(topic: &str) -> Result<(), DomainError> {
         )));
     }
     if !trimmed.chars().any(char::is_alphabetic) {
-        return Err(DomainError::InvalidRequest("The topic must contain words, not only numbers or symbols".into()));
+        return Err(DomainError::InvalidRequest(
+            "The topic must contain words, not only numbers or symbols".into(),
+        ));
     }
     Ok(())
 }
 
 fn find_part(format: FormatId, part: u8) -> Result<PartSpec, DomainError> {
-    format
-        .format()
-        .part(part)
-        .cloned()
-        .ok_or_else(|| DomainError::InvalidRequest(format!("Part {part} does not exist in this format")))
+    format.format().part(part).cloned().ok_or_else(|| {
+        DomainError::InvalidRequest(format!("Part {part} does not exist in this format"))
+    })
 }
 
 /// Generate the script of one part.
@@ -76,10 +78,16 @@ impl TaskRequest {
     pub fn validate(&self) -> Result<(PartSpec, TaskSpec), DomainError> {
         let spec = find_part(self.format, self.part)?;
         let task = spec.tasks.get(self.task_index).cloned().ok_or_else(|| {
-            DomainError::InvalidRequest(format!("Part {} has no task #{}", self.part, self.task_index + 1))
+            DomainError::InvalidRequest(format!(
+                "Part {} has no task #{}",
+                self.part,
+                self.task_index + 1
+            ))
         })?;
         if self.passage.lines.is_empty() {
-            return Err(DomainError::InvalidRequest("Generate the script before the questions".into()));
+            return Err(DomainError::InvalidRequest(
+                "Generate the script before the questions".into(),
+            ));
         }
         Ok((spec, task))
     }
@@ -101,7 +109,9 @@ impl ExamAudioRequest {
                 .parts
                 .iter()
                 .find(|p| p.passage.part == spec.number)
-                .ok_or_else(|| DomainError::InvalidRequest(format!("{} has no script yet", spec.title)))?;
+                .ok_or_else(|| {
+                    DomainError::InvalidRequest(format!("{} has no script yet", spec.title))
+                })?;
             part.validate()?;
         }
         Ok(())
@@ -118,12 +128,16 @@ pub struct AudioRequest {
 impl AudioRequest {
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.passage.lines.is_empty() {
-            return Err(DomainError::InvalidRequest("There is no script to read".into()));
+            return Err(DomainError::InvalidRequest(
+                "There is no script to read".into(),
+            ));
         }
         let labels: Vec<&str> = self.speakers.iter().map(|s| s.label.as_str()).collect();
         for used in self.passage.speakers_used() {
             if !labels.contains(&used.as_str()) {
-                return Err(DomainError::InvalidRequest(format!("No voice configured for \"{used}\"")));
+                return Err(DomainError::InvalidRequest(format!(
+                    "No voice configured for \"{used}\""
+                )));
             }
         }
         Ok(())

@@ -28,11 +28,15 @@ pub enum AudioSegment {
     Music,
     /// The short sound before each recording.
     Tone,
-    Silence { ms: u32 },
+    Silence {
+        ms: u32,
+    },
     /// Spoken by the announcer voice.
     Announcement(String),
     /// The synthesised passage of that part.
-    Passage { part: u8 },
+    Passage {
+        part: u8,
+    },
 }
 
 /// The ordered plan of the full exam recording, derived from the format's
@@ -65,11 +69,18 @@ impl AudioProgram {
                 part.first_item(),
                 part.last_item()
             )));
-            segments.push(AudioSegment::Silence { ms: READING_PAUSE_MS });
+            segments.push(AudioSegment::Silence {
+                ms: READING_PAUSE_MS,
+            });
             segments.push(AudioSegment::Passage { part: part.number });
             if part.playback == PlayCount::Twice {
-                segments.push(AudioSegment::Silence { ms: BETWEEN_PLAYS_MS });
-                segments.push(AudioSegment::Announcement(format!("Now you will hear {} again.", part.title)));
+                segments.push(AudioSegment::Silence {
+                    ms: BETWEEN_PLAYS_MS,
+                });
+                segments.push(AudioSegment::Announcement(format!(
+                    "Now you will hear {} again.",
+                    part.title
+                )));
                 segments.push(AudioSegment::Passage { part: part.number });
             }
             segments.push(AudioSegment::Silence { ms: AFTER_PART_MS });
@@ -78,7 +89,9 @@ impl AudioProgram {
             "That is the end of the listening section. You now have {} minutes to check your answers.",
             format.check_minutes
         )));
-        segments.push(AudioSegment::Silence { ms: u32::from(format.check_minutes) * 60_000 });
+        segments.push(AudioSegment::Silence {
+            ms: u32::from(format.check_minutes) * 60_000,
+        });
         segments.push(AudioSegment::Music);
         Self { segments }
     }
@@ -105,7 +118,13 @@ mod tests {
     #[test]
     fn hsg_program_plays_parts_three_and_four_twice() {
         let program = AudioProgram::for_format(&ExamFormat::hsg_national());
-        let plays = |n: u8| program.segments.iter().filter(|s| **s == AudioSegment::Passage { part: n }).count();
+        let plays = |n: u8| {
+            program
+                .segments
+                .iter()
+                .filter(|s| **s == AudioSegment::Passage { part: n })
+                .count()
+        };
         assert_eq!(plays(1), 1);
         assert_eq!(plays(3), 2);
         assert_eq!(program.passages_needed(), vec![1, 2, 3, 4]);

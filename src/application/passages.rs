@@ -23,11 +23,17 @@ pub async fn generate_passage(request: PassageRequest) -> Result<PassageDraft, S
     let exam = request.format.format();
     let client = GeminiClient::from_config().map_err(user_error)?;
     let text = client
-        .generate_text(&prompts::passage_prompt(&exam, &spec, &request.topic, &request.speakers))
+        .generate_text(&prompts::passage_prompt(
+            &exam,
+            &spec,
+            &request.topic,
+            &request.speakers,
+        ))
         .await
         .map_err(user_error)?;
     let labels: Vec<String> = request.speakers.iter().map(|s| s.label.clone()).collect();
-    let passage = Passage::parse(request.part, request.topic.trim(), &text, &labels).map_err(user_error)?;
+    let passage =
+        Passage::parse(request.part, request.topic.trim(), &text, &labels).map_err(user_error)?;
     let issues = validate_passage(&passage, &spec, &request.speakers);
     Ok(PassageDraft { passage, issues })
 }

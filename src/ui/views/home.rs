@@ -1,29 +1,28 @@
-//! Home view: choose a format and a part, then generate script, questions and audio.
+//! Home view: choose a format and a part, then generate the script, the
+//! questions and the audio, in one go or one piece at a time.
 //!
 //! The view holds one `HomeState` signal. Every server call goes through
 //! `crate::application`; every rule check is already done by the domain, the
-//! view only displays issues.
+//! view only displays issues. The one-click pipeline runs in the browser by
+//! chaining the same server functions the individual buttons use: the script
+//! first, then the questions and the recording side by side.
 
 use dioxus::prelude::*;
 
-use crate::application::audio::{audio_job_result, audio_job_status, start_part_audio, JobStatus};
+use crate::application::audio::{audio_url, start_part_audio};
 use crate::application::passages::generate_passage;
 use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::domain::{
-    AudioRequest, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest, ValidationIssue,
+    AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
+    ValidationIssue, has_errors,
 };
 use crate::export::markdown;
-use crate::ui::components::audio_player::{download_text, AudioPlayerSection};
+use crate::ui::components::audio_player::{AudioPlayerSection, download_text};
+use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::SpeakerEditModal;
-
-#[cfg(target_arch = "wasm32")]
-use gloo_timers::future::TimeoutFuture;
-
-/// Polling cadence for audio jobs.
-const POLL_INTERVAL_MS: u32 = 2_000;
-const MAX_POLLS: u32 = 150;
+use crate::ui::jobs::{PART_AUDIO_DEADLINE_MS, PART_AUDIO_POLL_MS, wait_for_job};
 
 #[derive(Clone)]
 pub struct HomeState {
@@ -37,6 +36,13 @@ pub struct HomeState {
     pub show_speakers: bool,
     pub editing_speaker_idx: Option<usize>,
 
+    /// Bumped whenever results are reset or a run is cancelled. A running
+    /// pipeline compares against it before every write, so late results of a
+    /// superseded run are dropped instead of overwriting the new ones.
+    pub run: u32,
+    /// Why the one-click pipeline stopped early, shown above the results.
+    pub pipeline_note: Option<String>,
+
     pub is_generating_script: bool,
     pub script_error: Option<String>,
     pub passage: Option<Passage>,
@@ -49,7 +55,11 @@ pub struct HomeState {
 
     pub is_generating_audio: bool,
     pub audio_error: Option<String>,
-    pub generated_audio: Option<Vec<u8>>,
+    /// A recording job started on the server whose result is not here yet
+    /// (still running, timed out or cancelled locally); "Check again" fetches it.
+    pub audio_job_id: Option<String>,
+    /// The finished recording: the server streams it at `audio_url`.
+    pub audio: Option<AudioTrack>,
 }
 
 impl Default for HomeState {
@@ -69,6 +79,8 @@ impl HomeState {
             custom_speakers: Vec::new(),
             show_speakers: false,
             editing_speaker_idx: None,
+            run: 0,
+            pipeline_note: None,
             is_generating_script: false,
             script_error: None,
             passage: None,
@@ -79,20 +91,118 @@ impl HomeState {
             task_issues: Vec::new(),
             is_generating_audio: false,
             audio_error: None,
-            generated_audio: None,
+            audio_job_id: None,
+            audio: None,
+        }
+    }
+
+    /// A fresh state for another format that still supersedes runs in flight.
+    fn switch_format(&self, format: FormatId) -> Self {
+        Self {
+            run: self.run + 1,
+            ..Self::for_format(format)
         }
     }
 
     /// Everything derived from the current part, kept; the rest cleared.
+    /// Also supersedes any run still in flight.
     fn reset_results(&mut self) {
+        self.run += 1;
+        self.pipeline_note = None;
+        self.is_generating_script = false;
         self.script_error = None;
         self.passage = None;
         self.passage_issues.clear();
+        self.is_generating_tasks = false;
         self.tasks_error = None;
         self.tasks.clear();
         self.task_issues.clear();
+        self.is_generating_audio = false;
         self.audio_error = None;
-        self.generated_audio = None;
+        self.audio_job_id = None;
+        self.audio = None;
+    }
+
+    fn is_busy(&self) -> bool {
+        self.is_generating_topic
+            || self.is_generating_script
+            || self.is_generating_tasks
+            || self.is_generating_audio
+    }
+
+    fn task_count(&self) -> usize {
+        self.format
+            .format()
+            .part(self.part)
+            .map(|p| p.tasks.len())
+            .unwrap_or(0)
+    }
+
+    /// What the single progress popup says while something is running.
+    fn busy_message(&self) -> Option<(String, String)> {
+        let (message, detail) = if self.is_generating_script {
+            (
+                "Writing the script...".to_string(),
+                "Usually 30-60 seconds".to_string(),
+            )
+        } else if self.is_generating_tasks && self.is_generating_audio {
+            (
+                format!(
+                    "Writing questions ({} of {}) and recording the audio...",
+                    self.tasks.len(),
+                    self.task_count()
+                ),
+                "Two to ten minutes; the script is already readable below".to_string(),
+            )
+        } else if self.is_generating_tasks {
+            (
+                format!(
+                    "Writing the questions ({} of {})...",
+                    self.tasks.len(),
+                    self.task_count()
+                ),
+                "One block at a time; each takes 20-40 seconds".to_string(),
+            )
+        } else if self.is_generating_audio {
+            (
+                "Recording the audio...".to_string(),
+                "Two to five minutes; up to ten with three voices".to_string(),
+            )
+        } else if self.is_generating_topic {
+            (
+                "Suggesting a topic...".to_string(),
+                "A few seconds".to_string(),
+            )
+        } else {
+            return None;
+        };
+        Some((message, detail))
+    }
+
+    /// Stops listening to whatever is running. Work already started on the
+    /// server is not interrupted; a recording keeps its job id for "Check again".
+    fn cancel(&mut self) {
+        self.run += 1;
+        if self.is_generating_topic {
+            self.is_generating_topic = false;
+            self.topic_error = Some("Cancelled".into());
+        }
+        if self.is_generating_script {
+            self.is_generating_script = false;
+            self.script_error = Some("Cancelled".into());
+        }
+        if self.is_generating_tasks {
+            self.is_generating_tasks = false;
+            self.tasks_error = Some("Cancelled".into());
+        }
+        if self.is_generating_audio {
+            self.is_generating_audio = false;
+            self.audio_error = Some(if self.audio_job_id.is_some() {
+                "Cancelled here; the recording keeps running on the server. Use \"Check again\" to fetch it.".into()
+            } else {
+                "Cancelled".into()
+            });
+        }
     }
 }
 
@@ -105,106 +215,129 @@ pub fn Home() -> Element {
         if !current.custom_speakers.is_empty() {
             return current.custom_speakers.clone();
         }
-        current.format.format().part(current.part).map(|p| p.default_speakers.clone()).unwrap_or_default()
+        current
+            .format
+            .format()
+            .part(current.part)
+            .map(|p| p.default_speakers.clone())
+            .unwrap_or_default()
     });
 
     let exam_format = state().format.format();
     let part_spec = exam_format.part(state().part).cloned();
-    let file_prefix = format!("{}_Part{}", state().format.key().to_uppercase(), state().part);
+    let file_prefix = format!(
+        "{}_Part{}",
+        state().format.key().to_uppercase(),
+        state().part
+    );
 
     let handle_generate_topic = move |_| {
         state.write().topic_error = None;
         state.write().is_generating_topic = true;
-        let (format, part) = (state().format, state().part);
+        let (format, part, run) = (state().format, state().part, state().run);
         spawn(async move {
-            match suggest_topic(format, part, String::new()).await {
-                Ok(topic) => state.write().topic = topic,
-                Err(e) => state.write().topic_error = Some(format!("Could not suggest a topic: {e}")),
+            let outcome = suggest_topic(format, part, String::new()).await;
+            if !still_current(state, run) {
+                return;
             }
-            state.write().is_generating_topic = false;
+            let mut s = state.write();
+            match outcome {
+                Ok(topic) => s.topic = topic,
+                Err(e) => s.topic_error = Some(format!("Could not suggest a topic: {e}")),
+            }
+            s.is_generating_topic = false;
         });
     };
 
     let handle_generate_script = move |_| {
-        let request = PassageRequest {
-            format: state().format,
-            part: state().part,
-            topic: state().topic.clone(),
-            speakers: speakers(),
-        };
-        if let Err(e) = request.validate() {
-            state.write().script_error = Some(e.to_string());
-            return;
-        }
-        state.write().reset_results();
-        state.write().is_generating_script = true;
-        spawn(async move {
-            match generate_passage(request).await {
-                Ok(draft) => {
-                    let mut s = state.write();
-                    s.passage = Some(draft.passage);
-                    s.passage_issues = draft.issues;
-                }
-                Err(e) => state.write().script_error = Some(format!("Script generation failed: {e}")),
+        let request = match build_script_request(&state(), speakers()) {
+            Ok(request) => request,
+            Err(message) => {
+                state.write().script_error = Some(message);
+                return;
             }
-            state.write().is_generating_script = false;
+        };
+        state.write().reset_results();
+        let run = state().run;
+        spawn(async move {
+            run_script(state, run, request).await;
         });
     };
 
     let handle_generate_tasks = move |_| {
-        let Some(passage) = state().passage.clone() else { return };
-        let (format, part) = (state().format, state().part);
-        let task_count = format.format().part(part).map(|p| p.tasks.len()).unwrap_or(0);
-        let current_speakers = speakers();
-        {
-            let mut s = state.write();
-            s.tasks.clear();
-            s.task_issues.clear();
-            s.tasks_error = None;
-            s.is_generating_tasks = true;
-        }
-        spawn(async move {
-            for task_index in 0..task_count {
-                let request = TaskRequest {
-                    format,
-                    part,
-                    task_index,
-                    passage: passage.clone(),
-                    speakers: current_speakers.clone(),
-                };
-                match generate_task(request).await {
-                    Ok(draft) => {
-                        let mut s = state.write();
-                        s.tasks.push(draft.task);
-                        s.task_issues.extend(draft.issues);
-                    }
-                    Err(e) => {
-                        state.write().tasks_error = Some(format!("Question generation failed: {e}"));
-                        break;
-                    }
-                }
-            }
-            state.write().is_generating_tasks = false;
-        });
+        let Some(passage) = state().passage.clone() else {
+            return;
+        };
+        let (format, part, run) = (state().format, state().part, state().run);
+        spawn(run_tasks(state, run, format, part, passage, speakers()));
     };
 
     let handle_generate_audio = move |_| {
-        let Some(passage) = state().passage.clone() else { return };
-        let request = AudioRequest { passage, speakers: speakers() };
+        let Some(passage) = state().passage.clone() else {
+            return;
+        };
+        let request = AudioRequest {
+            passage,
+            speakers: speakers(),
+        };
         if let Err(e) = request.validate() {
             state.write().audio_error = Some(e.to_string());
             return;
         }
-        state.write().is_generating_audio = true;
+        let run = state().run;
+        spawn(run_audio(state, run, request));
+    };
+
+    let handle_check_audio = move |_| {
+        let Some(job_id) = state().audio_job_id.clone() else {
+            return;
+        };
         state.write().audio_error = None;
-        spawn(async move {
-            let outcome = run_audio_job(request).await;
-            let mut s = state.write();
-            match outcome {
-                Ok(bytes) => s.generated_audio = Some(bytes),
-                Err(message) => s.audio_error = Some(message),
+        let run = state().run;
+        spawn(fetch_audio(state, run, job_id));
+    };
+
+    // The one-click pipeline: script, then questions and recording side by side.
+    let handle_generate_all = move |_| {
+        let request = match build_script_request(&state(), speakers()) {
+            Ok(request) => request,
+            Err(message) => {
+                state.write().script_error = Some(message);
+                return;
             }
-            s.is_generating_audio = false;
+        };
+        state.write().reset_results();
+        let run = state().run;
+        let (format, part) = (request.format, request.part);
+        let current_speakers = request.speakers.clone();
+        spawn(async move {
+            let Some(passage) = run_script(state, run, request).await else {
+                return;
+            };
+            let script_ok = !has_errors(&state.peek().passage_issues);
+            if !script_ok {
+                state.write().pipeline_note =
+                    Some("The script has errors; fix or regenerate it before the questions and the audio.".into());
+                return;
+            }
+            let audio_request = AudioRequest {
+                passage: passage.clone(),
+                speakers: current_speakers.clone(),
+            };
+            let audio_request = match audio_request.validate() {
+                Ok(()) => Some(audio_request),
+                Err(e) => {
+                    state.write().audio_error = Some(e.to_string());
+                    None
+                }
+            };
+            let tasks = run_tasks(state, run, format, part, passage, current_speakers);
+            match audio_request {
+                Some(audio_request) => {
+                    futures_util::future::join(tasks, run_audio(state, run, audio_request)).await;
+                }
+                None => tasks.await,
+            }
         });
     };
 
@@ -214,7 +347,7 @@ pub fn Home() -> Element {
         div { class: "generator-container",
             div { class: "generator-header",
                 h1 { "Listening Exam Generator" }
-                p { "Script, questions, key and audio for one part at a time, in the format you choose." }
+                p { "Script, questions, key, transcript and audio for one part, in one go or step by step." }
             }
 
             div { class: "generator-grid",
@@ -230,7 +363,8 @@ pub fn Home() -> Element {
                                 value: "{state().format.key()}",
                                 onchange: move |evt| {
                                     if let Some(format) = FormatId::from_key(&evt.value()) {
-                                        state.set(HomeState::for_format(format));
+                                        let fresh = state().switch_format(format);
+                                        state.set(fresh);
                                     }
                                 },
                                 for id in FormatId::ALL {
@@ -373,6 +507,10 @@ pub fn Home() -> Element {
                         div { class: "error-box", span { class: "error-icon", "!" } span { "{error}" } }
                     }
 
+                    if let Some(note) = state().pipeline_note.clone() {
+                        div { class: "note-box", span { class: "note-icon", "!" } span { "{note}" } }
+                    }
+
                     if let Some(passage) = state().passage.clone() {
                         div { class: "script-result",
                             div { class: "success-banner",
@@ -409,6 +547,15 @@ pub fn Home() -> Element {
                                     },
                                     "Download script"
                                 }
+                                button {
+                                    class: "download-button info",
+                                    onclick: {
+                                        let transcript = markdown::render_transcript(&passage, &speakers());
+                                        let name = format!("{file_prefix}_transcript.md");
+                                        move |_| download_text(&transcript, &name)
+                                    },
+                                    "Download transcript (Markdown)"
+                                }
                             }
 
                             if let Some(error) = state().tasks_error.clone() {
@@ -436,7 +583,7 @@ pub fn Home() -> Element {
                                                 button {
                                                     class: "download-button primary",
                                                     onclick: move |_| download_text(&document, &name),
-                                                    "Download paper + key (Markdown)"
+                                                    "Download paper + key + transcript (Markdown)"
                                                 }
                                             }
                                         }
@@ -448,16 +595,27 @@ pub fn Home() -> Element {
                                 div { class: "error-box", span { class: "error-icon", "!" } span { "{error}" } }
                             }
 
-                            if let Some(audio_data) = state().generated_audio.clone() {
+                            if state().audio_job_id.is_some() && !state().is_generating_audio && state().audio.is_none() {
+                                div { class: "download-buttons",
+                                    button {
+                                        class: "download-button info",
+                                        onclick: handle_check_audio,
+                                        "Check again"
+                                    }
+                                }
+                            }
+
+                            if let Some(track) = state().audio.clone() {
                                 AudioPlayerSection {
-                                    audio_data: audio_data,
+                                    src: audio_url(&track.location),
                                     file_name: format!("{file_prefix}_audio.wav"),
+                                    duration_ms: Some(track.duration_ms),
                                 }
                             }
                         }
                     } else if !state().is_generating_script && state().script_error.is_none() {
                         div { class: "empty-state",
-                            p { "Choose a part, describe the topic and generate the script. Questions and audio follow from it." }
+                            p { "Choose a part, describe the topic and generate. Questions and audio follow from the script, together or step by step." }
                         }
                     }
                 }
@@ -466,94 +624,168 @@ pub fn Home() -> Element {
             div { class: "generate-button-container",
                 button {
                     class: "generate-button",
-                    disabled: state().is_generating_script,
+                    disabled: state().is_busy(),
+                    onclick: handle_generate_all,
+                    if state().is_busy() { "Working..." } else { "Generate script, questions and audio" }
+                }
+                button {
+                    class: "generate-button secondary",
+                    disabled: state().is_busy(),
                     onclick: handle_generate_script,
-                    if state().is_generating_script { "Generating..." } else { "Generate script" }
+                    "Script only"
                 }
             }
 
-            if state().is_generating_topic {
+            if let Some((message, submessage)) = state().busy_message() {
                 LoadingPopup {
-                    message: "Suggesting a topic...".to_string(),
-                    submessage: "A few seconds".to_string(),
-                    oncancel: move |_| {
-                        state.write().is_generating_topic = false;
-                        state.write().topic_error = Some("Cancelled".to_string());
-                    }
-                }
-            }
-            if state().is_generating_script {
-                LoadingPopup {
-                    message: "Writing the script...".to_string(),
-                    submessage: "Usually 30-60 seconds".to_string(),
-                    oncancel: move |_| {
-                        state.write().is_generating_script = false;
-                        state.write().script_error = Some("Cancelled".to_string());
-                    }
-                }
-            }
-            if state().is_generating_tasks {
-                LoadingPopup {
-                    message: "Writing the questions...".to_string(),
-                    submessage: "One block at a time; each takes 20-40 seconds".to_string(),
-                    oncancel: move |_| {
-                        state.write().is_generating_tasks = false;
-                        state.write().tasks_error = Some("Cancelled".to_string());
-                    }
-                }
-            }
-            if state().is_generating_audio {
-                LoadingPopup {
-                    message: "Recording the audio...".to_string(),
-                    submessage: "Two to five minutes for a long part".to_string(),
-                    oncancel: move |_| {
-                        state.write().is_generating_audio = false;
-                        state.write().audio_error = Some("Cancelled".to_string());
-                    }
+                    message,
+                    submessage,
+                    oncancel: move |_| state.write().cancel(),
                 }
             }
         }
     }
 }
 
-/// Validator findings, one line each.
-#[component]
-fn IssueList(issues: Vec<ValidationIssue>) -> Element {
-    if issues.is_empty() {
-        return rsx! {};
+/// Validates the form before a script request leaves the browser.
+fn build_script_request(
+    state: &HomeState,
+    speakers: Vec<SpeakerConfig>,
+) -> Result<PassageRequest, String> {
+    let request = PassageRequest {
+        format: state.format,
+        part: state.part,
+        topic: state.topic.clone(),
+        speakers,
+    };
+    request.validate().map_err(|e| e.to_string())?;
+    Ok(request)
+}
+
+/// True while `run` is still the run whose results the state expects.
+fn still_current(state: Signal<HomeState>, run: u32) -> bool {
+    state.peek().run == run
+}
+
+/// Generates the script and stores the draft. Returns the passage so a
+/// pipeline can carry on with it.
+async fn run_script(
+    mut state: Signal<HomeState>,
+    run: u32,
+    request: PassageRequest,
+) -> Option<Passage> {
+    state.write().is_generating_script = true;
+    let outcome = generate_passage(request).await;
+    if !still_current(state, run) {
+        return None;
     }
-    rsx! {
-        ul { class: "issue-list",
-            for issue in issues.iter() {
-                li { class: "issue-item", "{issue.display()}" }
-            }
+    let mut s = state.write();
+    s.is_generating_script = false;
+    match outcome {
+        Ok(draft) => {
+            s.passage = Some(draft.passage.clone());
+            s.passage_issues = draft.issues;
+            Some(draft.passage)
+        }
+        Err(e) => {
+            s.script_error = Some(format!("Script generation failed: {e}"));
+            None
         }
     }
 }
 
-/// Starts a synthesis job and polls it to completion.
-async fn run_audio_job(request: AudioRequest) -> Result<Vec<u8>, String> {
-    let job_id = start_part_audio(request).await.map_err(|e| format!("Could not start the recording: {e}"))?;
-    for _ in 0..MAX_POLLS {
-        sleep_ms(POLL_INTERVAL_MS).await;
-        let job = audio_job_status(job_id.clone()).await.map_err(|e| format!("Could not check the recording: {e}"))?;
-        match job.status {
-            JobStatus::Completed => {
-                return audio_job_result(job_id).await.map_err(|e| format!("Could not fetch the recording: {e}"));
+/// Generates every task block of the part, one after another, appending each
+/// draft as it arrives.
+async fn run_tasks(
+    mut state: Signal<HomeState>,
+    run: u32,
+    format: FormatId,
+    part: u8,
+    passage: Passage,
+    speakers: Vec<SpeakerConfig>,
+) {
+    let task_count = format
+        .format()
+        .part(part)
+        .map(|p| p.tasks.len())
+        .unwrap_or(0);
+    {
+        let mut s = state.write();
+        s.tasks.clear();
+        s.task_issues.clear();
+        s.tasks_error = None;
+        s.is_generating_tasks = true;
+    }
+    for task_index in 0..task_count {
+        let request = TaskRequest {
+            format,
+            part,
+            task_index,
+            passage: passage.clone(),
+            speakers: speakers.clone(),
+        };
+        let outcome = generate_task(request).await;
+        if !still_current(state, run) {
+            return;
+        }
+        match outcome {
+            Ok(draft) => {
+                let mut s = state.write();
+                s.tasks.push(draft.task);
+                s.task_issues.extend(draft.issues);
             }
-            JobStatus::Failed => return Err(job.error.unwrap_or_else(|| "The recording failed".to_string())),
-            JobStatus::Pending | JobStatus::Processing => {}
+            Err(e) => {
+                state.write().tasks_error = Some(format!("Question generation failed: {e}"));
+                break;
+            }
         }
     }
-    Err("The recording timed out after five minutes. Please try again.".to_string())
+    state.write().is_generating_tasks = false;
 }
 
-#[cfg(target_arch = "wasm32")]
-async fn sleep_ms(ms: u32) {
-    TimeoutFuture::new(ms).await;
+/// Starts the recording job and waits for its WAV.
+async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest) {
+    {
+        let mut s = state.write();
+        s.is_generating_audio = true;
+        s.audio_error = None;
+        s.audio_job_id = None;
+        s.audio = None;
+    }
+    let started = start_part_audio(request).await;
+    if !still_current(state, run) {
+        return;
+    }
+    let job_id = match started {
+        Ok(job_id) => job_id,
+        Err(e) => {
+            let mut s = state.write();
+            s.audio_error = Some(format!("Could not start the recording: {e}"));
+            s.is_generating_audio = false;
+            return;
+        }
+    };
+    state.write().audio_job_id = Some(job_id.clone());
+    fetch_audio(state, run, job_id).await;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-async fn sleep_ms(ms: u32) {
-    tokio::time::sleep(std::time::Duration::from_millis(u64::from(ms))).await;
+/// Waits for a started job and records where its WAV is; also behind "Check again".
+async fn fetch_audio(mut state: Signal<HomeState>, run: u32, job_id: String) {
+    state.write().is_generating_audio = true;
+    let outcome = wait_for_job(&job_id, PART_AUDIO_POLL_MS, PART_AUDIO_DEADLINE_MS, |_| {}).await;
+    if !still_current(state, run) {
+        return;
+    }
+    let mut s = state.write();
+    match outcome {
+        Ok(job) => match job.track {
+            Some(track) => {
+                s.audio = Some(track);
+                s.audio_job_id = None;
+            }
+            None => s.audio_error = Some("The recording finished but its file is missing".into()),
+        },
+        Err(message) => s.audio_error = Some(message),
+    }
+    s.is_generating_audio = false;
 }

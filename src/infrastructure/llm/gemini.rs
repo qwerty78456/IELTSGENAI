@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use base64::Engine;
 use serde::de::DeserializeOwned;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::super::config::config;
 
@@ -19,7 +19,9 @@ const FIRST_BACKOFF_MS: u64 = 1_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
-    #[error("The AI service is not configured: set GEMINI_API_KEY in the environment or .env file.")]
+    #[error(
+        "The AI service is not configured: set GEMINI_API_KEY in the environment or .env file."
+    )]
     NoApiKey,
     #[error("The AI service is busy right now. Please try again in a minute.")]
     Busy,
@@ -52,8 +54,15 @@ impl GeminiClient {
     pub fn from_config() -> Result<Self, LlmError> {
         let cfg = config();
         let api_key = cfg.gemini_api_key.clone().ok_or(LlmError::NoApiKey)?;
-        let http = reqwest::Client::builder().build().map_err(|e| LlmError::Network(e.to_string()))?;
-        Ok(Self { http, api_key, text_model: cfg.text_model.clone(), tts_model: cfg.tts_model.clone() })
+        let http = reqwest::Client::builder()
+            .build()
+            .map_err(|e| LlmError::Network(e.to_string()))?;
+        Ok(Self {
+            http,
+            api_key,
+            text_model: cfg.text_model.clone(),
+            tts_model: cfg.tts_model.clone(),
+        })
     }
 
     /// Plain text completion.
@@ -70,7 +79,8 @@ impl GeminiClient {
     /// instead. If the server ever rejects the field, the prompt is retried
     /// without JSON mode and the fence-tolerant parser does the rest.
     pub async fn generate_json<T: DeserializeOwned>(&self, prompt: &str) -> Result<T, LlmError> {
-        let json_prompt = format!("{prompt}\n\nRespond with a single JSON object and nothing else.");
+        let json_prompt =
+            format!("{prompt}\n\nRespond with a single JSON object and nothing else.");
         let body = json!({
             "contents": [{ "parts": [{ "text": json_prompt }] }],
             "generationConfig": { "responseMimeType": "application/json" }
@@ -78,7 +88,10 @@ impl GeminiClient {
         let response = match self.call(&self.text_model, body, TEXT_TIMEOUT).await {
             Ok(response) => response,
             Err(LlmError::Rejected { status: 400, body }) if body.contains("responseMimeType") => {
-                tracing::warn!("responseMimeType rejected by {}; retrying without JSON mode", self.text_model);
+                tracing::warn!(
+                    "responseMimeType rejected by {}; retrying without JSON mode",
+                    self.text_model
+                );
                 let plain = json!({ "contents": [{ "parts": [{ "text": json_prompt }] }] });
                 self.call(&self.text_model, plain, TEXT_TIMEOUT).await?
             }
@@ -87,7 +100,10 @@ impl GeminiClient {
         let text = first_text(&response)?;
         let payload = strip_fences(&text);
         serde_json::from_str(payload).map_err(|e| {
-            LlmError::Malformed(format!("{e}; payload starts with: {}", payload.chars().take(200).collect::<String>()))
+            LlmError::Malformed(format!(
+                "{e}; payload starts with: {}",
+                payload.chars().take(200).collect::<String>()
+            ))
         })
     }
 
@@ -95,10 +111,16 @@ impl GeminiClient {
     /// One voice uses the single-speaker API; two voices the multi-speaker API.
     /// Gemini multi-speaker synthesis is limited to two voices per request;
     /// callers with more speakers must synthesise turn by turn.
-    pub async fn synthesize(&self, text: &str, voices: &[VoiceAssignment]) -> Result<Vec<u8>, LlmError> {
+    pub async fn synthesize(
+        &self,
+        text: &str,
+        voices: &[VoiceAssignment],
+    ) -> Result<Vec<u8>, LlmError> {
         let speech_config = match voices {
             [] => return Err(LlmError::Malformed("no voice assigned".into())),
-            [single] => json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": single.voice } } }),
+            [single] => {
+                json!({ "voiceConfig": { "prebuiltVoiceConfig": { "voiceName": single.voice } } })
+            }
             many => json!({
                 "multiSpeakerVoiceConfig": {
                     "speakerVoiceConfigs": many.iter().map(|v| json!({
@@ -136,13 +158,19 @@ impl GeminiClient {
                 .await;
             let retry_reason = match sent {
                 Ok(response) if response.status().is_success() => {
-                    return response.json::<Value>().await.map_err(|e| LlmError::Malformed(e.to_string()));
+                    return response
+                        .json::<Value>()
+                        .await
+                        .map_err(|e| LlmError::Malformed(e.to_string()));
                 }
                 Ok(response) if matches!(response.status().as_u16(), 429 | 503) => LlmError::Busy,
                 Ok(response) => {
                     let status = response.status().as_u16();
                     let body = response.text().await.unwrap_or_default();
-                    return Err(LlmError::Rejected { status, body: body.chars().take(500).collect() });
+                    return Err(LlmError::Rejected {
+                        status,
+                        body: body.chars().take(500).collect(),
+                    });
                 }
                 Err(e) if e.is_timeout() => LlmError::Timeout,
                 Err(e) => return Err(LlmError::Network(e.to_string())),
@@ -150,7 +178,12 @@ impl GeminiClient {
             if attempt == MAX_RETRIES {
                 return Err(retry_reason);
             }
-            tracing::warn!(model, attempt, backoff_ms, "Gemini call will be retried: {retry_reason}");
+            tracing::warn!(
+                model,
+                attempt,
+                backoff_ms,
+                "Gemini call will be retried: {retry_reason}"
+            );
             tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
             backoff_ms *= 2;
         }
@@ -168,8 +201,13 @@ fn first_text(response: &Value) -> Result<String, LlmError> {
 
 fn strip_fences(text: &str) -> &str {
     let trimmed = text.trim();
-    let Some(without_open) = trimmed.strip_prefix("```") else { return trimmed };
-    let body = without_open.split_once('\n').map(|(_, rest)| rest).unwrap_or("");
+    let Some(without_open) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let body = without_open
+        .split_once('\n')
+        .map(|(_, rest)| rest)
+        .unwrap_or("");
     body.trim_end().strip_suffix("```").unwrap_or(body).trim()
 }
 

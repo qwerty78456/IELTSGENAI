@@ -2,8 +2,16 @@ use crate::domain::{ExamFormat, PartSpec, PassageKind, SpeakerConfig, TaskKind};
 
 /// The script prompt. It tells the model what the questions will need so the
 /// passage contains enough concrete, distinct material.
-pub fn passage_prompt(format: &ExamFormat, part: &PartSpec, topic: &str, speakers: &[SpeakerConfig]) -> String {
-    let speaker_lines: Vec<String> = speakers.iter().map(|s| format!("- {}", s.describe())).collect();
+pub fn passage_prompt(
+    format: &ExamFormat,
+    part: &PartSpec,
+    topic: &str,
+    speakers: &[SpeakerConfig],
+) -> String {
+    let speaker_lines: Vec<String> = speakers
+        .iter()
+        .map(|s| format!("- {}", s.describe()))
+        .collect();
     let labels: Vec<&str> = speakers.iter().map(|s| s.label.as_str()).collect();
     let shape = match part.passage {
         PassageKind::Conversation { .. } => {
@@ -23,7 +31,11 @@ pub fn passage_prompt(format: &ExamFormat, part: &PartSpec, topic: &str, speaker
              as if the recording were an extract."
         }
     };
-    let needs: Vec<String> = part.tasks.iter().map(|t| format!("- {}", task_needs(&t.kind))).collect();
+    let needs: Vec<String> = part
+        .tasks
+        .iter()
+        .map(|t| format!("- {}", task_needs(&t.kind)))
+        .collect();
     let target_words = ((part.min_minutes + part.max_minutes) / 2.0 * 150.0).round() as u32;
 
     format!(
@@ -59,24 +71,46 @@ pub fn passage_prompt(format: &ExamFormat, part: &PartSpec, topic: &str, speaker
 
 fn task_needs(kind: &TaskKind) -> String {
     match kind {
-        TaskKind::TrueFalseNotGiven => "statements that can be confirmed, contradicted, or left genuinely unaddressed".into(),
-        TaskKind::WhoMentioned { .. } => "clearly attributable claims: some unique to one guest, some made by both".into(),
-        TaskKind::MultipleSelect { choose, options } => {
-            format!("a cluster of {options} plausible statements of which exactly {choose} are true")
+        TaskKind::TrueFalseNotGiven => {
+            "statements that can be confirmed, contradicted, or left genuinely unaddressed".into()
         }
-        TaskKind::MultipleChoice { .. } => "reasons, purposes, exceptions and comparisons that invite close distractors".into(),
+        TaskKind::WhoMentioned { .. } => {
+            "clearly attributable claims: some unique to one guest, some made by both".into()
+        }
+        TaskKind::MultipleSelect { choose, options } => {
+            format!(
+                "a cluster of {options} plausible statements of which exactly {choose} are true"
+            )
+        }
+        TaskKind::MultipleChoice { .. } => {
+            "reasons, purposes, exceptions and comparisons that invite close distractors".into()
+        }
         TaskKind::ShortAnswer(limit) => {
-            format!("precise terms answerable in {} (technical words, names, quantities)", limit.instruction().to_lowercase())
+            format!(
+                "precise terms answerable in {} (technical words, names, quantities)",
+                limit.instruction().to_lowercase()
+            )
         }
         TaskKind::SummaryCompletion(limit) => {
-            format!("a clear structure that a summary can follow, with key words fitting {}", limit.instruction().to_lowercase())
+            format!(
+                "a clear structure that a summary can follow, with key words fitting {}",
+                limit.instruction().to_lowercase()
+            )
         }
         TaskKind::NoteCompletion(limit) => {
-            format!("names, numbers, dates, addresses and items fitting {}", limit.instruction().to_lowercase())
+            format!(
+                "names, numbers, dates, addresses and items fitting {}",
+                limit.instruction().to_lowercase()
+            )
         }
         TaskKind::SentenceCompletion(limit) => {
-            format!("statements whose endings are single expressions fitting {}", limit.instruction().to_lowercase())
+            format!(
+                "statements whose endings are single expressions fitting {}",
+                limit.instruction().to_lowercase()
+            )
         }
-        TaskKind::Matching { options } => format!("{options} distinct places, people or features described in turn"),
+        TaskKind::Matching { options } => {
+            format!("{options} distinct places, people or features described in turn")
+        }
     }
 }

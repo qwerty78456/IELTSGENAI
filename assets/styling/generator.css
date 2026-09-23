@@ -800,3 +800,144 @@ body {
     font-size: 0.85rem;
     color: #5a4a00;
 }
+
+/* One-click pipeline */
+.generate-button-container {
+    display: flex;
+    justify-content: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.generate-button.secondary {
+    background: #6c757d;
+    padding: 1rem 1.5rem;
+}
+
+.generate-button.secondary:hover:not(:disabled) {
+    background: #5a6268;
+}
+
+.note-box {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1rem;
+    background: #fff8e1;
+    border: 1px solid #f5b400;
+    border-left: 4px solid #f5b400;
+    border-radius: 4px;
+    color: #6b4f00;
+    margin-bottom: 1rem;
+}
+
+.note-icon {
+    font-size: 1.5rem;
+    color: #f5b400;
+    font-weight: bold;
+}
+
+/* Whole-exam page */
+.exam-setup {
+    margin-bottom: 1.5rem;
+}
+
+.exam-setup-grid {
+    display: grid;
+    grid-template-columns: 1fr 2fr;
+    gap: 1rem;
+}
+
+.exam-parts {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.exam-panels {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+}
+
+@media (max-width: 968px) {
+    .exam-parts,
+    .exam-panels,
+    .exam-setup-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.part-title {
+    margin: 0 0 0.25rem 0;
+    color: #2c3e50;
+}
+
+.part-meta {
+    color: #666;
+    font-size: 0.875rem;
+    margin: 0 0 0.75rem 0;
+}
+
+.input-textarea.small {
+    min-height: 70px;
+}
+
+.step {
+    margin: 0.25rem 0;
+    font-size: 0.9rem;
+}
+
+.step-label {
+    font-weight: 600;
+}
+
+.step.idle { color: #888; }
+.step.running { color: #0056b3; }
+.step.done { color: #155724; }
+.step.failed { color: #b02a37; }
+
+.preview summary {
+    cursor: pointer;
+    font-weight: 600;
+    margin: 0.5rem 0;
+}
+
+.progress-bar {
+    height: 10px;
+    background: #e9ecef;
+    border-radius: 5px;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+
+.progress-fill {
+    height: 100%;
+    background: #3498db;
+    transition: width 0.5s;
+}
+
+.muted {
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.panel-help {
+    color: #555;
+    font-size: 0.875rem;
+}
+
+a.download-button {
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.audio-duration {
+    color: #555;
+    font-size: 0.875rem;
+    margin-right: 0.75rem;
+}

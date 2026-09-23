@@ -38,8 +38,17 @@ impl Default for VoiceMappings {
             ("newzealand", "Aoede"),
             ("default", "Zephyr"),
         ];
-        let to_map = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        Self { male: to_map(&male), female: to_map(&female), announcer: default_announcer() }
+        let to_map = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        Self {
+            male: to_map(&male),
+            female: to_map(&female),
+            announcer: default_announcer(),
+        }
     }
 }
 

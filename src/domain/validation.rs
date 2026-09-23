@@ -6,8 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::exam::Exam;
 use super::format::{PartSpec, TaskKind};
-use super::passage::{count_words, Passage};
+use super::passage::{Passage, count_words};
 use super::speaker::SpeakerConfig;
 use super::task::{Answer, Choice, Item, Task};
 
@@ -27,11 +28,19 @@ pub struct ValidationIssue {
 
 impl ValidationIssue {
     fn error(item: Option<u8>, message: impl Into<String>) -> Self {
-        Self { severity: Severity::Error, item, message: message.into() }
+        Self {
+            severity: Severity::Error,
+            item,
+            message: message.into(),
+        }
     }
 
     fn warning(item: Option<u8>, message: impl Into<String>) -> Self {
-        Self { severity: Severity::Warning, item, message: message.into() }
+        Self {
+            severity: Severity::Warning,
+            item,
+            message: message.into(),
+        }
     }
 
     pub fn display(&self) -> String {
@@ -57,12 +66,23 @@ pub fn validate_speakers(spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<Val
     if speakers.len() != expected {
         issues.push(ValidationIssue::error(
             None,
-            format!("{} needs exactly {} speaker(s), found {}", spec.title, expected, speakers.len()),
+            format!(
+                "{} needs exactly {} speaker(s), found {}",
+                spec.title,
+                expected,
+                speakers.len()
+            ),
         ));
     }
     for (i, speaker) in speakers.iter().enumerate() {
-        if speakers[..i].iter().any(|other| other.label == speaker.label) {
-            issues.push(ValidationIssue::error(None, format!("Duplicate speaker label \"{}\"", speaker.label)));
+        if speakers[..i]
+            .iter()
+            .any(|other| other.label == speaker.label)
+        {
+            issues.push(ValidationIssue::error(
+                None,
+                format!("Duplicate speaker label \"{}\"", speaker.label),
+            ));
         }
     }
     issues
@@ -70,34 +90,59 @@ pub fn validate_speakers(spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<Val
 
 /// A passage must use only the configured labels, all of them, and fit the
 /// part's duration window (by estimate).
-pub fn validate_passage(passage: &Passage, spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<ValidationIssue> {
+pub fn validate_passage(
+    passage: &Passage,
+    spec: &PartSpec,
+    speakers: &[SpeakerConfig],
+) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let labels: Vec<&str> = speakers.iter().map(|s| s.label.as_str()).collect();
     let used = passage.speakers_used();
     for label in &used {
         if !labels.contains(&label.as_str()) {
-            issues.push(ValidationIssue::error(None, format!("Unknown speaker label \"{label}\" in the script")));
+            issues.push(ValidationIssue::error(
+                None,
+                format!("Unknown speaker label \"{label}\" in the script"),
+            ));
         }
     }
     for label in &labels {
         if !used.iter().any(|u| u == label) {
-            issues.push(ValidationIssue::warning(None, format!("{label} never speaks")));
+            issues.push(ValidationIssue::warning(
+                None,
+                format!("{label} never speaks"),
+            ));
         }
     }
     let minutes = passage.estimated_minutes();
     if minutes < spec.min_minutes * 0.8 {
         issues.push(ValidationIssue::warning(
             None,
-            format!("Script is short: about {minutes:.1} min, {} expects {}", spec.title, spec.duration_label()),
+            format!(
+                "Script is short: about {minutes:.1} min, {} expects {}",
+                spec.title,
+                spec.duration_label()
+            ),
         ));
     } else if minutes > spec.max_minutes * 1.25 {
         issues.push(ValidationIssue::warning(
             None,
-            format!("Script is long: about {minutes:.1} min, {} expects {}", spec.title, spec.duration_label()),
+            format!(
+                "Script is long: about {minutes:.1} min, {} expects {}",
+                spec.title,
+                spec.duration_label()
+            ),
         ));
     }
-    if passage.lines.iter().any(|l| l.text.contains("___") || l.text.contains("[FILL")) {
-        issues.push(ValidationIssue::error(None, "The script contains gaps; scripts must be complete"));
+    if passage
+        .lines
+        .iter()
+        .any(|l| l.text.contains("___") || l.text.contains("[FILL"))
+    {
+        issues.push(ValidationIssue::error(
+            None,
+            "The script contains gaps; scripts must be complete",
+        ));
     }
     issues
 }
@@ -111,7 +156,10 @@ pub fn validate_task(task: &Task, passage: Option<&Passage>) -> Vec<ValidationIs
     if actual != expected {
         issues.push(ValidationIssue::error(
             None,
-            format!("Items must be numbered {} to {} in order, found {:?}", spec.first, spec.last, actual),
+            format!(
+                "Items must be numbered {} to {} in order, found {:?}",
+                spec.first, spec.last, actual
+            ),
         ));
     }
     if spec.kind.has_shared_options() {
@@ -135,11 +183,17 @@ pub fn validate_task(task: &Task, passage: Option<&Passage>) -> Vec<ValidationIs
     }
     if let TaskKind::SummaryCompletion(_) = spec.kind {
         match &task.summary {
-            None => issues.push(ValidationIssue::error(None, "Summary completion needs the summary paragraph")),
+            None => issues.push(ValidationIssue::error(
+                None,
+                "Summary completion needs the summary paragraph",
+            )),
             Some(summary) => {
                 for number in &expected {
                     if !summary.contains(&format!("({number})")) {
-                        issues.push(ValidationIssue::error(Some(*number), format!("The summary has no gap ({number})")));
+                        issues.push(ValidationIssue::error(
+                            Some(*number),
+                            format!("The summary has no gap ({number})"),
+                        ));
                     }
                 }
             }
@@ -150,7 +204,11 @@ pub fn validate_task(task: &Task, passage: Option<&Passage>) -> Vec<ValidationIs
         issues.extend(validate_item(item, task, haystack.as_deref()));
     }
     if let TaskKind::MultipleSelect { choose, .. } = spec.kind {
-        let mut letters: Vec<char> = task.items.iter().flat_map(|i| i.answer.letters().iter().copied()).collect();
+        let mut letters: Vec<char> = task
+            .items
+            .iter()
+            .flat_map(|i| i.answer.letters().iter().copied())
+            .collect();
         let total = letters.len();
         letters.sort_unstable();
         letters.dedup();
@@ -164,13 +222,62 @@ pub fn validate_task(task: &Task, passage: Option<&Passage>) -> Vec<ValidationIs
     issues
 }
 
+/// Structural completeness of an exam before it is exported or recorded:
+/// every part has a script, every `TaskSpec` has a task and, once nothing is
+/// missing, item numbers run from 1 to the format's total without gaps or
+/// repeats. Content issues stay with the drafts that produced them.
+pub fn validate_exam(exam: &Exam) -> Vec<ValidationIssue> {
+    let mut issues = Vec::new();
+    let mut missing = false;
+    for part in &exam.parts {
+        if part.passage.is_none() {
+            issues.push(ValidationIssue::error(
+                None,
+                format!("{} has no script yet", part.spec.title),
+            ));
+            missing = true;
+        }
+        for spec in part.missing_tasks() {
+            issues.push(ValidationIssue::error(
+                None,
+                format!(
+                    "{} is missing {} (questions {})",
+                    part.spec.title,
+                    spec.kind.label(),
+                    spec.range_label()
+                ),
+            ));
+            missing = true;
+        }
+    }
+    if !missing {
+        let total = exam.format.total_items();
+        let actual: Vec<u8> = exam
+            .parts
+            .iter()
+            .flat_map(|p| p.tasks.iter())
+            .flat_map(|t| t.items.iter().map(|i| i.number))
+            .collect();
+        let expected: Vec<u8> = (1..=total).collect();
+        if actual != expected {
+            issues.push(ValidationIssue::error(
+                None,
+                format!("Items must be numbered 1 to {total} across the exam in order, without gaps or repeats"),
+            ));
+        }
+    }
+    issues
+}
+
 fn validate_item(item: &Item, task: &Task, haystack: Option<&str>) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let number = Some(item.number);
     let kind = &task.spec.kind;
     let is_gap = matches!(
         kind,
-        TaskKind::SummaryCompletion(_) | TaskKind::NoteCompletion(_) | TaskKind::MultipleSelect { .. }
+        TaskKind::SummaryCompletion(_)
+            | TaskKind::NoteCompletion(_)
+            | TaskKind::MultipleSelect { .. }
     );
     if item.stem.trim().is_empty() && !is_gap {
         issues.push(ValidationIssue::error(number, "Empty question"));
@@ -183,12 +290,17 @@ fn validate_item(item: &Item, task: &Task, haystack: Option<&str>) -> Vec<Valida
         }
         TaskKind::MultipleChoice { options } => {
             if item.options.len() != *options as usize {
-                issues.push(ValidationIssue::error(number, format!("Needs {options} options, found {}", item.options.len())));
+                issues.push(ValidationIssue::error(
+                    number,
+                    format!("Needs {options} options, found {}", item.options.len()),
+                ));
             }
             issues.extend(check_lettering(&item.options, number));
             issues.extend(check_letter_answer(item, &item.options, 1));
         }
-        TaskKind::WhoMentioned { .. } | TaskKind::Matching { .. } | TaskKind::MultipleSelect { .. } => {
+        TaskKind::WhoMentioned { .. }
+        | TaskKind::Matching { .. }
+        | TaskKind::MultipleSelect { .. } => {
             issues.extend(check_letter_answer(item, &task.shared_options, 1));
         }
         TaskKind::ShortAnswer(limit)
@@ -203,7 +315,10 @@ fn validate_item(item: &Item, task: &Task, haystack: Option<&str>) -> Vec<Valida
                     } else if words > limit.max_words as usize {
                         issues.push(ValidationIssue::error(
                             number,
-                            format!("\"{variant}\" has {words} words; the limit is {}", limit.instruction()),
+                            format!(
+                                "\"{variant}\" has {words} words; the limit is {}",
+                                limit.instruction()
+                            ),
                         ));
                     }
                     if !limit.allow_number && is_number(variant) {
@@ -222,14 +337,23 @@ fn validate_item(item: &Item, task: &Task, haystack: Option<&str>) -> Vec<Valida
                     }
                 }
             }
-            _ => issues.push(ValidationIssue::error(number, "Answer must be text taken from the recording")),
+            _ => issues.push(ValidationIssue::error(
+                number,
+                "Answer must be text taken from the recording",
+            )),
         },
     }
     if let Some(haystack) = haystack {
         if item.evidence.trim().is_empty() {
-            issues.push(ValidationIssue::warning(number, "No evidence quoted from the script"));
+            issues.push(ValidationIssue::warning(
+                number,
+                "No evidence quoted from the script",
+            ));
         } else if !haystack.contains(&normalize(&item.evidence)) {
-            issues.push(ValidationIssue::warning(number, "The quoted evidence is not verbatim from the script"));
+            issues.push(ValidationIssue::warning(
+                number,
+                "The quoted evidence is not verbatim from the script",
+            ));
         }
     }
     issues
@@ -240,11 +364,20 @@ fn check_lettering(options: &[Choice], item: Option<u8>) -> Vec<ValidationIssue>
     for (i, option) in options.iter().enumerate() {
         let expected = (b'A' + i as u8) as char;
         if option.letter != expected {
-            issues.push(ValidationIssue::error(item, format!("Options must be lettered A, B, C...; found {}", option.letter)));
+            issues.push(ValidationIssue::error(
+                item,
+                format!(
+                    "Options must be lettered A, B, C...; found {}",
+                    option.letter
+                ),
+            ));
             break;
         }
         if option.text.trim().is_empty() {
-            issues.push(ValidationIssue::error(item, format!("Option {} is empty", option.letter)));
+            issues.push(ValidationIssue::error(
+                item,
+                format!("Option {} is empty", option.letter),
+            ));
         }
     }
     issues
@@ -256,16 +389,26 @@ fn check_distinct_letters(options: &[Choice]) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     for (i, option) in options.iter().enumerate() {
         if options[..i].iter().any(|o| o.letter == option.letter) {
-            issues.push(ValidationIssue::error(None, format!("Option letter {} is used twice", option.letter)));
+            issues.push(ValidationIssue::error(
+                None,
+                format!("Option letter {} is used twice", option.letter),
+            ));
         }
         if option.text.trim().is_empty() {
-            issues.push(ValidationIssue::error(None, format!("Option {} is empty", option.letter)));
+            issues.push(ValidationIssue::error(
+                None,
+                format!("Option {} is empty", option.letter),
+            ));
         }
     }
     issues
 }
 
-fn check_letter_answer(item: &Item, options: &[Choice], expected_count: usize) -> Vec<ValidationIssue> {
+fn check_letter_answer(
+    item: &Item,
+    options: &[Choice],
+    expected_count: usize,
+) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     match &item.answer {
         Answer::Letters(letters) => {
@@ -277,11 +420,17 @@ fn check_letter_answer(item: &Item, options: &[Choice], expected_count: usize) -
             }
             for letter in letters {
                 if !options.iter().any(|o| o.letter == *letter) {
-                    issues.push(ValidationIssue::error(Some(item.number), format!("Answer {letter} is not one of the options")));
+                    issues.push(ValidationIssue::error(
+                        Some(item.number),
+                        format!("Answer {letter} is not one of the options"),
+                    ));
                 }
             }
         }
-        _ => issues.push(ValidationIssue::error(Some(item.number), "Answer must be a letter")),
+        _ => issues.push(ValidationIssue::error(
+            Some(item.number),
+            "Answer must be a letter",
+        )),
     }
     issues
 }
@@ -308,7 +457,10 @@ pub fn normalize(text: &str) -> String {
 }
 
 fn is_number(text: &str) -> bool {
-    let stripped: String = text.chars().filter(|c| !matches!(c, ',' | '.' | '%' | ' ')).collect();
+    let stripped: String = text
+        .chars()
+        .filter(|c| !matches!(c, ',' | '.' | '%' | ' '))
+        .collect();
     !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
 }
 
@@ -352,8 +504,14 @@ mod tests {
 
     #[test]
     fn ungrounded_or_too_long_answers_fail() {
-        assert!(has_errors(&validate_task(&short_answer_task("hip pain"), Some(&passage()))));
-        assert!(has_errors(&validate_task(&short_answer_task("very bad knee pain"), Some(&passage()))));
+        assert!(has_errors(&validate_task(
+            &short_answer_task("hip pain"),
+            Some(&passage())
+        )));
+        assert!(has_errors(&validate_task(
+            &short_answer_task("very bad knee pain"),
+            Some(&passage())
+        )));
     }
 
     #[test]
@@ -367,7 +525,13 @@ mod tests {
 
     #[test]
     fn multiple_select_needs_distinct_letters() {
-        let options: Vec<Choice> = "ABCDE".chars().map(|c| Choice { letter: c, text: format!("option {c}") }).collect();
+        let options: Vec<Choice> = "ABCDE"
+            .chars()
+            .map(|c| Choice {
+                letter: c,
+                text: format!("option {c}"),
+            })
+            .collect();
         let item = |n: u8, l: char| Item {
             number: n,
             stem: format!("statement {n}"),
@@ -376,7 +540,14 @@ mod tests {
             evidence: String::new(),
         };
         let mut task = Task {
-            spec: TaskSpec::new(TaskKind::MultipleSelect { choose: 2, options: 5 }, 11, 12),
+            spec: TaskSpec::new(
+                TaskKind::MultipleSelect {
+                    choose: 2,
+                    options: 5,
+                },
+                11,
+                12,
+            ),
             instruction: String::new(),
             shared_options: options,
             summary: None,
@@ -392,12 +563,100 @@ mod tests {
         let hsg = ExamFormat::hsg_national();
         let part1 = hsg.part(1).unwrap();
         assert!(validate_speakers(part1, &part1.default_speakers).is_empty());
-        assert!(has_errors(&validate_speakers(part1, &part1.default_speakers[..2])));
+        assert!(has_errors(&validate_speakers(
+            part1,
+            &part1.default_speakers[..2]
+        )));
     }
 
     #[test]
     fn normalize_strips_punctuation() {
-        assert_eq!(normalize("Text-neck, eye strain and headaches!"), "text neck eye strain and headaches");
+        assert_eq!(
+            normalize("Text-neck, eye strain and headaches!"),
+            "text neck eye strain and headaches"
+        );
         assert_eq!(normalize("Samara\u{2019}s sister"), "samaras sister");
+    }
+
+    fn stub_task(spec: TaskSpec) -> Task {
+        let items = (spec.first..=spec.last)
+            .map(|n| Item {
+                number: n,
+                stem: format!("statement {n}"),
+                options: vec![],
+                answer: Answer::Tfng(Tfng::True),
+                evidence: String::new(),
+            })
+            .collect();
+        Task {
+            spec,
+            instruction: String::new(),
+            shared_options: vec![],
+            summary: None,
+            items,
+        }
+    }
+
+    /// Every part scripted and every task present; the content is placeholder.
+    fn filled_exam() -> Exam {
+        let mut exam = Exam::new(ExamFormat::hsg_national(), "Mock 1", "news");
+        for part in &mut exam.parts {
+            let labels: Vec<String> = part.speakers.iter().map(|s| s.label.clone()).collect();
+            let script: Vec<String> = labels
+                .iter()
+                .map(|l| format!("{l}: Hello and welcome."))
+                .collect();
+            part.passage = Some(
+                Passage::parse(part.spec.number, "topic", &script.join("\n"), &labels).unwrap(),
+            );
+            part.tasks = part.spec.tasks.iter().cloned().map(stub_task).collect();
+        }
+        exam
+    }
+
+    #[test]
+    fn empty_exam_lists_every_missing_script_and_task() {
+        let issues = validate_exam(&Exam::new(ExamFormat::hsg_national(), "Mock 1", "news"));
+        assert_eq!(
+            issues
+                .iter()
+                .filter(|i| i.message.contains("no script yet"))
+                .count(),
+            4
+        );
+        assert_eq!(issues.len(), 4 + 7, "{issues:?}");
+        assert!(has_errors(&issues));
+    }
+
+    #[test]
+    fn complete_exam_has_no_structural_issues() {
+        let issues = validate_exam(&filled_exam());
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn missing_task_is_named_by_range() {
+        let mut exam = filled_exam();
+        exam.parts[1].tasks.remove(1);
+        let issues = validate_exam(&exam);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].message.contains("13 - 15"),
+            "{}",
+            issues[0].message
+        );
+    }
+
+    #[test]
+    fn misnumbered_items_break_contiguity() {
+        let mut exam = filled_exam();
+        exam.parts[2].tasks[0].items[1].number = 21;
+        let issues = validate_exam(&exam);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(
+            issues[0].message.contains("1 to 35"),
+            "{}",
+            issues[0].message
+        );
     }
 }

@@ -12,12 +12,21 @@ pub struct Pcm16 {
 
 impl Pcm16 {
     pub fn from_le_bytes(bytes: &[u8], sample_rate: u32) -> Self {
-        let samples = bytes.chunks_exact(2).map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect();
-        Self { samples, sample_rate }
+        let samples = bytes
+            .chunks_exact(2)
+            .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+            .collect();
+        Self {
+            samples,
+            sample_rate,
+        }
     }
 
     pub fn silence(ms: u32, sample_rate: u32) -> Self {
-        Self { samples: vec![0; samples_for(ms, sample_rate)], sample_rate }
+        Self {
+            samples: vec![0; samples_for(ms, sample_rate)],
+            sample_rate,
+        }
     }
 
     /// A sine tone with a short fade so it does not click.
@@ -34,10 +43,14 @@ impl Pcm16 {
                 } else {
                     1.0
                 };
-                (amplitude * env * (2.0 * std::f32::consts::PI * hz * t).sin() * i16::MAX as f32) as i16
+                (amplitude * env * (2.0 * std::f32::consts::PI * hz * t).sin() * i16::MAX as f32)
+                    as i16
             })
             .collect();
-        Self { samples, sample_rate }
+        Self {
+            samples,
+            sample_rate,
+        }
     }
 
     pub fn duration_ms(&self) -> u32 {
@@ -81,7 +94,12 @@ impl Pcm16 {
         let mut sample_rate = None;
         while pos + 8 <= bytes.len() {
             let id = &bytes[pos..pos + 4];
-            let size = u32::from_le_bytes([bytes[pos + 4], bytes[pos + 5], bytes[pos + 6], bytes[pos + 7]]) as usize;
+            let size = u32::from_le_bytes([
+                bytes[pos + 4],
+                bytes[pos + 5],
+                bytes[pos + 6],
+                bytes[pos + 7],
+            ]) as usize;
             let body = pos + 8;
             let end = (body + size).min(bytes.len());
             match id {
@@ -91,10 +109,17 @@ impl Pcm16 {
                     }
                     let format = u16::from_le_bytes([bytes[body], bytes[body + 1]]);
                     let channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
-                    let rate = u32::from_le_bytes([bytes[body + 4], bytes[body + 5], bytes[body + 6], bytes[body + 7]]);
+                    let rate = u32::from_le_bytes([
+                        bytes[body + 4],
+                        bytes[body + 5],
+                        bytes[body + 6],
+                        bytes[body + 7],
+                    ]);
                     let bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
                     if format != 1 || channels != 1 || bits != 16 {
-                        return Err(format!("unsupported WAV: format {format}, {channels} channel(s), {bits} bits; need PCM mono 16-bit"));
+                        return Err(format!(
+                            "unsupported WAV: format {format}, {channels} channel(s), {bits} bits; need PCM mono 16-bit"
+                        ));
                     }
                     sample_rate = Some(rate);
                 }
@@ -114,9 +139,26 @@ fn samples_for(ms: u32, sample_rate: u32) -> usize {
     (u64::from(ms) * u64::from(sample_rate) / 1000) as usize
 }
 
+/// Size of the header `to_wav` writes.
+const WAV_HEADER_LEN: u64 = 44;
+
+/// Duration of a recording written by `to_wav`, from the file's length in
+/// bytes; lets the server describe a WAV on disk without reading it.
+pub fn duration_ms_for_len(wav_len: u64) -> u32 {
+    let data_len = wav_len.saturating_sub(WAV_HEADER_LEN);
+    (data_len * 1000 / (u64::from(SAMPLE_RATE) * 2)) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn duration_for_len_matches_pcm() {
+        let wav = Pcm16::silence(1_500, SAMPLE_RATE).to_wav();
+        assert_eq!(duration_ms_for_len(wav.len() as u64), 1_500);
+        assert_eq!(duration_ms_for_len(0), 0);
+    }
 
     #[test]
     fn silence_and_tone_have_the_right_length() {

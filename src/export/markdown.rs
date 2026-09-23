@@ -1,7 +1,7 @@
 //! Markdown rendering of the paper, the key and the transcript. Paste into
 //! Word or convert with pandoc; a DOCX exporter can be added beside it.
 
-use crate::domain::{Exam, ExamPart, Passage, PartSpec, SpeakerConfig, Task, TaskKind};
+use crate::domain::{Exam, ExamPart, PartSpec, Passage, SpeakerConfig, Task, TaskKind};
 
 /// The question block as printed on the paper (no answers).
 pub fn render_task(task: &Task) -> String {
@@ -17,7 +17,8 @@ pub fn render_task(task: &Task) -> String {
         out.push_str(summary.trim());
         out.push_str("\n\n");
     }
-    let bare_items = task.summary.is_some() || matches!(task.spec.kind, TaskKind::MultipleSelect { .. });
+    let bare_items =
+        task.summary.is_some() || matches!(task.spec.kind, TaskKind::MultipleSelect { .. });
     if !bare_items {
         for item in &task.items {
             out.push_str(&format!("{}. {}\n", item.number, item.stem.trim()));
@@ -61,7 +62,10 @@ pub fn render_key(tasks: &[Task]) -> String {
 
 /// The script with the voice line-up, for the teacher's copy.
 pub fn render_transcript(passage: &Passage, speakers: &[SpeakerConfig]) -> String {
-    let mut out = format!("### Transcript - Part {}\n\n*{}*\n\n", passage.part, passage.topic);
+    let mut out = format!(
+        "### Transcript - Part {}\n\n*{}*\n\n",
+        passage.part, passage.topic
+    );
     for speaker in speakers {
         out.push_str(&format!("- {}\n", speaker.describe()));
     }
@@ -95,7 +99,11 @@ pub fn render_exam(exam: &Exam) -> String {
     }
     out.push_str("---\n\n# Answer key\n\n| Q | Key |\n|---|-----|\n");
     for entry in exam.answer_key() {
-        out.push_str(&format!("| {} | {} |\n", entry.number, entry.answer.display()));
+        out.push_str(&format!(
+            "| {} | {} |\n",
+            entry.number,
+            entry.answer.display()
+        ));
     }
     out.push_str("\n---\n\n# Transcripts\n\n");
     for part in &exam.parts {
@@ -121,11 +129,26 @@ mod tests {
         let task = Task {
             spec: TaskSpec::new(TaskKind::TrueFalseNotGiven, 1, 2),
             instruction: "True, false or not given?".into(),
-            shared_options: vec![Choice { letter: 'S', text: "Samara".into() }],
+            shared_options: vec![Choice {
+                letter: 'S',
+                text: "Samara".into(),
+            }],
             summary: None,
             items: vec![
-                Item { number: 1, stem: "First.".into(), options: vec![], answer: Answer::Tfng(Tfng::True), evidence: String::new() },
-                Item { number: 2, stem: "Second.".into(), options: vec![], answer: Answer::Tfng(Tfng::NotGiven), evidence: String::new() },
+                Item {
+                    number: 1,
+                    stem: "First.".into(),
+                    options: vec![],
+                    answer: Answer::Tfng(Tfng::True),
+                    evidence: String::new(),
+                },
+                Item {
+                    number: 2,
+                    stem: "Second.".into(),
+                    options: vec![],
+                    answer: Answer::Tfng(Tfng::NotGiven),
+                    evidence: String::new(),
+                },
             ],
         };
         let paper = render_task(&task);

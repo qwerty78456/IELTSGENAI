@@ -3,6 +3,134 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.4.0] – 2026-09-22 — "Trọn một đề, một file WAV"
+
+Roadmap mục 1 đã xong: trang **`/exam`** nhận một chủ đề cho mỗi part, một
+nút bấm cho ra **cả đề thi** (câu hỏi bốn part, đáp án, transcript) và **một
+bản ghi âm hoàn chỉnh** theo `AudioProgram` (nhạc, hiệu lệnh, thông báo, 20 s
+đọc đề, phát lại cho part phát hai lần, thời gian kiểm tra). Bốn script sinh
+song song; rồi câu hỏi của từng part sinh song song với job audio duy nhất.
+File WAV (~86 MB cho 30 phút) không còn đi qua server-fn dưới dạng JSON mà
+được **stream qua `/audio/{job_id}`**, tua được, tải thẳng.
+
+### Điểm nhấn
+
+- **Một đề, một nút.** `ui/views/exam.rs` giữ `ExamState { exam: domain::Exam,
+  work, audio, run }`; `domain::Exam` là nguồn sự thật, `render_exam` và
+  `ExamAudioRequest` tiêu thụ trực tiếp. State nằm trong context của layout
+  `Navbar` và pipeline chạy bằng `spawn_forever`, nên chuyển trang không làm
+  rơi job 25 phút.
+- **Route stream audio là handler axum thường, cố ý không phải server-fn.**
+  dioxus-server bọc mọi server-fn và ép redirect 302 → Referer khi request
+  chấp nhận `text/html`, đúng thứ thẻ `<a download>` gửi; `FileStream` lại
+  gán `.wav` thành `text/html`. `infrastructure/jobs/serve.rs` dùng
+  `tower_http::services::ServeFile`: `audio/wav`, `Accept-Ranges`, 206 cho
+  `Range`. `main.rs` gắn nó qua `dioxus::serve(|| async { Ok(router(App)
+  .route(AUDIO_ROUTE, get(serve_audio))) })`.
+- **Job audio cả đề đọc hai part cùng lúc** (`Semaphore(2)` +
+  `try_join_all`) thay vì tuần tự, và báo tiến độ 0,1 → 0,8 theo số part
+  xong; UI hiện "reading part k of n" rồi "assembling…".
+- **`validate_exam`** trong domain: part nào chưa có script, task nào còn
+  thiếu, số câu có liên tục 1..=35/40 không. Nút tải luôn bật, nhưng đổi
+  nhãn thành "Download draft (incomplete)" và liệt kê lý do phía trên.
+
+### Thêm
+
+- `src/ui/views/exam.rs` (`ExamView`, `ExamState`, `PartWork`, `AudioWork`,
+  `Step`), route `/exam`, link "Whole exam" trên navbar.
+- `src/infrastructure/jobs/serve.rs` (`serve_audio`), `AUDIO_ROUTE` và
+  `audio_url` trong `application/audio.rs`.
+- `JobView.track: Option<AudioTrack>`: `audio_job_status` dựng `AudioTrack`
+  (container, 24 kHz, thời lượng từ kích thước file, `location` = job id)
+  khi job xong. `AudioTrack` lần đầu có nơi khởi tạo.
+- `wav::duration_ms_for_len`, `validate_exam`, 5 test mới (28 tổng).
+- `src/ui/components/issue_list.rs` (dùng chung hai trang).
+- Dependency `tower-http` (feature `fs`, phía server).
+
+### Thay đổi
+
+- `main.rs` dùng `dioxus::serve` với router tuỳ chỉnh (server) và
+  `dioxus::launch` (browser); `ensure_cleanup_running` chạy từ lúc boot thay
+  vì từ request đầu tiên.
+- `AudioPlayerSection` nhận URL thay vì `Vec<u8>`: `<audio src>` và
+  `<a download>` trỏ thẳng vào `/audio/{job_id}`; trang part cũng dùng đường
+  này (WAV 14 MB của một part trước đây thành ~50 MB JSON đi qua server-fn).
+- `ui/jobs.rs` thêm nhịp/trần cho job cả đề (5 s, tối đa 45 phút).
+
+### Bỏ
+
+- `audio_job_result` (trả `Vec<u8>` qua server-fn).
+
+### Đã kiểm chứng
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `cargo check` (web) | sạch, 0 warning |
+| `cargo check --target wasm32-unknown-unknown` | sạch |
+| `cargo check --features server --no-default-features` | sạch, 0 warning |
+| `cargo test --features server --no-default-features` | 28/28 |
+
+### Còn phía trước
+
+Lưu đề vào SQLite (để lấy lại bản ghi sau khi đóng tab); DOCX; MP3; xác
+thực; sinh lại từng câu; chỉnh giọng từng part trên trang `/exam`.
+
+## [0.3.0] – 2026-09-22 — "Một nút, trọn một part"
+
+Trước đây giáo viên bấm ba lần cho một part: script, rồi câu hỏi, rồi audio;
+transcript chỉ xuất hiện khi đã có câu hỏi. Bản này thêm **một nút sinh trọn
+gói**: script trước, rồi câu hỏi và bản ghi âm chạy **song song**, transcript
+tải được ngay khi có script. Toàn bộ điều phối nằm ở trình duyệt, nối đúng
+các server-fn đã có; phía server không đổi một dòng.
+
+### Điểm nhấn
+
+- **Một lần bấm, năm sản phẩm.** "Generate script, questions and audio" gọi
+  `generate_passage`, rồi `start_part_audio` (job TTS chạy nền ngay) và vòng
+  `generate_task` cùng lúc bằng `futures_util::future::join`. Câu hỏi và TTS
+  chỉ phụ thuộc vào `Passage` bất biến nên chạy song song là an toàn; bản
+  ghi âm vốn là đường găng, câu hỏi xong trong lúc chờ nó.
+- **Script có lỗi thì dừng.** Nếu validator trả issue mức Error (nhãn giọng
+  lạ, chỗ trống trong script) pipeline dừng sau bước script và hiện lý do;
+  cảnh báo (độ dài) thì đi tiếp. Cùng lỗi đó sẽ làm hỏng TTS và grounding.
+- **Huỷ là huỷ thật ở phía trình duyệt.** `HomeState.run` tăng mỗi lần đặt
+  lại kết quả hoặc huỷ; mọi kết quả về muộn của lần chạy cũ bị bỏ thay vì đè
+  lên kết quả mới. Job TTS đã khởi động vẫn chạy trên server; id được giữ để
+  "Check again" lấy về sau.
+
+### Thêm
+
+- `src/ui/jobs.rs`: `wait_for_job` poll `audio_job_status` theo nhịp và trần
+  thời gian của từng loại job (part: 2 s, tối đa 15 phút; trước là 5 phút,
+  không đủ cho part ba giọng đọc từng lượt).
+- Nút "Download transcript (Markdown)" ngay dưới script.
+- Nút "Check again" khi bản ghi âm chưa về (hết giờ chờ hoặc đã huỷ).
+- Dependency `futures-util` (đã có sẵn trong lock qua Dioxus).
+
+### Thay đổi
+
+- Ba closure `handle_generate_*` trong `home.rs` thành ba hàm async dùng lại
+  (`run_script`, `run_tasks`, `run_audio`); pipeline và các nút riêng cùng
+  gọi chúng.
+- Bốn popup tiến độ gộp thành một, nội dung theo trạng thái ("Writing
+  questions (1 of 3) and recording the audio...").
+- Nút "Generate script" thành "Script only", đứng cạnh nút sinh trọn gói.
+- Đổi format hoặc part cũng vô hiệu hoá lần chạy đang dở.
+
+### Đã kiểm chứng
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `cargo check` (web) | sạch, 0 warning |
+| `cargo check --target wasm32-unknown-unknown` | sạch |
+| `cargo check --features server --no-default-features` | sạch, 0 warning |
+| `cargo test --features server --no-default-features` | 23/23 |
+
+### Còn phía trước
+
+Trang `/exam`: cả đề, bốn part song song, một bản ghi âm theo `AudioProgram`,
+tải đề + đáp án + transcript trong một file.
+
 ## [0.2.0] – 2026-09-21 — "Từ máy đọc script IELTS thành máy ra đề nghe"
 
 Bản này không phải một tính năng. Nó là một lần **lột xác toàn bộ**: 4.364 dòng

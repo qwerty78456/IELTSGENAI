@@ -21,12 +21,22 @@ pub struct ExamPart {
 impl ExamPart {
     pub fn from_spec(spec: PartSpec) -> Self {
         let speakers = spec.default_speakers.clone();
-        Self { spec, speakers, passage: None, tasks: Vec::new(), audio: None }
+        Self {
+            spec,
+            speakers,
+            passage: None,
+            tasks: Vec::new(),
+            audio: None,
+        }
     }
 
     /// Task specs that have no generated task yet.
     pub fn missing_tasks(&self) -> Vec<&TaskSpec> {
-        self.spec.tasks.iter().filter(|spec| !self.tasks.iter().any(|t| &t.spec == *spec)).collect()
+        self.spec
+            .tasks
+            .iter()
+            .filter(|spec| !self.tasks.iter().any(|t| &t.spec == *spec))
+            .collect()
     }
 
     pub fn is_complete(&self) -> bool {
@@ -52,8 +62,19 @@ pub struct Exam {
 
 impl Exam {
     pub fn new(format: ExamFormat, title: impl Into<String>, theme: impl Into<String>) -> Self {
-        let parts = format.parts.iter().cloned().map(ExamPart::from_spec).collect();
-        Self { id: Uuid::new_v4(), format, title: title.into(), theme: theme.into(), parts }
+        let parts = format
+            .parts
+            .iter()
+            .cloned()
+            .map(ExamPart::from_spec)
+            .collect();
+        Self {
+            id: Uuid::new_v4(),
+            format,
+            title: title.into(),
+            theme: theme.into(),
+            parts,
+        }
     }
 
     pub fn part(&self, number: u8) -> Option<&ExamPart> {
@@ -70,7 +91,12 @@ impl Exam {
             .parts
             .iter()
             .flat_map(|part| part.tasks.iter())
-            .flat_map(|task| task.answers().map(|(number, answer)| KeyEntry { number, answer: answer.clone() }))
+            .flat_map(|task| {
+                task.answers().map(|(number, answer)| KeyEntry {
+                    number,
+                    answer: answer.clone(),
+                })
+            })
             .collect();
         key.sort_by_key(|entry| entry.number);
         key

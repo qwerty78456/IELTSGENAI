@@ -108,11 +108,17 @@ pub struct WordLimit {
 
 impl WordLimit {
     pub const fn words(max_words: u8) -> Self {
-        Self { max_words, allow_number: false }
+        Self {
+            max_words,
+            allow_number: false,
+        }
     }
 
     pub const fn words_or_number(max_words: u8) -> Self {
-        Self { max_words, allow_number: true }
+        Self {
+            max_words,
+            allow_number: true,
+        }
     }
 
     pub fn instruction(self) -> String {
@@ -193,13 +199,19 @@ impl TaskKind {
     pub fn has_shared_options(&self) -> bool {
         matches!(
             self,
-            TaskKind::WhoMentioned { .. } | TaskKind::MultipleSelect { .. } | TaskKind::Matching { .. }
+            TaskKind::WhoMentioned { .. }
+                | TaskKind::MultipleSelect { .. }
+                | TaskKind::Matching { .. }
         )
     }
 
     /// The rubric printed above the task, in the style of the reference paper.
     pub fn default_instruction(&self, first: u8, last: u8) -> String {
-        let range = if first == last { format!("question {first}") } else { format!("questions {first} - {last}") };
+        let range = if first == last {
+            format!("question {first}")
+        } else {
+            format!("questions {first} - {last}")
+        };
         match self {
             TaskKind::TrueFalseNotGiven => format!(
                 "For {range}, decide whether each of the following statements is True (T), False (F), or Not Given (NG) \
@@ -236,10 +248,16 @@ impl TaskKind {
                 limit.instruction()
             ),
             TaskKind::NoteCompletion(limit) => {
-                format!("Complete the notes below. Write {} for each answer ({range}).", limit.instruction())
+                format!(
+                    "Complete the notes below. Write {} for each answer ({range}).",
+                    limit.instruction()
+                )
             }
             TaskKind::SentenceCompletion(limit) => {
-                format!("Complete the sentences below. Write {} for each answer ({range}).", limit.instruction())
+                format!(
+                    "Complete the sentences below. Write {} for each answer ({range}).",
+                    limit.instruction()
+                )
             }
             TaskKind::Matching { .. } => format!(
                 "For {range}, choose the correct letter from the list of options and write it next to each question."
@@ -277,7 +295,11 @@ impl TaskSpec {
     }
 
     pub fn range_label(&self) -> String {
-        if self.first == self.last { self.first.to_string() } else { format!("{} - {}", self.first, self.last) }
+        if self.first == self.last {
+            self.first.to_string()
+        } else {
+            format!("{} - {}", self.first, self.last)
+        }
     }
 
     pub fn instruction(&self) -> String {
@@ -349,7 +371,10 @@ impl ExamFormat {
         let mut expected = 1u8;
         for part in &self.parts {
             if part.tasks.is_empty() {
-                return Err(DomainError::InvalidRequest(format!("Part {} has no tasks", part.number)));
+                return Err(DomainError::InvalidRequest(format!(
+                    "Part {} has no tasks",
+                    part.number
+                )));
             }
             if part.default_speakers.len() != part.speaker_count() as usize {
                 return Err(DomainError::InvalidRequest(format!(
@@ -554,6 +579,9 @@ mod tests {
     #[test]
     fn word_limit_wording() {
         assert_eq!(WordLimit::words(2).instruction(), "NO MORE THAN TWO WORDS");
-        assert_eq!(WordLimit::words_or_number(1).instruction(), "NO MORE THAN ONE WORD AND/OR A NUMBER");
+        assert_eq!(
+            WordLimit::words_or_number(1).instruction(),
+            "NO MORE THAN ONE WORD AND/OR A NUMBER"
+        );
     }
 }

@@ -3,5 +3,5 @@
 mod program;
 mod wav;
 
-pub use program::{render_program, Announcer, AudioError, ProgramAssets};
-pub use wav::{Pcm16, SAMPLE_RATE};
+pub use program::{Announcer, AudioError, ProgramAssets, render_program};
+pub use wav::{Pcm16, SAMPLE_RATE, duration_ms_for_len};

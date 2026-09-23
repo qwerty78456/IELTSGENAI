@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::domain::{Choice, Item, Passage, PartSpec, SpeakerConfig, Task, TaskKind, TaskSpec};
+use crate::domain::{Choice, Item, PartSpec, Passage, SpeakerConfig, Task, TaskKind, TaskSpec};
 
 /// What the model is asked to return for one task. Same shape as `Task`
 /// minus the spec, which the server owns.
@@ -17,15 +17,32 @@ pub struct TaskDraftDto {
 
 impl TaskDraftDto {
     pub fn into_task(self, spec: TaskSpec) -> Task {
-        let instruction = self.instruction.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| spec.instruction());
-        Task { spec, instruction, shared_options: self.shared_options, summary: self.summary, items: self.items }
+        let instruction = self
+            .instruction
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| spec.instruction());
+        Task {
+            spec,
+            instruction,
+            shared_options: self.shared_options,
+            summary: self.summary,
+            items: self.items,
+        }
     }
 }
 
 /// The question prompt for one task of a part. The passage is embedded in
 /// full; keys must be quoted verbatim so the validator can ground them.
-pub fn task_prompt(part: &PartSpec, spec: &TaskSpec, passage: &Passage, speakers: &[SpeakerConfig]) -> String {
-    let speaker_lines: Vec<String> = speakers.iter().map(|s| format!("- {}", s.describe())).collect();
+pub fn task_prompt(
+    part: &PartSpec,
+    spec: &TaskSpec,
+    passage: &Passage,
+    speakers: &[SpeakerConfig],
+) -> String {
+    let speaker_lines: Vec<String> = speakers
+        .iter()
+        .map(|s| format!("- {}", s.describe()))
+        .collect();
     format!(
         "You write questions for a listening exam. Below is the complete script of {} ({}).\n\n\
          SPEAKERS:\n{}\n\n\

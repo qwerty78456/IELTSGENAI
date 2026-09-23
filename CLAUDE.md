@@ -59,10 +59,15 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   DTOs must be plain serialisable types. Do not reintroduce `#[cfg(feature = "server")]`
   blocks inside server-fn bodies.
 - **`src/infrastructure/` is `#![cfg(feature = "server")]`** and must not define `#[server]`
-  functions. `main.rs` gates the module and calls `infrastructure::bootstrap()` (config, data
-  dirs, tracing) before `dioxus::launch`.
-- **`src/ui/` talks to the server only through `crate::application`.** The home view holds a
-  single `HomeState` signal and only displays issues; rule checks belong to the domain.
+  functions. `main.rs` gates the module, calls `infrastructure::bootstrap()` (config, data
+  dirs, tracing) and then `dioxus::serve` with `dioxus::server::router(App)` plus the one plain
+  axum route `GET /audio/{job_id}`; the browser build uses `dioxus::launch`.
+- **`src/ui/` talks to the server only through `crate::application`.** The part view holds a
+  single `HomeState` signal; the exam view a single `ExamState` signal provided by the `Navbar`
+  layout. Both only display issues; rule checks belong to the domain. Browser-side orchestration
+  (script first, then questions and recording side by side, `futures_util::future::join`) lives
+  in the views and chains the application's server functions; a `run` counter drops late results
+  of a cancelled or superseded run.
 - Platform-specific deps are split in `Cargo.toml` by `target_arch = "wasm32"`; use
   `#[cfg(target_arch = "wasm32")]` in UI code for gloo/web-sys, not feature flags.
 
@@ -91,7 +96,10 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   three-voice or long passages are synthesised turn by turn and joined. Output is 24 kHz mono
   16-bit PCM; WAV is encoded/decoded by hand in `infrastructure/audio/wav.rs` (no audio crate).
 - Audio synthesis runs as background jobs (SQLite `jobs.db` + WAV under `DATA_DIR/audio/`);
-  the browser polls `audio_job_status`. Jobs older than 24 h are purged hourly.
+  the browser polls `audio_job_status` (`ui/jobs.rs`, per-kind cadence and deadline) and streams
+  the finished WAV from `/audio/{job_id}`, a plain axum route (`infrastructure/jobs/serve.rs`).
+  Keep it a plain route: server functions redirect requests that accept `text/html`, which is
+  what a download link sends. Jobs older than 24 h are purged hourly, starting at boot.
 - All configuration is environment only (`infrastructure/config.rs`, see `.env.example`).
 
 ## Dioxus 0.7 API constraints (from `.github/agents/dioxus-0-7-rust-ui-expert.agent.md`)

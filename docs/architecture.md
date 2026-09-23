@@ -15,9 +15,9 @@ grading, candidate management, official-exam claims, any other skill.
 ```
                     ┌───────────────────────────────────────────┐
    teacher ───────► │  UI (Dioxus, wasm)                        │
-                    │  ui/views/home.rs                         │
+                    │  ui/views/{home,exam}.rs                  │
                     └───────────────┬───────────────────────────┘
-                                    │ #[server] calls (HTTP, serde)
+                                    │ #[server] calls (HTTP, serde); GET /audio/{job_id} streams the WAV
                     ┌───────────────▼───────────────────────────┐
                     │  Application (use cases)                  │
                     │  application/{topics,passages,tasks,audio}│
@@ -45,7 +45,7 @@ are unit-tested with plain `cargo test`.
 
 ```
 src/
-  main.rs                 wiring only: routes, launch, server bootstrap
+  main.rs                 wiring only: routes, dioxus::serve router + GET /audio/{job_id}, server bootstrap
   domain/                 pure; compiles on wasm and server
     format.rs             ExamFormat, PartSpec, TaskSpec, TaskKind, WordLimit, PlayCount, PassageKind
                           + presets ExamFormat::ielts_listening(), ::hsg_national()
@@ -54,14 +54,14 @@ src/
     task.rs               Task, Item, Choice, Answer (letters | text | tfng)
     exam.rs               Exam aggregate: parts, answer key, completeness
     audio.rs              AudioTrack, AudioProgram (tones, pauses, replays derived from the format)
-    validation.rs         invariants -> Vec<ValidationIssue>; grounding of keys in the passage
+    validation.rs         invariants -> Vec<ValidationIssue>; grounding of keys in the passage; validate_exam (structural completeness)
     commands.rs           PassageRequest, TaskRequest, AudioRequest, ExamAudioRequest (self-validating)
     error.rs              DomainError (teacher-readable)
   application/            #[server] functions = use cases; DTOs shared with the browser
     topics.rs             suggest_topic
     passages.rs           generate_passage -> PassageDraft { passage, issues }
     tasks.rs              generate_task    -> TaskDraft { task, issues }
-    audio.rs              start_part_audio, start_exam_audio, audio_job_status, audio_job_result
+    audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
     config.rs             AppConfig from env (.env in dev)
     llm/gemini.rs         GeminiClient: generate_text, generate_json<T>, synthesize; one retry policy
@@ -71,9 +71,11 @@ src/
     audio/program.rs      render_program(AudioProgram, passages, announcer, assets)
     jobs/store.rs         SQLite job table (JobStore)
     jobs/worker.rs        spawn_part_audio, spawn_exam_audio, hourly clean-up
+    jobs/serve.rs         serve_audio: plain axum handler streaming a finished WAV (audio/wav, Range)
     rate_limiter.rs       per-minute buckets
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
-  ui/                     components (audio player, loading popup, speaker modal), views (home, navbar)
+  ui/                     components (audio player, issue list, loading popup, speaker modal), views (home, exam, navbar)
+    jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
 ```
 
 ## Core model
@@ -125,6 +127,22 @@ topic ──► passage_prompt ──► Gemini text ──► Passage::parse �
           ExamAudioRequest ──► job ──► every part ──► render_program ──► one WAV
 ```
 
+The browser orchestrates. For one part, `ui/views/home.rs` chains these use
+cases: `generate_passage`, then, unless the script has Error-severity
+issues, `start_part_audio` and the `generate_task` loop side by side
+(`futures_util::future::join`), with `ui/jobs.rs` polling the job. Questions
+and synthesis both read the same immutable `Passage`, so nothing on the
+server is shared between them; the recording is the long pole and the
+questions finish while it renders.
+
+For the whole exam, `ui/views/exam.rs` runs every part's `generate_passage`
+at once (`join_all`), then every part's `generate_task` loop at once beside
+one `start_exam_audio` job. A part whose script failed or has Error-severity
+issues keeps its own status and can be regenerated alone, and
+`validate_exam` names what is still missing before `render_exam` is
+downloaded. The `ExamState` lives in the `Navbar` layout's context and its
+pipelines run on the root scope, so switching pages does not drop them.
+
 Validation is the product's quality gate. Text keys must occur verbatim in
 the passage (after normalisation), respect the word limit and the
 number rule; letter keys must exist among the options; multiple selection
@@ -158,8 +176,18 @@ The teacher edits; nothing is "final" until they say so.
 
 Synthesis outlives an HTTP request, so it runs as a job: a row in SQLite
 (`DATA_DIR/jobs.db`) plus a WAV under `DATA_DIR/audio/`. The browser polls
-`audio_job_status` and fetches `audio_job_result`. Jobs and files older than
-24 h are purged hourly. Concurrency is capped per process.
+`audio_job_status` (`ui/jobs.rs`: every 2 s for a part, 5 s for an exam,
+with a deadline per kind that never cancels the job) and, once the job is
+complete, receives an `AudioTrack` whose `location` is the job id. The WAV
+itself is streamed by a plain axum route, `GET /audio/{job_id}`
+(`infrastructure/jobs/serve.rs`, mounted in `main.rs` through
+`dioxus::serve`), as `audio/wav` with `Range` support, so the player can
+seek and the download link needs no blob. It is deliberately not a server
+function: those redirect requests that accept `text/html`, which is exactly
+what a download link sends. An exam job reads two parts at a time and
+reports progress from 0.1 to 0.8 as parts finish. Jobs and files older than
+24 h are purged hourly; the clean-up starts at boot. Concurrency is capped
+per process.
 
 ## Deployment shape
 
@@ -171,14 +199,13 @@ no login, and every request spends Gemini credit.
 
 ## Roadmap (in order)
 
-1. Exam-level UI: build an `Exam` across all parts, call `start_exam_audio`,
-   download the full paper via `export::markdown::render_exam`.
-2. Persist exams (SQLite table keyed by `Exam::id`) so a teacher can return
-   to a draft.
-3. DOCX export beside the Markdown one (`docx-rs`), matching the reference
+1. Persist exams (SQLite table keyed by `Exam::id`) so a teacher can return
+   to a draft, and to a recording, after closing the tab.
+2. DOCX export beside the Markdown one (`docx-rs`), matching the reference
    paper layout (answer boxes, số phách block).
-4. MP3 output via `ffmpeg`.
-5. Authentication (single shared password or Cloudflare Access), then
+3. MP3 output via `ffmpeg`.
+4. Authentication (single shared password or Cloudflare Access), then
    per-user rate limits.
-6. Regeneration of a single item with the validator's issues fed back into
+5. Regeneration of a single item with the validator's issues fed back into
    the prompt.
+6. Per-part voice editing on the exam page (the part page already has it).

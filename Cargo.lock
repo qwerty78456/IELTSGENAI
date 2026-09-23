@@ -5988,11 +5988,12 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vmq_mvp"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "base64",
  "dioxus",
  "dotenvy",
+ "futures-util",
  "gloo-net",
  "gloo-timers",
  "js-sys",
@@ -6003,6 +6004,7 @@ dependencies = [
  "sqlx",
  "thiserror 2.0.17",
  "tokio",
+ "tower-http",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

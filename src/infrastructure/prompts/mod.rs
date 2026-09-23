@@ -5,6 +5,6 @@ mod items;
 mod passage;
 mod topic;
 
-pub use items::{task_prompt, TaskDraftDto};
+pub use items::{TaskDraftDto, task_prompt};
 pub use passage::passage_prompt;
 pub use topic::topic_prompt;

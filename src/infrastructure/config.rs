@@ -43,7 +43,10 @@ impl AppConfig {
             .filter(|v| !v.trim().is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| data_dir.join("voices.json"));
-        let music_path = std::env::var("MUSIC_PATH").ok().filter(|v| !v.trim().is_empty()).map(PathBuf::from);
+        let music_path = std::env::var("MUSIC_PATH")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .map(PathBuf::from);
         Self {
             data_dir,
             gemini_api_key,
@@ -68,7 +71,10 @@ impl AppConfig {
 }
 
 fn env_or(name: &str, default: &str) -> String {
-    std::env::var(name).ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| default.to_string())
+    std::env::var(name)
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| default.to_string())
 }
 
 static CONFIG: OnceLock<AppConfig> = OnceLock::new();

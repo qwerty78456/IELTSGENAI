@@ -8,7 +8,7 @@
 use crate::domain::{Line, Passage, SpeakerConfig};
 
 use super::super::audio::{Pcm16, SAMPLE_RATE};
-use super::super::config::{config, TTS_MAX_INPUT_TOKENS};
+use super::super::config::{TTS_MAX_INPUT_TOKENS, config};
 use super::super::llm::{GeminiClient, LlmError, VoiceAssignment};
 use super::voices::VoiceMappings;
 
@@ -43,19 +43,34 @@ pub async fn synthesize_passage(
     let assignments: Vec<VoiceAssignment> = used
         .iter()
         .map(|label| {
-            let speaker = speakers.iter().find(|s| &s.label == label).ok_or_else(|| TtsError::NoVoice(label.clone()))?;
-            Ok(VoiceAssignment { label: label.clone(), voice: voices.voice_for(speaker.gender, speaker.accent) })
+            let speaker = speakers
+                .iter()
+                .find(|s| &s.label == label)
+                .ok_or_else(|| TtsError::NoVoice(label.clone()))?;
+            Ok(VoiceAssignment {
+                label: label.clone(),
+                voice: voices.voice_for(speaker.gender, speaker.accent),
+            })
         })
         .collect::<Result<_, TtsError>>()?;
 
-    let text = if assignments.len() == 1 { passage.plain_text() } else { passage.script_text() };
+    let text = if assignments.len() == 1 {
+        passage.plain_text()
+    } else {
+        passage.script_text()
+    };
     let fits_one_request = estimate_tokens(&text) < TTS_MAX_INPUT_TOKENS;
     if assignments.len() <= MAX_MULTI_SPEAKER_VOICES && fits_one_request {
-        let bytes = client.synthesize(&style_prompt(&text), &assignments).await?;
+        let bytes = client
+            .synthesize(&style_prompt(&text), &assignments)
+            .await?;
         return Ok(Pcm16::from_le_bytes(&bytes, SAMPLE_RATE));
     }
     if !fits_one_request {
-        tracing::info!(part = passage.part, "script exceeds one TTS request; reading turn by turn");
+        tracing::info!(
+            part = passage.part,
+            "script exceeds one TTS request; reading turn by turn"
+        );
     }
 
     let mut out = Pcm16::silence(0, SAMPLE_RATE);
@@ -65,7 +80,9 @@ pub async fn synthesize_passage(
             .find(|a| a.label == turn.speaker)
             .cloned()
             .ok_or_else(|| TtsError::NoVoice(turn.speaker.clone()))?;
-        let bytes = client.synthesize(&style_prompt(&turn.text), std::slice::from_ref(&assignment)).await?;
+        let bytes = client
+            .synthesize(&style_prompt(&turn.text), std::slice::from_ref(&assignment))
+            .await?;
         if index > 0 {
             out.append(&Pcm16::silence(TURN_GAP_MS, SAMPLE_RATE));
         }
@@ -77,9 +94,15 @@ pub async fn synthesize_passage(
 /// The announcer voice reading an instruction.
 pub async fn synthesize_announcement(client: &GeminiClient, text: &str) -> Result<Pcm16, TtsError> {
     let voices = VoiceMappings::load(&config().voices_path);
-    let assignment = VoiceAssignment { label: "Announcer".into(), voice: voices.announcer.clone() };
+    let assignment = VoiceAssignment {
+        label: "Announcer".into(),
+        voice: voices.announcer.clone(),
+    };
     let bytes = client
-        .synthesize(&format!("Read this exam announcement slowly and clearly:\n\n{text}"), std::slice::from_ref(&assignment))
+        .synthesize(
+            &format!("Read this exam announcement slowly and clearly:\n\n{text}"),
+            std::slice::from_ref(&assignment),
+        )
         .await?;
     Ok(Pcm16::from_le_bytes(&bytes, SAMPLE_RATE))
 }
@@ -117,7 +140,10 @@ mod tests {
 
     #[test]
     fn merges_consecutive_turns() {
-        let line = |s: &str, t: &str| Line { speaker: s.into(), text: t.into() };
+        let line = |s: &str, t: &str| Line {
+            speaker: s.into(),
+            text: t.into(),
+        };
         let merged = merge_turns(&[line("A", "one"), line("A", "two"), line("B", "three")]);
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0].text, "one two");

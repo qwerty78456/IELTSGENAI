@@ -24,7 +24,12 @@ pub struct Passage {
 impl Passage {
     /// Parses "Speaker A: ..." text. Continuation lines belong to the previous
     /// turn; leading markdown decoration around a label is tolerated.
-    pub fn parse(part: u8, topic: impl Into<String>, text: &str, labels: &[String]) -> Result<Self, DomainError> {
+    pub fn parse(
+        part: u8,
+        topic: impl Into<String>,
+        text: &str,
+        labels: &[String],
+    ) -> Result<Self, DomainError> {
         let mut lines: Vec<Line> = Vec::new();
         for raw in text.lines() {
             let trimmed = raw.trim().trim_start_matches(['*', '-', '#', '>', ' ']);
@@ -35,7 +40,10 @@ impl Passage {
                 let rest = trimmed.strip_prefix(label.as_str())?;
                 let rest = rest.trim_start_matches(['*', ' ']);
                 let rest = rest.strip_prefix(':')?;
-                Some((label.clone(), rest.trim_start_matches(['*', ' ']).trim().to_string()))
+                Some((
+                    label.clone(),
+                    rest.trim_start_matches(['*', ' ']).trim().to_string(),
+                ))
             });
             match (labelled, lines.last_mut()) {
                 (Some((speaker, text)), _) => lines.push(Line { speaker, text }),
@@ -55,20 +63,34 @@ impl Passage {
             }
         }
         if lines.is_empty() {
-            return Err(DomainError::InvalidPassage("The script is empty".to_string()));
+            return Err(DomainError::InvalidPassage(
+                "The script is empty".to_string(),
+            ));
         }
-        Ok(Self { part, topic: topic.into(), lines })
+        Ok(Self {
+            part,
+            topic: topic.into(),
+            lines,
+        })
     }
 
     /// The canonical "Speaker A: ..." text, one turn per line. This is what is
     /// sent to text-to-speech and shown to the teacher.
     pub fn script_text(&self) -> String {
-        self.lines.iter().map(|l| format!("{}: {}", l.speaker, l.text)).collect::<Vec<_>>().join("\n")
+        self.lines
+            .iter()
+            .map(|l| format!("{}: {}", l.speaker, l.text))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Spoken words only, used for grounding checks.
     pub fn plain_text(&self) -> String {
-        self.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ")
+        self.lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     pub fn word_count(&self) -> usize {
@@ -114,7 +136,8 @@ mod tests {
 
     #[test]
     fn parses_turns_and_continuations() {
-        let text = "**Speaker A:** Good morning.\nSpeaker B: Hello,\nhow are you?\n\nSpeaker A: Fine.";
+        let text =
+            "**Speaker A:** Good morning.\nSpeaker B: Hello,\nhow are you?\n\nSpeaker A: Fine.";
         let passage = Passage::parse(1, "greeting", text, &labels()).unwrap();
         assert_eq!(passage.lines.len(), 3);
         assert_eq!(passage.lines[1].text, "Hello, how are you?");

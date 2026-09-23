@@ -1,16 +1,18 @@
 //! Job execution on the Tokio runtime plus the hourly clean-up.
 
-use std::sync::OnceLock;
-
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
+
+use tokio::sync::Semaphore;
 
 use crate::domain::{AudioProgram, AudioRequest, ExamAudioRequest};
 
-use super::super::audio::{render_program, AudioError, Pcm16, ProgramAssets};
+use super::super::audio::{AudioError, Pcm16, ProgramAssets, render_program};
 use super::super::config::config;
 use super::super::llm::{GeminiClient, LlmError};
-use super::super::tts::{synthesize_passage, TtsError};
-use super::store::{now_secs, JobStore};
+use super::super::tts::{TtsError, synthesize_passage};
+use super::store::{JobStore, now_secs};
 
 /// Outputs older than this are deleted.
 const JOB_MAX_AGE_SECS: i64 = 24 * 60 * 60;
@@ -22,7 +24,8 @@ static CLEANUP_STARTED: OnceLock<()> = OnceLock::new();
 pub fn ensure_cleanup_running() {
     CLEANUP_STARTED.get_or_init(|| {
         tokio::spawn(async {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
             loop {
                 interval.tick().await;
                 cleanup_old_jobs().await;
@@ -103,17 +106,46 @@ pub fn spawn_part_audio(job_id: String, request: AudioRequest) {
     });
 }
 
-/// Synthesises every part, then renders the format's programme (announcements,
-/// tones, pauses, replays) into one recording.
+/// How many parts one exam job synthesises at the same time. Two: a
+/// three-voice part alone issues dozens of requests, and the client only
+/// retries three times with a short backoff.
+const PARALLEL_PARTS: usize = 2;
+
+/// Synthesises every part (a few at a time), then renders the format's
+/// programme (announcements, tones, pauses, replays) into one recording.
+/// Progress moves from 0.1 to 0.8 as parts finish; the rest is assembly.
 pub fn spawn_exam_audio(job_id: String, request: ExamAudioRequest) {
+    let id = job_id.clone();
     run_job(job_id, "exam audio", async move {
         let client = client()?;
         let assets = ProgramAssets::from_config()?;
-        let mut passages: HashMap<u8, Pcm16> = HashMap::new();
-        for part in &request.parts {
-            let pcm = synthesize_passage(&client, &part.passage, &part.speakers).await?;
-            passages.insert(part.passage.part, pcm);
-        }
+        let total = request.parts.len().max(1);
+        let done = Arc::new(AtomicUsize::new(0));
+        let limit = Arc::new(Semaphore::new(PARALLEL_PARTS));
+        let renders = request.parts.iter().map(|part| {
+            let client = client.clone();
+            let limit = limit.clone();
+            let done = done.clone();
+            let id = id.clone();
+            async move {
+                let _permit = limit
+                    .acquire()
+                    .await
+                    .map_err(|e| AudioError::Asset(e.to_string()))?;
+                let pcm = synthesize_passage(&client, &part.passage, &part.speakers).await?;
+                let finished = done.fetch_add(1, Ordering::SeqCst) + 1;
+                let progress = 0.1 + 0.7 * finished as f32 / total as f32;
+                let _ = JobStore::global()
+                    .await
+                    .mark_processing(&id, progress)
+                    .await;
+                Ok::<_, AudioError>((part.passage.part, pcm))
+            }
+        });
+        let passages: HashMap<u8, Pcm16> = futures_util::future::try_join_all(renders)
+            .await?
+            .into_iter()
+            .collect();
         let program = AudioProgram::for_format(&request.format.format());
         render_program(&program, &passages, &client, &assets).await
     });

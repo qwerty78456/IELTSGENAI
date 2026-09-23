@@ -46,7 +46,11 @@ pub enum Answer {
 impl Answer {
     pub fn display(&self) -> String {
         match self {
-            Answer::Letters(letters) => letters.iter().map(|c| c.to_string()).collect::<Vec<_>>().join(", "),
+            Answer::Letters(letters) => letters
+                .iter()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join(", "),
             Answer::Text(variants) => variants.join(" / "),
             Answer::Tfng(value) => value.code().to_string(),
         }
@@ -101,7 +105,8 @@ mod tests {
     fn answer_json_shape_is_model_friendly() {
         let json = serde_json::to_string(&Answer::Tfng(Tfng::NotGiven)).unwrap();
         assert_eq!(json, r#"{"kind":"tfng","value":"NG"}"#);
-        let parsed: Answer = serde_json::from_str(r#"{"kind":"letters","value":["B","D"]}"#).unwrap();
+        let parsed: Answer =
+            serde_json::from_str(r#"{"kind":"letters","value":["B","D"]}"#).unwrap();
         assert_eq!(parsed, Answer::Letters(vec!['B', 'D']));
     }
 }

@@ -3,4 +3,4 @@
 mod synthesize;
 mod voices;
 
-pub use synthesize::{synthesize_passage, TtsError};
+pub use synthesize::{TtsError, synthesize_passage};

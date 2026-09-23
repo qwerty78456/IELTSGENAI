@@ -38,11 +38,18 @@ pub struct ProgramAssets {
 impl ProgramAssets {
     /// Loads the optional music file named by `MUSIC_PATH`.
     pub fn from_config() -> Result<Self, AudioError> {
-        let Some(path) = &config().music_path else { return Ok(Self { music: None }) };
-        let bytes = std::fs::read(path).map_err(|e| AudioError::Asset(format!("{}: {e}", path.display())))?;
-        let music = Pcm16::from_wav(&bytes).map_err(|e| AudioError::Asset(format!("{}: {e}", path.display())))?;
+        let Some(path) = &config().music_path else {
+            return Ok(Self { music: None });
+        };
+        let bytes = std::fs::read(path)
+            .map_err(|e| AudioError::Asset(format!("{}: {e}", path.display())))?;
+        let music = Pcm16::from_wav(&bytes)
+            .map_err(|e| AudioError::Asset(format!("{}: {e}", path.display())))?;
         if music.sample_rate != SAMPLE_RATE {
-            return Err(AudioError::Asset(format!("{} must be {SAMPLE_RATE} Hz", path.display())));
+            return Err(AudioError::Asset(format!(
+                "{} must be {SAMPLE_RATE} Hz",
+                path.display()
+            )));
         }
         Ok(Self { music: Some(music) })
     }
@@ -65,7 +72,10 @@ pub async fn render_program<A: Announcer>(
             AudioSegment::Tone => Pcm16::tone(TONE_HZ, TONE_MS, TONE_AMPLITUDE, SAMPLE_RATE),
             AudioSegment::Silence { ms } => Pcm16::silence(*ms, SAMPLE_RATE),
             AudioSegment::Announcement(text) => announcer.speak(text).await?,
-            AudioSegment::Passage { part } => passages.get(part).cloned().ok_or(AudioError::MissingPassage(*part))?,
+            AudioSegment::Passage { part } => passages
+                .get(part)
+                .cloned()
+                .ok_or(AudioError::MissingPassage(*part))?,
         };
         out.append(&piece);
         out.append(&Pcm16::silence(500, SAMPLE_RATE));
@@ -94,11 +104,25 @@ mod tests {
         for part in &format.parts {
             passages.insert(part.number, Pcm16::silence(2_000, SAMPLE_RATE));
         }
-        let pcm = render_program(&program, &passages, &SilentAnnouncer, &ProgramAssets { music: None }).await.unwrap();
+        let pcm = render_program(
+            &program,
+            &passages,
+            &SilentAnnouncer,
+            &ProgramAssets { music: None },
+        )
+        .await
+        .unwrap();
         // Two minutes of checking time alone is 120 s; the whole thing must be longer.
         assert!(pcm.duration_ms() > 120_000 + 4 * 2_000);
         passages.remove(&3);
-        let err = render_program(&program, &passages, &SilentAnnouncer, &ProgramAssets { music: None }).await.unwrap_err();
+        let err = render_program(
+            &program,
+            &passages,
+            &SilentAnnouncer,
+            &ProgramAssets { music: None },
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, AudioError::MissingPassage(3)));
     }
 }

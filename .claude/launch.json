@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "dx-serve",
+      "runtimeExecutable": "dx",
+      "runtimeArgs": ["serve"],
+      "port": 8080
+    }
+  ]
+}

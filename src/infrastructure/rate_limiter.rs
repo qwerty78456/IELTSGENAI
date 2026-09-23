@@ -32,7 +32,10 @@ struct RateLimiter {
 
 impl RateLimiter {
     fn new(max_per_minute: u32) -> Self {
-        Self { in_flight: Arc::new(AtomicU32::new(0)), max_per_minute }
+        Self {
+            in_flight: Arc::new(AtomicU32::new(0)),
+            max_per_minute,
+        }
     }
 
     fn check(&self) -> Result<(), String> {

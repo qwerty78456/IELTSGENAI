@@ -154,13 +154,29 @@ pub struct SpeakerConfig {
 }
 
 impl SpeakerConfig {
-    pub fn new(label: impl Into<String>, gender: Gender, accent: Accent, role: SpeakerRole) -> Self {
-        Self { label: label.into(), gender, accent, role }
+    pub fn new(
+        label: impl Into<String>,
+        gender: Gender,
+        accent: Accent,
+        role: SpeakerRole,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            gender,
+            accent,
+            role,
+        }
     }
 
     /// One-line description for prompts: "Speaker A: Female, British English, Host".
     pub fn describe(&self) -> String {
-        format!("{}: {}, {}, {}", self.label, self.gender.label(), self.accent.label(), self.role.label())
+        format!(
+            "{}: {}, {}, {}",
+            self.label,
+            self.gender.label(),
+            self.accent.label(),
+            self.role.label()
+        )
     }
 }
 
@@ -185,6 +201,9 @@ mod tests {
         for key in SpeakerRole::PRESET_KEYS {
             assert_eq!(SpeakerRole::from_key(key, "").key(), key);
         }
-        assert_eq!(SpeakerRole::from_key("other", "Customer").label(), "Customer");
+        assert_eq!(
+            SpeakerRole::from_key("other", "Customer").label(),
+            "Customer"
+        );
     }
 }

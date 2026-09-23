@@ -9,24 +9,40 @@
 //! `AudioWork` only hold what is running and what went wrong. The state is
 //! provided by the `Navbar` layout, so moving between pages keeps a running
 //! exam, and pipelines are spawned on the root scope for the same reason.
+//!
+//! The draft is saved on the server (`application::exams`): automatically
+//! after every finished step once a script exists, a second after an edit,
+//! and on the Save button. `SaveWork` keeps saves single-flight; a save
+//! requested meanwhile runs right after. Opening a saved exam replaces the
+//! state the way switching formats does, recomputing issues with the pure
+//! validators and resuming a recording job that was still running.
 
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
 use futures_util::future::{join, join_all};
+use uuid::Uuid;
 
 use crate::application::audio::{audio_url, start_exam_audio};
+use crate::application::exams::{
+    ExamSummary, SavedExam, delete_exam, list_exams, load_exam, save_exam,
+};
 use crate::application::passages::generate_passage;
 use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::domain::{
     AudioRequest, AudioTrack, Exam, ExamAudioRequest, FormatId, PassageRequest, TaskRequest,
-    ValidationIssue, has_errors, validate_exam,
+    ValidationIssue, has_errors, validate_exam, validate_passage, validate_task,
 };
 use crate::export::markdown;
+use crate::ui::clock::local_time;
 use crate::ui::components::audio_player::{AudioPlayerSection, download_text};
+use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
-use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, wait_for_job};
+use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, sleep_ms, wait_for_job};
+
+/// How long after the last keystroke an edit is saved.
+const EDIT_DEBOUNCE_MS: u32 = 1_000;
 
 /// Where one piece of work stands.
 #[derive(Clone, PartialEq, Default)]
@@ -66,6 +82,21 @@ pub struct AudioWork {
     pub stale: bool,
 }
 
+/// Saving the draft to the server.
+#[derive(Clone, Default)]
+pub struct SaveWork {
+    pub step: Step,
+    /// `updated_at_secs` of the last successful save; `None` until the first.
+    pub saved_at_secs: Option<i64>,
+    /// Edited since the last save was started.
+    pub dirty: bool,
+    pub in_flight: bool,
+    /// A save was requested while one was in flight; it runs right after.
+    pub queued: bool,
+    /// Bumped on every edit; the debounce timer saves only if it is unchanged.
+    pub edit_token: u32,
+}
+
 #[derive(Clone)]
 pub struct ExamState {
     pub format: FormatId,
@@ -73,6 +104,10 @@ pub struct ExamState {
     /// Index-aligned with `exam.parts`.
     pub work: Vec<PartWork>,
     pub audio: AudioWork,
+    pub save: SaveWork,
+    /// The saved exams on this server, most recently updated first.
+    pub library: Vec<ExamSummary>,
+    pub library_error: Option<String>,
     /// Bumped on every new exam run or cancel; a running pipeline compares
     /// against it before every write, so late results of an old run are dropped.
     pub run: u32,
@@ -95,15 +130,137 @@ impl ExamState {
             exam,
             work,
             audio: AudioWork::default(),
+            save: SaveWork::default(),
+            library: Vec::new(),
+            library_error: None,
             run: 0,
         }
     }
 
-    /// A fresh exam in another format that still supersedes runs in flight.
+    /// A fresh exam (new id) in the given format that still supersedes runs
+    /// in flight and keeps the saved-exams list.
     fn switch_format(&self, format: FormatId) -> Self {
         Self {
             run: self.run + 1,
+            library: self.library.clone(),
             ..Self::for_format(format)
+        }
+    }
+
+    /// Saving starts on its own once there is something worth keeping: a
+    /// script, or an explicit Save earlier.
+    fn auto_save_armed(&self) -> bool {
+        self.save.saved_at_secs.is_some() || self.exam.parts.iter().any(|p| p.passage.is_some())
+    }
+
+    /// What the server will keep.
+    fn snapshot(&self) -> SavedExam {
+        SavedExam {
+            exam: self.exam.clone(),
+            topics: self.work.iter().map(|w| w.topic.clone()).collect(),
+            recording_job: self.audio.job_id.clone(),
+            recording: self.audio.track.clone(),
+            recording_stale: self.audio.stale,
+            created_at_secs: 0,
+            updated_at_secs: 0,
+        }
+    }
+
+    /// The state for a saved exam, with issues recomputed and the recording
+    /// restored. `run` is bumped so pipelines of the previous exam stop writing.
+    fn open_saved(&self, saved: SavedExam) -> Self {
+        let SavedExam {
+            exam,
+            topics,
+            recording_job,
+            recording,
+            recording_stale,
+            updated_at_secs,
+            ..
+        } = saved;
+        let work = exam
+            .parts
+            .iter()
+            .enumerate()
+            .map(|(i, part)| {
+                let passage_issues = part
+                    .passage
+                    .as_ref()
+                    .map(|p| validate_passage(p, &part.spec, &part.speakers))
+                    .unwrap_or_default();
+                let task_issues = part
+                    .tasks
+                    .iter()
+                    .flat_map(|t| validate_task(t, part.passage.as_ref()))
+                    .collect();
+                let tasks_step = if part.tasks.is_empty() {
+                    Step::Idle
+                } else if part.missing_tasks().is_empty() {
+                    Step::Done
+                } else {
+                    Step::Failed(format!(
+                        "Only {} of {} question blocks were generated",
+                        part.tasks.len(),
+                        part.spec.tasks.len()
+                    ))
+                };
+                PartWork {
+                    topic: topics.get(i).cloned().unwrap_or_default(),
+                    topic_step: Step::Idle,
+                    script_step: if part.passage.is_some() {
+                        Step::Done
+                    } else {
+                        Step::Idle
+                    },
+                    tasks_step,
+                    passage_issues,
+                    task_issues,
+                }
+            })
+            .collect();
+        let audio = AudioWork {
+            step: if recording.is_some() {
+                Step::Done
+            } else if recording_job.is_some() {
+                Step::Running
+            } else {
+                Step::Idle
+            },
+            job_id: recording_job,
+            progress: if recording.is_some() { 1.0 } else { 0.0 },
+            track: recording,
+            stale: recording_stale,
+        };
+        Self {
+            format: exam.format.id,
+            exam,
+            work,
+            audio,
+            save: SaveWork {
+                step: Step::Done,
+                saved_at_secs: Some(updated_at_secs),
+                ..SaveWork::default()
+            },
+            library: self.library.clone(),
+            library_error: None,
+            run: self.run + 1,
+        }
+    }
+
+    /// One line under the setup panel about the draft on the server.
+    fn save_status(&self) -> (String, bool) {
+        match &self.save.step {
+            Step::Running => ("Saving...".into(), false),
+            Step::Failed(message) => (message.clone(), true),
+            _ if self.save.saved_at_secs.is_none() => (
+                "Not saved yet. Saving starts on its own once a script exists; press Save to keep the draft now.".into(),
+                false,
+            ),
+            _ if self.save.dirty => ("Unsaved changes".into(), false),
+            _ => (
+                format!("Saved at {}", local_time(self.save.saved_at_secs.unwrap_or_default())),
+                false,
+            ),
         }
     }
 
@@ -226,6 +383,72 @@ pub fn ExamView() -> Element {
     let id8: String = current.exam.id.to_string().chars().take(8).collect();
     let file_prefix = format!("{}_exam_{}", current.format.key().to_uppercase(), id8);
     let audio_pct = format!("{:.0}", (current.audio.progress * 100.0).clamp(0.0, 100.0));
+    let (save_text, save_failed) = current.save_status();
+    let save_class = if save_failed {
+        "save-status failed"
+    } else {
+        "save-status"
+    };
+
+    // The list is fetched after mount so the server render and the browser
+    // agree on an empty panel until then.
+    use_future(move || refresh_library(state));
+
+    let handle_save = move |_| request_save(state);
+
+    // A fresh exam with a new id; the current one is saved first if it has
+    // unsaved edits and saving was already on.
+    let handle_new_exam = move |_| {
+        flush_before_leaving(state);
+        let fresh = state.peek().switch_format(state.peek().format);
+        state.set(fresh);
+    };
+
+    let handle_open = move |id: Uuid| {
+        flush_before_leaving(state);
+        spawn_forever(async move {
+            match load_exam(id.to_string()).await {
+                Ok(saved) => {
+                    let fresh = state.peek().open_saved(saved);
+                    let resume = fresh
+                        .audio
+                        .track
+                        .is_none()
+                        .then(|| fresh.audio.job_id.clone())
+                        .flatten()
+                        .map(|job_id| (job_id, fresh.run));
+                    state.set(fresh);
+                    if let Some((job_id, run)) = resume {
+                        spawn_forever(fetch_exam_audio(state, run, job_id));
+                    }
+                }
+                Err(e) => {
+                    state.write().library_error = Some(format!("Could not open the exam: {e}"))
+                }
+            }
+        });
+    };
+
+    // Deleting the open exam also starts a fresh one, or the next auto-save
+    // would bring the row back.
+    let handle_delete = move |id: Uuid| {
+        spawn_forever(async move {
+            match delete_exam(id.to_string()).await {
+                Ok(()) => {
+                    let mut s = state.write();
+                    s.library.retain(|e| e.id != id);
+                    s.library_error = None;
+                    if s.exam.id == id {
+                        let fresh = s.switch_format(s.format);
+                        *s = fresh;
+                    }
+                }
+                Err(e) => {
+                    state.write().library_error = Some(format!("Could not delete the exam: {e}"))
+                }
+            }
+        });
+    };
 
     // The one-click pipeline: topics for parts that have none, then every
     // script at once, then every part's questions at once beside the single
@@ -349,6 +572,7 @@ pub fn ExamView() -> Element {
                                 value: "{current.format.key()}",
                                 onchange: move |evt| {
                                     if let Some(format) = FormatId::from_key(&evt.value()) {
+                                        flush_before_leaving(state);
                                         let fresh = state.peek().switch_format(format);
                                         state.set(fresh);
                                     }
@@ -364,7 +588,10 @@ pub fn ExamView() -> Element {
                         input {
                             class: "form-input",
                             value: "{current.exam.title}",
-                            oninput: move |evt| state.write().exam.title = evt.value(),
+                            oninput: move |evt| {
+                                state.write().exam.title = evt.value();
+                                note_edit(state);
+                            },
                         }
                     }
                 }
@@ -373,8 +600,12 @@ pub fn ExamView() -> Element {
                     class: "input-textarea small",
                     placeholder: "Example: news listening about cities and the environment",
                     value: "{current.exam.theme}",
-                    oninput: move |evt| state.write().exam.theme = evt.value(),
+                    oninput: move |evt| {
+                        state.write().exam.theme = evt.value();
+                        note_edit(state);
+                    },
                 }
+                p { class: "{save_class}", "{save_text}" }
                 div { class: "download-buttons",
                     button {
                         class: "download-button info",
@@ -388,6 +619,35 @@ pub fn ExamView() -> Element {
                         onclick: handle_render_audio,
                         "Render exam audio"
                     }
+                    button {
+                        class: "download-button primary",
+                        disabled: current.save.in_flight,
+                        onclick: handle_save,
+                        "Save"
+                    }
+                    button {
+                        class: "download-button secondary",
+                        disabled: busy,
+                        onclick: handle_new_exam,
+                        "New exam"
+                    }
+                }
+            }
+
+            div { class: "generator-panel",
+                h2 { class: "panel-header", "Saved exams" }
+                p { class: "panel-help",
+                    "Kept on this server. Open one to continue where you left off; deleting an exam also deletes its recording."
+                }
+                if let Some(error) = current.library_error.clone() {
+                    div { class: "error-message", "{error}" }
+                }
+                ExamLibrary {
+                    exams: current.library.clone(),
+                    current: current.exam.id,
+                    busy,
+                    onopen: handle_open,
+                    ondelete: handle_delete,
                 }
             }
 
@@ -411,7 +671,10 @@ pub fn ExamView() -> Element {
                                     class: "input-textarea small",
                                     placeholder: "Topic or scenario for this part",
                                     value: "{work.topic}",
-                                    oninput: move |evt| state.write().work[i].topic = evt.value(),
+                                    oninput: move |evt| {
+                                        state.write().work[i].topic = evt.value();
+                                        note_edit(state);
+                                    },
                                 }
                                 if let Step::Failed(message) = work.topic_step.clone() {
                                     div { class: "error-message", "{message}" }
@@ -565,6 +828,127 @@ fn still_current(state: Signal<ExamState>, run: u32) -> bool {
     state.peek().run == run
 }
 
+/// Refreshes the saved-exams list from the server.
+async fn refresh_library(mut state: Signal<ExamState>) {
+    match list_exams().await {
+        Ok(library) => {
+            let mut s = state.write();
+            s.library = library;
+            s.library_error = None;
+        }
+        Err(e) => {
+            state.write().library_error = Some(format!("Could not list the saved exams: {e}"))
+        }
+    }
+}
+
+/// Keeps the list sorted by last update, newest first.
+fn upsert_summary(library: &mut Vec<ExamSummary>, summary: ExamSummary) {
+    library.retain(|e| e.id != summary.id);
+    library.push(summary);
+    library.sort_by(|a, b| {
+        b.updated_at_secs
+            .cmp(&a.updated_at_secs)
+            .then_with(|| a.title.cmp(&b.title))
+    });
+}
+
+/// Saves now, or right after the save in flight. The snapshot is taken here,
+/// synchronously, so what is saved is what the teacher sees at this moment.
+fn request_save(mut state: Signal<ExamState>) {
+    if state.peek().save.in_flight {
+        state.write().save.queued = true;
+        return;
+    }
+    let (snapshot, id) = begin_save(state);
+    spawn_forever(persist(state, snapshot, id));
+}
+
+/// Marks a save as started and returns what to send.
+fn begin_save(mut state: Signal<ExamState>) -> (SavedExam, Uuid) {
+    let mut s = state.write();
+    s.save.in_flight = true;
+    s.save.queued = false;
+    s.save.dirty = false;
+    s.save.step = Step::Running;
+    (s.snapshot(), s.exam.id)
+}
+
+/// Sends snapshots to the server until none is queued. Results only touch
+/// the save status of the exam they belong to; the list is updated either way.
+async fn persist(mut state: Signal<ExamState>, mut snapshot: SavedExam, mut id: Uuid) {
+    loop {
+        let outcome = save_exam(snapshot).await;
+        let again = {
+            let mut s = state.write();
+            let same_exam = s.exam.id == id;
+            match outcome {
+                Ok(summary) => {
+                    if same_exam {
+                        s.save.step = Step::Done;
+                        s.save.saved_at_secs = Some(summary.updated_at_secs);
+                    }
+                    upsert_summary(&mut s.library, summary);
+                }
+                Err(e) if same_exam => {
+                    s.save.step = Step::Failed(format!("Save failed: {e}"));
+                    s.save.dirty = true;
+                }
+                Err(_) => {}
+            }
+            if same_exam {
+                s.save.in_flight = false;
+                s.save.queued
+            } else {
+                false
+            }
+        };
+        if !again {
+            break;
+        }
+        (snapshot, id) = begin_save(state);
+    }
+}
+
+/// Saves after a finished step, once saving is on.
+fn auto_save(state: Signal<ExamState>) {
+    if state.peek().auto_save_armed() {
+        request_save(state);
+    }
+}
+
+/// Records an edit and saves it a moment after the typing stops.
+fn note_edit(mut state: Signal<ExamState>) {
+    let token = {
+        let mut s = state.write();
+        s.save.dirty = true;
+        s.save.edit_token = s.save.edit_token.wrapping_add(1);
+        s.save.edit_token
+    };
+    spawn_forever(async move {
+        sleep_ms(EDIT_DEBOUNCE_MS).await;
+        let due = {
+            let s = state.peek();
+            s.save.edit_token == token && s.save.dirty && s.auto_save_armed()
+        };
+        if due {
+            request_save(state);
+        }
+    });
+}
+
+/// Before the state is replaced: keep unsaved edits of an exam that is
+/// already being saved. The result lands in the list, not in the new state.
+fn flush_before_leaving(state: Signal<ExamState>) {
+    let due = {
+        let s = state.peek();
+        s.save.dirty && s.auto_save_armed()
+    };
+    if due {
+        request_save(state);
+    }
+}
+
 /// Indices of the parts the teacher has not given a topic yet.
 fn empty_topics(state: &ExamState) -> Vec<usize> {
     state
@@ -621,13 +1005,22 @@ async fn suggest_part_topic(mut state: Signal<ExamState>, run: u32, i: usize) {
     if !still_current(state, run) {
         return;
     }
-    let mut s = state.write();
-    match outcome {
-        Ok(topic) => {
-            s.work[i].topic = topic;
-            s.work[i].topic_step = Step::Done;
+    let suggested = {
+        let mut s = state.write();
+        match outcome {
+            Ok(topic) => {
+                s.work[i].topic = topic;
+                s.work[i].topic_step = Step::Done;
+                true
+            }
+            Err(e) => {
+                s.work[i].topic_step = Step::Failed(format!("Could not suggest a topic: {e}"));
+                false
+            }
         }
-        Err(e) => s.work[i].topic_step = Step::Failed(format!("Could not suggest a topic: {e}")),
+    };
+    if suggested {
+        auto_save(state);
     }
 }
 
@@ -661,20 +1054,24 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
     if !still_current(state, run) {
         return false;
     }
-    let mut s = state.write();
-    match outcome {
-        Ok(draft) => {
-            let usable = !has_errors(&draft.issues);
-            s.exam.parts[i].passage = Some(draft.passage);
-            s.work[i].passage_issues = draft.issues;
-            s.work[i].script_step = Step::Done;
-            usable
+    let usable = {
+        let mut s = state.write();
+        match outcome {
+            Ok(draft) => {
+                let usable = !has_errors(&draft.issues);
+                s.exam.parts[i].passage = Some(draft.passage);
+                s.work[i].passage_issues = draft.issues;
+                s.work[i].script_step = Step::Done;
+                usable
+            }
+            Err(e) => {
+                s.work[i].script_step = Step::Failed(format!("Script generation failed: {e}"));
+                false
+            }
         }
-        Err(e) => {
-            s.work[i].script_step = Step::Failed(format!("Script generation failed: {e}"));
-            false
-        }
-    }
+    };
+    auto_save(state);
+    usable
 }
 
 /// Generates every task block of part `i`, one after another.
@@ -720,11 +1117,13 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
             Err(e) => {
                 state.write().work[i].tasks_step =
                     Step::Failed(format!("Question generation failed: {e}"));
+                auto_save(state);
                 return;
             }
         }
     }
     state.write().work[i].tasks_step = Step::Done;
+    auto_save(state);
 }
 
 /// Starts the exam recording job and waits for it.
@@ -745,6 +1144,7 @@ async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAud
         }
     };
     state.write().audio.job_id = Some(job_id.clone());
+    auto_save(state);
     fetch_exam_audio(state, run, job_id).await;
 }
 
@@ -765,19 +1165,30 @@ async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String
     if !still_current(state, run) {
         return;
     }
-    let mut s = state.write();
-    match outcome {
-        Ok(job) => match job.track {
-            Some(track) => {
-                s.audio.track = Some(track);
-                s.audio.progress = 1.0;
-                s.audio.stale = false;
-                s.audio.step = Step::Done;
+    let ready = {
+        let mut s = state.write();
+        match outcome {
+            Ok(job) => match job.track {
+                Some(track) => {
+                    s.audio.track = Some(track);
+                    s.audio.progress = 1.0;
+                    s.audio.stale = false;
+                    s.audio.step = Step::Done;
+                    true
+                }
+                None => {
+                    s.audio.step =
+                        Step::Failed("The recording finished but its file is missing".into());
+                    false
+                }
+            },
+            Err(message) => {
+                s.audio.step = Step::Failed(message);
+                false
             }
-            None => {
-                s.audio.step = Step::Failed("The recording finished but its file is missing".into())
-            }
-        },
-        Err(message) => s.audio.step = Step::Failed(message),
+        }
+    };
+    if ready {
+        auto_save(state);
     }
 }

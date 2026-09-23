@@ -6,6 +6,7 @@
 //! any DTO defined here) must be plain serialisable types that compile on both.
 
 pub mod audio;
+pub mod exams;
 pub mod passages;
 pub mod tasks;
 pub mod topics;

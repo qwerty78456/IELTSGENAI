@@ -941,3 +941,55 @@ a.download-button {
     font-size: 0.875rem;
     margin-right: 0.75rem;
 }
+
+/* Saved exams */
+.save-status {
+    color: #666;
+    font-size: 0.9rem;
+    margin: 0 0 0.75rem;
+}
+
+.save-status.failed {
+    color: #b00020;
+}
+
+.exam-library-wrap {
+    overflow-x: auto;
+}
+
+.exam-library {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+}
+
+.exam-library th,
+.exam-library td {
+    text-align: left;
+    padding: 0.5rem 0.4rem;
+    border-bottom: 1px solid #eee;
+    vertical-align: middle;
+    white-space: nowrap;
+}
+
+.exam-library td:first-child {
+    white-space: normal;
+    min-width: 12rem;
+}
+
+.exam-library tr.open td {
+    background: #f3f8ff;
+}
+
+.exam-library .row-actions {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.download-button.danger {
+    background: #dc3545;
+}
+
+.download-button.danger:hover {
+    background: #c82333;
+}

@@ -53,7 +53,7 @@ impl JobState {
         }
     }
 
-    fn parse(s: &str) -> JobState {
+    pub(crate) fn parse(s: &str) -> JobState {
         match s {
             "pending" => JobState::Pending,
             "processing" => JobState::Processing,
@@ -130,6 +130,11 @@ impl JobStore {
             })
             .await?;
         Ok(())
+    }
+
+    /// The shared connection pool; the exam store lives in the same database.
+    pub(crate) fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
     pub(crate) async fn open_options(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {

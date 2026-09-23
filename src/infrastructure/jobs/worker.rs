@@ -61,7 +61,7 @@ async fn cleanup_old_jobs(max_age_secs: i64) {
 }
 
 /// Deletes the WAV a job row pointed at (best effort, logged).
-async fn remove_output(output_path: &str) {
+pub async fn remove_output(output_path: &str) {
     let path = output_file_in(&config().audio_dir(), output_path);
     let _ = tokio::task::spawn_blocking(move || {
         if let Err(e) = std::fs::remove_file(&path) {

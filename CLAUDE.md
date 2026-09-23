@@ -53,7 +53,8 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 
 - **`src/domain/` and `src/export/` are pure.** No Dioxus, reqwest, sqlx, tokio. They compile
   identically for wasm and server, and the browser uses them to validate and render the same
-  objects the server produces.
+  objects the server produces (`export/docx.rs` uses `docx-rs` without its `image` feature:
+  pure Rust, builds for wasm, so DOCX downloads are made in the browser too).
 - **`#[server]` functions live only in `src/application/`.** Dioxus 0.7 strips server-fn bodies
   from the wasm bundle, so bodies may use `crate::infrastructure` freely, but signatures and
   DTOs must be plain serialisable types. Do not reintroduce `#[cfg(feature = "server")]`
@@ -78,8 +79,9 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 - Formats are data. A new exam format is a new `ExamFormat` preset in `domain/format.rs`,
   never a `match` on a format id in business logic.
 - Adding a `TaskKind`: one enum variant, then one arm each in `domain/validation.rs`,
-  `infrastructure/prompts/items.rs` and `export/markdown.rs`, plus a preset that uses it and a
-  unit test for the validator arm. The compiler lists every place.
+  `infrastructure/prompts/items.rs`, `export/markdown.rs` and `export/docx.rs` (its
+  `answer_layout` match is exhaustive, so the compiler flags it), plus a preset that uses it
+  and a unit test for the validator arm.
 - Passage speaker labels are always "Speaker A/B/C"; names live inside the lines. TTS and
   grounding checks depend on this.
 - Errors are teacher-readable (`DomainError`, `ValidationIssue`). Infrastructure errors are
@@ -101,7 +103,15 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   the browser polls `audio_job_status` (`ui/jobs.rs`, per-kind cadence and deadline) and streams
   the finished WAV from `/audio/{job_id}`, a plain axum route (`infrastructure/jobs/serve.rs`).
   Keep it a plain route: server functions redirect requests that accept `text/html`, which is
-  what a download link sends. Jobs older than 24 h are purged hourly, starting at boot.
+  what a download link sends. Job rows store only the WAV file name; readers resolve it under
+  the current `DATA_DIR/audio` (`JobRecord::output_file`), so a moved portable folder keeps its
+  recordings. Jobs no saved exam refers to are purged hourly from boot once older than
+  `AUDIO_RETENTION_HOURS` (default 24, `0` = never); a job named by a saved exam's
+  `recording_job` is never purged and is deleted with the exam.
+- Saved exams live in the same `jobs.db` (`infrastructure/exams.rs`: `exams` table with the
+  `SavedExam` JSON body plus summary columns) behind `application/exams.rs`. The exam page
+  saves on its own after each finished step once a script exists (`SaveWork` in
+  `ui/views/exam.rs`, single-flight with one queued follow-up).
 - All configuration is environment only (`infrastructure/config.rs`, see `.env.example`).
 
 ## Dioxus 0.7 API constraints (from `.github/agents/dioxus-0-7-rust-ui-expert.agent.md`)

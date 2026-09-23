@@ -3,6 +3,107 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.6.0] – 2026-09-23 — 💾 "Đóng tab, mai mở lại vẫn còn."
+
+Ba việc giáo viên hay vấp nhất sau khi có bản portable: đóng trình duyệt là mất
+đề, bản ghi âm biến mất sau một ngày, và chỉ xuất được Markdown. **Từ 0.6.0,
+đề ở trang "Whole exam" được lưu ngay trên máy chạy app, bản ghi âm của đề đã
+lưu không bao giờ bị dọn, và cả hai trang xuất được file Word đúng dáng giấy
+thi.** Không cần cài thêm gì; chép cả thư mục portable sang máy khác thì đề và
+audio đi theo.
+
+### ✨ Điểm nhấn
+
+- **Đề tự lưu, không cần nhớ bấm.** Có script đầu tiên là app bắt đầu tự lưu:
+  sau mỗi bước sinh xong (script, câu hỏi, ghi âm), một giây sau khi sửa tiêu
+  đề, chủ đề hay topic, và khi bấm nút **Save**. Dòng trạng thái nói rõ
+  *Saving... / Saved at 18:37 / Unsaved changes / Save failed*. Lưu chạy đơn
+  luồng: đang lưu mà có thay đổi mới thì xếp hàng, xong là lưu tiếp, không bao
+  giờ ghi chồng bản cũ lên bản mới.
+- **Danh sách "Saved exams" ngay trên trang.** Tiêu đề, định dạng, tiến độ
+  (script x/4, câu hỏi y/4), trạng thái ghi âm, giờ cập nhật. **Open** khôi
+  phục đúng những gì đã thấy: topic từng phần, issue của validator (tính lại
+  bằng đúng bộ kiểm tra thuần, không lưu), và bản ghi âm. Nếu job ghi âm còn
+  đang chạy lúc đóng tab, mở lại là app poll tiếp và hiện player khi xong.
+  **Delete** hỏi lại lần hai; xoá đề đang mở thì trang về đề mới, không có
+  hàng nào "sống lại" vì auto-save.
+- **Audio của đề đã lưu giữ mãi.** Job ghi âm mà một đề đã lưu trỏ tới bị bỏ
+  qua khi dọn dẹp, chỉ xoá khi xoá đề (và chỉ khi không đề nào khác dùng
+  chung). Audio lẻ (trang từng phần, đề chưa lưu) dọn theo biến mới
+  `AUDIO_RETENTION_HOURS`: mặc định 24, đặt `0` là không bao giờ dọn (task dọn
+  không được tạo). Giá trị sai bị chặn ngay lúc khởi động, nêu đúng tên biến.
+- **Chuyển thư mục portable không mất audio.** Trước đây hàng job lưu đường
+  dẫn tuyệt đối của WAV, nên đổi ổ đĩa hay chép sang máy khác là `/audio/…`
+  trả 404. Giờ hàng job chỉ lưu tên file; mọi nơi đọc đều ghép với `DATA_DIR`
+  hiện tại. Hàng cũ ghi đường dẫn tuyệt đối (Windows lẫn Linux) vẫn đọc được.
+- **Xuất Word (DOCX) ở cả hai trang.** Bố cục theo đề HSG: tiêu đề, dòng
+  định dạng, khối *Họ và tên / Số báo danh / Số phách / Điểm* để trống, mỗi
+  task có rubric in đậm, lựa chọn, câu hỏi, rồi **bảng ô đáp án đánh số, năm ô
+  một hàng**; short answer có dòng kẻ dưới mỗi câu; summary/note in nguyên
+  chỗ trống `(n)______`. Đáp án và transcript nằm ở trang riêng. Times New
+  Roman 13. File được dựng ngay trong trình duyệt (docx-rs thuần Rust, không
+  kéo theo thư viện ảnh), không tốn một request nào lên server.
+- **Markdown và DOCX chỉ dựng khi bấm.** Trước đây chuỗi Markdown được dựng
+  lại ở mỗi lần re-render, kể cả khi đang poll tiến độ. Giờ cả hai chỉ chạy
+  trong `onclick`.
+
+### 🧰 Bên trong
+
+- Bảng `exams` nằm chung `jobs.db`: JSON của `SavedExam` (đề + topic từng
+  phần + job ghi âm + cờ stale) cộng các cột tóm tắt để liệt kê mà không phải
+  parse JSON. Bốn server function: `save_exam`, `list_exams`, `load_exam`,
+  `delete_exam`; body giới hạn 2 MB, tiêu đề 200 ký tự, chủ đề 2.000 ký tự.
+  `load_exam` tra lại bảng job để trả `AudioTrack` mới nhất.
+- Xoá đề chạy trong một transaction: xoá hàng đề, rồi xoá job và file WAV nếu
+  job đã xong và không đề nào khác tham chiếu; job còn chạy được để lại cho
+  retention dọn sau.
+- `export/docx.rs` có `answer_layout` match **toàn bộ** `TaskKind`, nên thêm
+  loại câu hỏi mới mà quên chỗ ghi đáp án là không biên dịch được (quy tắc
+  "compiler lists every place" giờ đúng cả với export).
+- Giờ hiển thị theo múi giờ trình duyệt (`js-sys Date`), server render dùng
+  UTC dự phòng.
+
+### 📊 Con số biết nói
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba |
+| `cargo test --features server --no-default-features` | **53/53** (0.5.0: 42, thêm 11 test: retention, đường dẫn WAV, store đề, ghim/xoá audio, DOCX, đồng hồ) |
+| Trên trình duyệt thật (`dx serve`, key giả) | lưu tay, tự lưu sau 1 s, New exam, Open, Delete hai lần bấm: ✅ |
+| Khôi phục audio từ hàng job có đường dẫn tuyệt đối của máy khác | `/audio/fixture` vẫn trả 206 + Content-Range, tải đủ 144.044 byte |
+| Mở đề khi job ghi âm còn chạy, rồi job xong | popup tiến độ → player xuất hiện sau vòng poll, đề tự lưu lại |
+| DOCX tải từ wasm | 68.699 byte, đúng từng byte với bản sinh trên server; Word mở được, xuất PDF 6 trang |
+| `AUDIO_RETENTION_HOURS=abc` | server thoát mã 1, nêu tên biến |
+| WASM release (chưa qua wasm-opt, lỗi crash trên Windows như 0.5.0) | 2,67 MB → **3,79 MB** (+1,1 MB vì docx-rs) |
+| Tiền Gemini tốn cho toàn bộ kiểm tra | **0 đồng** |
+
+### Thêm
+
+- `src/application/exams.rs`, `src/infrastructure/exams.rs`,
+  `src/export/docx.rs`, `src/ui/components/exam_library.rs`, `src/ui/clock.rs`.
+- Biến `AUDIO_RETENTION_HOURS` (`.env.example`, template portable, README).
+- Dependency `docx-rs` 0.4.22 (`default-features = false`).
+
+### Thay đổi
+
+- Hàng `jobs.output_path` mới chỉ chứa tên file WAV; đọc qua
+  `JobRecord::output_file`.
+- Dọn dẹp bỏ qua job được đề đã lưu tham chiếu; `ensure_cleanup_running` đọc
+  cấu hình thay vì hằng số 24 giờ.
+- Panel "Paper, key and transcripts" có hai nút DOCX/Markdown; trang từng
+  phần cũng vậy.
+- Phiên bản app và launcher portable: 0.6.0.
+
+### Biết rồi, để bản sau
+
+- Trang từng phần (`/`) chưa lưu; trạng thái của nó không phải là một `Exam`.
+- Hai tab cùng mở một đề: bản ghi sau thắng.
+- Xoá đề khi bản ghi âm còn đang render: job bị bỏ ghim và chờ retention dọn;
+  với `AUDIO_RETENTION_HOURS=0` thì hàng và file ở lại tới khi xoá tay.
+- Chưa có đăng nhập: ai vào được server là thấy mọi đề đã lưu (roadmap mục 2).
+- Gói portable chưa build lại cho 0.6.0; `packaging/smoke.py` đã biết biến mới
+  nhưng chưa chạy trên file phát hành.
+
 ## [0.5.0] – 2026-09-23 — 🚀 "Một file. Bấm đúp. Chạy."
 
 Trước bản này, muốn dùng được app phải có Rust, Dioxus CLI hoặc Docker, tức là

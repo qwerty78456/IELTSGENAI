@@ -32,7 +32,7 @@ grading, candidate management, official-exam claims, any other skill.
                     └─────────────────┘       └─────────────────────────────┘
                            ▲
                     ┌──────┴──────────┐
-                    │  Export (pure)  │  markdown paper / key / transcript
+                    │  Export (pure)  │  markdown + docx: paper / key / transcript
                     └─────────────────┘
 ```
 
@@ -62,8 +62,10 @@ src/
     passages.rs           generate_passage -> PassageDraft { passage, issues }
     tasks.rs              generate_task    -> TaskDraft { task, issues }
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
+    exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job), ExamSummary
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
     config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from .env + env
+    exams.rs              ExamStore: `exams` table (SavedExam JSON body + summary columns) in jobs.db; pins recording jobs
     startup.rs            bootstrap -> SQLite -> router + GET /audio/{job_id}; dioxus::serve in debug
                           (hot reload), else an explicit listener, browser opening, graceful Ctrl+C
     llm/gemini.rs         GeminiClient: generate_text, generate_json<T>, synthesize; one retry policy
@@ -71,13 +73,15 @@ src/
     tts/                  voices.json mapping; synthesize_passage (2-voice or turn-by-turn); Announcer
     audio/wav.rs          Pcm16: silence, tone, append, WAV encode/decode (no crate)
     audio/program.rs      render_program(AudioProgram, passages, announcer, assets)
-    jobs/store.rs         SQLite job table (JobStore)
-    jobs/worker.rs        spawn_part_audio, spawn_exam_audio, hourly clean-up
+    jobs/store.rs         SQLite job table (JobStore); output_path is a file name resolved under DATA_DIR/audio
+    jobs/worker.rs        spawn_part_audio, spawn_exam_audio, retention clean-up (AUDIO_RETENTION_HOURS)
     jobs/serve.rs         serve_audio: plain axum handler streaming a finished WAV (audio/wav, Range)
     rate_limiter.rs       per-minute buckets
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
-  ui/                     components (audio player, issue list, loading popup, speaker modal), views (home, exam, navbar)
+  export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
+  ui/                     components (audio player, exam library, issue list, loading popup, speaker modal), views (home, exam, navbar)
     jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
+    clock.rs              local-time formatting (js-sys Date in the browser, UTC fallback on the server)
 ```
 
 ## Core model
@@ -114,8 +118,8 @@ src/
 | Matching { options }      | one letter  | yes            | IELTS 2–3                   |
 
 Adding a task kind = one enum variant, one arm in `validation.rs`, one arm
-in `prompts/items.rs`, one arm in `export/markdown.rs`. The compiler lists
-every place.
+in `prompts/items.rs`, one arm in `export/markdown.rs` and one in
+`export/docx.rs` (`answer_layout`, an exhaustive match the compiler checks).
 
 ## Generation pipeline
 
@@ -187,30 +191,62 @@ itself is streamed by a plain axum route, `GET /audio/{job_id}`
 seek and the download link needs no blob. It is deliberately not a server
 function: those redirect requests that accept `text/html`, which is exactly
 what a download link sends. An exam job reads two parts at a time and
-reports progress from 0.1 to 0.8 as parts finish. Jobs and files older than
-24 h are purged hourly; the clean-up starts at boot. Concurrency is capped
+reports progress from 0.1 to 0.8 as parts finish. Concurrency is capped
 per process.
+
+A job row stores only the WAV's file name; every reader resolves it under
+the current `DATA_DIR/audio` (`JobRecord::output_file`, which also accepts
+the absolute paths rows written before 0.6.0 hold), so a portable folder
+that moves keeps its recordings. Jobs that no saved exam refers to are
+purged hourly from boot once older than `AUDIO_RETENTION_HOURS` (default
+24; `0` never purges and the task is not even spawned). A job named by a
+saved exam's `recording_job` is skipped by the purge and deleted, with its
+WAV, when the exam is deleted and no other exam refers to it.
+
+## Saved exams
+
+The whole-exam page keeps its draft on the server so the teacher can close
+the tab and come back. `application/exams.rs` defines `SavedExam` (the
+`Exam`, the topic typed for each part, the recording job id and the stale
+flag) and four server functions: `save_exam`, `list_exams`, `load_exam`,
+`delete_exam`. `infrastructure/exams.rs` stores one row per `Exam::id` in
+the `exams` table of `jobs.db`: the `SavedExam` as JSON plus the columns the
+list needs (title, format key, part counts, `recording_job`, timestamps),
+so listing never parses JSON. `load_exam` looks the recording up afresh in
+the job table, since a job may finish after the tab closed.
+
+The browser (`ui/views/exam.rs`) saves on its own once a script exists (or
+after the first explicit Save): after every finished step, a second after
+an edit to the title, theme or a topic, and on the Save button. Saves are
+single-flight with one queued follow-up, and the snapshot is taken when the
+save is requested, so what is stored is what the teacher saw. Opening a
+saved exam replaces the state the way switching formats does (new `run`),
+recomputes issues with the pure validators instead of storing them, and
+resumes polling a recording job that is still running. Deleting the open
+exam starts a fresh one, or the next auto-save would bring the row back.
+Two tabs editing the same exam: last write wins.
 
 ## Deployment shape
 
 `dx build --release` produces a server binary and a `public/` folder; the
 Dockerfile packages both on `debian:bookworm-slim`. Configuration is
-environment only (`.env.example`). The same server also ships as a portable
-Windows EXE and Linux AppImage (`--portable`: `.env`, `voices.json` and
-`data/` beside the package, browser opened after startup); see
+environment only (`.env.example`); `AUDIO_RETENTION_HOURS` decides how long
+recordings no saved exam refers to are kept. The same server also ships as
+a portable Windows EXE and Linux AppImage (`--portable`: `.env`,
+`voices.json` and `data/` beside the package, browser opened after startup;
+saved exams and their recordings travel with the folder); see
 `docs/portable.md`. Put a reverse proxy with TLS and **some
 authentication** in front before exposing it: the app has rate limits but
 no login, and every request spends Gemini credit.
 
 ## Roadmap (in order)
 
-1. Persist exams (SQLite table keyed by `Exam::id`) so a teacher can return
-   to a draft, and to a recording, after closing the tab.
-2. DOCX export beside the Markdown one (`docx-rs`), matching the reference
-   paper layout (answer boxes, số phách block).
-3. MP3 output via `ffmpeg`.
-4. Authentication (single shared password or Cloudflare Access), then
-   per-user rate limits.
-5. Regeneration of a single item with the validator's issues fed back into
+1. MP3 output via `ffmpeg`.
+2. Authentication (single shared password or Cloudflare Access), then
+   per-user rate limits; saved exams are visible to everyone who reaches the
+   server until then.
+3. Regeneration of a single item with the validator's issues fed back into
    the prompt.
-6. Per-part voice editing on the exam page (the part page already has it).
+4. Per-part voice editing on the exam page (the part page already has it).
+5. Saving on the part page too (its state is not an `Exam`; it would need a
+   record of its own).

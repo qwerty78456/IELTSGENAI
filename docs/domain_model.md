@@ -85,6 +85,9 @@ part has a passage and every `TaskSpec` has a `Task`.
 `container`, `sample_rate`, `duration_ms`, `location` (job id or path). Never bytes.
 Built by `audio_job_status` once a job completes; `location` is the job id and
 `application::audio::audio_url(location)` is where the browser streams it.
+A saved exam (`application::exams::SavedExam`) names the job it refers to;
+that job and its WAV are kept until the exam is deleted. `ExamPart.audio` is
+reserved for per-part recordings and is not written yet.
 
 ### `AudioProgram` / `AudioSegment`
 `AudioProgram::for_format(&ExamFormat)` yields the ordered segments:

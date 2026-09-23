@@ -21,6 +21,7 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Answer key** | Every item's key in paper order, derived from the exam. | |
 | **Audio programme** (`AudioProgram`) | The ordered plan of the full recording: music, tone, announcement, pause, passage, replay, checking time. | |
 | **Recording** (`AudioTrack`) | Where a rendered WAV lives and how long it is. Never the bytes. | |
+| **Saved exam** (`SavedExam`) | An exam kept on the server with the teacher's topics and the recording it refers to, so the teacher can come back to it. Still a draft. | "final", "record" |
 | **Draft** | What generation returns: a passage or task plus validator **issues**. Everything is a draft until the teacher accepts it. | "final" |
 | **Issue** (`ValidationIssue`) | A validator finding with a severity: Error (unusable key) or Warning (look at it). | "bug" |
 | **Grounding** | The rule that a text key or evidence must occur verbatim in the passage. | |

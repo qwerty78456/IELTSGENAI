@@ -36,7 +36,9 @@ Options: --no-open, --non-interactive, --config-dir PATH. Relative paths
 are resolved against the configuration directory. Environment values override
 file settings, but malformed files always fail. Configuration is loaded once;
 restart after edits. API-key validity with Google is checked when generating.
-This release does not add saved exams; audio still expires after 24 hours.
+Exams built on the Whole exam page are saved on the server and reopen after a
+restart, recording included. Their recordings are kept until the exam is deleted;
+other recordings expire after AUDIO_RETENTION_HOURS (24 by default).
 
 Build instructions and verification are in [docs/portable.md](docs/portable.md).
 Builds go to ignored dist/, with SHA-256 checksums and startup instructions.
@@ -71,8 +73,9 @@ docker compose up -d --build
 The container listens on `127.0.0.1:8080`. Put a reverse proxy with TLS and
 **authentication** in front (Caddy with `basic_auth`, or Cloudflare Access):
 the app rate-limits but has no login, and every request spends API credit.
-Data (job database, WAVs, logs) lives in the `generator_data` volume;
-recordings older than 24 hours are purged.
+Data (job database, saved exams, WAVs, logs) lives in the `generator_data`
+volume; recordings no saved exam refers to are purged after
+`AUDIO_RETENTION_HOURS` (24 by default), saved exams keep theirs.
 
 ## Configuration
 
@@ -84,6 +87,7 @@ recordings older than 24 hours are purged.
 | `DATA_DIR` | `./data` | jobs.db, audio/, logs/ |
 | `VOICES_PATH` | `$DATA_DIR/voices.json` | gender + accent → voice name; written with defaults if missing |
 | `MUSIC_PATH` | unset | 24 kHz mono 16-bit WAV for the start/end of a full exam recording |
+| `AUDIO_RETENTION_HOURS` | `24` | hours an unsaved recording is kept; `0` keeps every recording; recordings of saved exams are never purged |
 | `IP`, `PORT` | `0.0.0.0`, `8080` | bind address |
 
 Model facts checked on ai.google.dev, 2026-09-21: the TTS model takes at most
@@ -99,8 +103,8 @@ served.
 ```
 src/domain/          pure types and rules (formats, passage, tasks, exam, validation, audio programme)
 src/application/     #[server] use cases the UI calls
-src/infrastructure/  server only: Gemini client, prompts, TTS, WAV, SQLite jobs, config
-src/export/          Markdown paper / key / transcript
+src/infrastructure/  server only: Gemini client, prompts, TTS, WAV, SQLite jobs and saved exams, config
+src/export/          Markdown and DOCX paper / key / transcript
 src/ui/              Dioxus components and views
 docs/                architecture, domain model, ubiquitous language, scope
 ```
@@ -113,6 +117,8 @@ side by side, with the transcript downloadable as soon as the script exists
 (each piece can still be regenerated alone); the exam page (`/exam`) takes a
 topic per part and produces the whole paper, the answer key, every
 transcript and one exam recording with announcements, pauses and replays,
-streamed from `/audio/{job_id}`. See the roadmap at the end of
-`docs/architecture.md` for what comes next: persistence, DOCX export, MP3,
+streamed from `/audio/{job_id}`. Exams on that page are saved on the server
+automatically and can be reopened later, recording included; both pages export
+Markdown and Word (DOCX, laid out like the paper with answer boxes). See the
+roadmap at the end of `docs/architecture.md` for what comes next: MP3,
 authentication.

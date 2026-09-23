@@ -1,4 +1,4 @@
-Listening Exam Generator 0.5.0
+Listening Exam Generator 0.6.0
 
 Windows 10/11 x64: run the EXE from a writable folder.
 Linux x86-64 (Ubuntu 22.04 or newer baseline): chmod +x the AppImage, then run it.
@@ -19,13 +19,16 @@ Environment variables override file values; malformed files still cause failure.
 Edit configuration only while stopped; restart to reload it.
 
 The .env contains your secret key: do not share it. Data and logs are in ./data.
-Recordings expire after 24 hours. Exam drafts are not yet saved across browser closure.
+Exams made on the Whole exam page are saved beside the package and reopen after a
+restart, recording included; their recordings stay until the exam is deleted. Other
+recordings expire after AUDIO_RETENTION_HOURS (24 by default; 0 keeps them all).
+Both pages export Word (DOCX) and Markdown.
 Missing configuration files are recreated; invalid files are never overwritten.
 The key is checked locally for format only; provider authentication errors appear
 when generating. Invalid ports/paths/settings stop startup.
 
 If Linux FUSE is unavailable:
-APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.5.0-linux-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.6.0-linux-x86_64.AppImage
 Ctrl+C in this mode may return shell status 130 from the AppImage runtime,
 even after "Server stopped cleanly.", and may leave its temporary extraction.
 Alternatively, run the AppImage with --appimage-extract once, then run

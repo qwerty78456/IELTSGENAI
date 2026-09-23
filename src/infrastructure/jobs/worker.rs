@@ -12,40 +12,45 @@ use super::super::audio::{AudioError, Pcm16, ProgramAssets, render_program};
 use super::super::config::config;
 use super::super::llm::{GeminiClient, LlmError};
 use super::super::tts::{TtsError, synthesize_passage};
-use super::store::{JobStore, now_secs};
+use super::store::{JobStore, now_secs, output_file_in};
 
-/// Outputs older than this are deleted.
-const JOB_MAX_AGE_SECS: i64 = 24 * 60 * 60;
 const CLEANUP_INTERVAL_SECS: u64 = 3_600;
 
 static CLEANUP_STARTED: OnceLock<()> = OnceLock::new();
 
-/// Starts the periodic clean-up once per process. Safe to call on every request.
+/// Starts the periodic clean-up once per process, unless `AUDIO_RETENTION_HOURS`
+/// is 0. Safe to call on every request. Recordings a saved exam refers to are
+/// never purged; deleting the exam removes them.
 pub fn ensure_cleanup_running() {
     CLEANUP_STARTED.get_or_init(|| {
-        tokio::spawn(async {
+        let Some(max_age_secs) = config().audio_retention_secs() else {
+            tracing::info!(
+                "AUDIO_RETENTION_HOURS=0: recordings are kept until their exam is deleted"
+            );
+            return;
+        };
+        tracing::info!(
+            "unsaved recordings are purged after {} hour(s)",
+            config().audio_retention_hours
+        );
+        tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
             loop {
                 interval.tick().await;
-                cleanup_old_jobs().await;
+                cleanup_old_jobs(max_age_secs).await;
             }
         });
     });
 }
 
-async fn cleanup_old_jobs() {
+async fn cleanup_old_jobs(max_age_secs: i64) {
     let store = JobStore::global().await;
-    match store.purge_before(now_secs() - JOB_MAX_AGE_SECS).await {
+    match store.purge_before(now_secs() - max_age_secs).await {
         Ok(paths) => {
             let removed = paths.len();
             for path in paths {
-                let _ = tokio::task::spawn_blocking(move || {
-                    if let Err(e) = std::fs::remove_file(&path) {
-                        tracing::warn!("could not delete {path}: {e}");
-                    }
-                })
-                .await;
+                remove_output(&path).await;
             }
             if removed > 0 {
                 tracing::info!("cleanup removed {removed} old job(s)");
@@ -55,16 +60,29 @@ async fn cleanup_old_jobs() {
     }
 }
 
-/// Writes a WAV under `DATA_DIR/audio/<job_id>.wav` and returns its path.
-async fn store_wav(job_id: &str, pcm: &Pcm16) -> Result<std::path::PathBuf, AudioError> {
-    let path = config().audio_dir().join(format!("{job_id}.wav"));
+/// Deletes the WAV a job row pointed at (best effort, logged).
+async fn remove_output(output_path: &str) {
+    let path = output_file_in(&config().audio_dir(), output_path);
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Err(e) = std::fs::remove_file(&path) {
+            tracing::warn!("could not delete {}: {e}", path.display());
+        }
+    })
+    .await;
+}
+
+/// Writes a WAV under `DATA_DIR/audio/<job_id>.wav` and returns its file name,
+/// which is what the job row stores (see `output_file_in`).
+async fn store_wav(job_id: &str, pcm: &Pcm16) -> Result<String, AudioError> {
+    let name = format!("{job_id}.wav");
+    let path = config().audio_dir().join(&name);
     let wav = pcm.to_wav();
     let target = path.clone();
     tokio::task::spawn_blocking(move || std::fs::write(&target, &wav))
         .await
         .map_err(|e| AudioError::Asset(format!("write task failed: {e}")))?
         .map_err(|e| AudioError::Asset(format!("cannot write {}: {e}", path.display())))?;
-    Ok(path)
+    Ok(name)
 }
 
 /// Runs `work` as the body of job `job_id`, recording the outcome in the store.
@@ -77,14 +95,17 @@ where
         let _ = store.mark_processing(&job_id, 0.1).await;
         let outcome = async {
             let pcm = work.await?;
-            let path = store_wav(&job_id, &pcm).await?;
-            Ok::<_, AudioError>((path, pcm.duration_ms()))
+            let name = store_wav(&job_id, &pcm).await?;
+            Ok::<_, AudioError>((name, pcm.duration_ms()))
         }
         .await;
         match outcome {
-            Ok((path, duration_ms)) => {
-                tracing::info!(job = %job_id, duration_ms, "{label} ready at {}", path.display());
-                let _ = store.complete(&job_id, &path.to_string_lossy()).await;
+            Ok((name, duration_ms)) => {
+                tracing::info!(
+                    job = %job_id, duration_ms,
+                    "{label} ready at {}", config().audio_dir().join(&name).display()
+                );
+                let _ = store.complete(&job_id, &name).await;
             }
             Err(e) => {
                 tracing::error!(job = %job_id, "{label} failed: {e}");

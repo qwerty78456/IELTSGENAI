@@ -20,7 +20,8 @@ args = parser.parse_args()
 artifact = args.artifact.resolve()
 env = {k: v for k, v in os.environ.items() if k not in {
     "GEMINI_API_KEY", "IP", "PORT", "DATA_DIR", "VOICES_PATH", "MUSIC_PATH",
-    "GEMINI_TEXT_MODEL", "GEMINI_TTS_MODEL", "RUST_LOG", "DIOXUS_PUBLIC_PATH", "APPIMAGE",
+    "GEMINI_TEXT_MODEL", "GEMINI_TTS_MODEL", "AUDIO_RETENTION_HOURS", "RUST_LOG",
+    "DIOXUS_PUBLIC_PATH", "APPIMAGE",
 }}
 env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
 env["NO_COLOR"] = "1"
@@ -59,7 +60,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
         port = sock.getsockname()[1]
     valid = f"GEMINI_API_KEY=offline-test-key\nIP=127.0.0.1\nPORT={port}\n"
     config.write_text(valid, encoding="utf-8")
-    for setting, value in [("PORT", "70000"), ("IP", "invalid"), ("RUST_LOG", "bad[")]:
+    for setting, value in [("PORT", "70000"), ("IP", "invalid"), ("RUST_LOG", "bad["), ("AUDIO_RETENTION_HOURS", "abc")]:
         failure(setting, {setting: value})
     voices.write_text("{broken", encoding="utf-8")
     failure("voices.json")

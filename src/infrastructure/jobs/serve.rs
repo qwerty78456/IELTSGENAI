@@ -31,7 +31,7 @@ pub async fn serve_audio(Path(job_id): Path<String>, request: Request) -> Respon
                 .into_response();
         }
     };
-    let path = match (record.state, record.output_path) {
+    let path = match (record.state, record.output_file()) {
         (JobState::Completed, Some(path)) => path,
         _ => return not_found("Recording not found or not finished yet"),
     };

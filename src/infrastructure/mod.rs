@@ -3,6 +3,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod exams;
 pub mod jobs;
 pub mod llm;
 pub mod prompts;

@@ -81,12 +81,48 @@ pub async fn start_exam_audio(request: ExamAudioRequest) -> Result<String, Serve
     Ok(job_id)
 }
 
+/// The status the browser sees for a stored job.
+#[cfg(feature = "server")]
+pub(crate) fn status_of(state: crate::infrastructure::jobs::JobState) -> JobStatus {
+    use crate::infrastructure::jobs::JobState;
+    match state {
+        JobState::Pending => JobStatus::Pending,
+        JobState::Processing => JobStatus::Processing,
+        JobState::Completed => JobStatus::Completed,
+        JobState::Failed => JobStatus::Failed,
+    }
+}
+
+/// The `AudioTrack` of a completed job: its WAV under the current `DATA_DIR`,
+/// measured on disk. `None` while the job runs or after it failed.
+#[cfg(feature = "server")]
+pub(crate) async fn track_for(
+    record: &crate::infrastructure::jobs::JobRecord,
+) -> Option<AudioTrack> {
+    use crate::infrastructure::audio::{SAMPLE_RATE, duration_ms_for_len};
+    use crate::infrastructure::jobs::JobState;
+
+    if record.state != JobState::Completed {
+        return None;
+    }
+    let path = record.output_file()?;
+    let len = tokio::fs::metadata(path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Some(AudioTrack {
+        container: "wav".into(),
+        sample_rate: SAMPLE_RATE,
+        duration_ms: duration_ms_for_len(len),
+        location: record.id.clone(),
+    })
+}
+
 /// State of a job; once complete, also the `AudioTrack` describing its WAV.
 #[server]
 pub async fn audio_job_status(job_id: String) -> Result<JobView, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::audio::{SAMPLE_RATE, duration_ms_for_len};
-    use crate::infrastructure::jobs::{JobState, JobStore};
+    use crate::infrastructure::jobs::JobStore;
 
     let record = JobStore::global()
         .await
@@ -94,30 +130,10 @@ pub async fn audio_job_status(job_id: String) -> Result<JobView, ServerFnError> 
         .await
         .map_err(user_error)?;
     let record = record.ok_or_else(|| ServerFnError::new("Job not found"))?;
-    let status = match record.state {
-        JobState::Pending => JobStatus::Pending,
-        JobState::Processing => JobStatus::Processing,
-        JobState::Completed => JobStatus::Completed,
-        JobState::Failed => JobStatus::Failed,
-    };
-    let track = match (record.state, record.output_path.as_deref()) {
-        (JobState::Completed, Some(path)) => {
-            let len = tokio::fs::metadata(path)
-                .await
-                .map(|m| m.len())
-                .unwrap_or(0);
-            Some(AudioTrack {
-                container: "wav".into(),
-                sample_rate: SAMPLE_RATE,
-                duration_ms: duration_ms_for_len(len),
-                location: record.id.clone(),
-            })
-        }
-        _ => None,
-    };
+    let track = track_for(&record).await;
     Ok(JobView {
         id: record.id,
-        status,
+        status: status_of(record.state),
         progress: record.progress,
         error: record.error,
         track,

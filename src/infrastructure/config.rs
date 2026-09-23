@@ -12,7 +12,8 @@ use super::{audio::Pcm16, tts::voices::VoiceMappings};
 pub const DEFAULT_TEXT_MODEL: &str = "gemini-flash-latest";
 pub const DEFAULT_TTS_MODEL: &str = "gemini-2.5-pro-preview-tts";
 pub const TTS_MAX_INPUT_TOKENS: usize = 8_192;
-const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\nDATA_DIR=./data\nVOICES_PATH=./voices.json\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-flash-latest\n# GEMINI_TTS_MODEL=gemini-2.5-pro-preview-tts\n# MUSIC_PATH=./music.wav\nRUST_LOG=info\n";
+pub const DEFAULT_AUDIO_RETENTION_HOURS: u32 = 24;
+const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\nDATA_DIR=./data\nVOICES_PATH=./voices.json\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-flash-latest\n# GEMINI_TTS_MODEL=gemini-2.5-pro-preview-tts\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
 
 /// Read only application settings, reporting invalid encodings without their values.
 pub fn environment() -> Result<HashMap<String, String>, String> {
@@ -24,6 +25,7 @@ pub fn environment() -> Result<HashMap<String, String>, String> {
         "DATA_DIR",
         "VOICES_PATH",
         "MUSIC_PATH",
+        "AUDIO_RETENTION_HOURS",
         "IP",
         "PORT",
         "RUST_LOG",
@@ -97,6 +99,8 @@ pub struct AppConfig {
     pub tts_model: String,
     pub voices: VoiceMappings,
     pub music_path: Option<PathBuf>,
+    /// How long a recording no saved exam refers to is kept; 0 keeps every recording.
+    pub audio_retention_hours: u32,
     pub address: SocketAddr,
     pub log_filter: String,
 }
@@ -234,6 +238,18 @@ impl AppConfig {
             .ok()
             .filter(|p| *p > 0)
             .ok_or_else(|| setting_error("PORT", "must be an integer from 1 to 65535"))?;
+        let audio_retention_hours = value(
+            "AUDIO_RETENTION_HOURS",
+            &DEFAULT_AUDIO_RETENTION_HOURS.to_string(),
+        )
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| {
+            setting_error(
+                "AUDIO_RETENTION_HOURS",
+                "must be a whole number of hours; 0 keeps recordings until their exam is deleted",
+            )
+        })?;
         let log_filter = value("RUST_LOG", "info");
         if log_filter.trim().is_empty()
             || tracing_subscriber::EnvFilter::try_new(&log_filter).is_err()
@@ -267,6 +283,7 @@ impl AppConfig {
             tts_model,
             voices,
             music_path,
+            audio_retention_hours,
             address: SocketAddr::new(ip, port),
             log_filter,
         })
@@ -274,6 +291,10 @@ impl AppConfig {
 
     pub fn audio_dir(&self) -> PathBuf {
         self.data_dir.join("audio")
+    }
+    /// The age after which an unreferenced recording is purged; `None` never purges.
+    pub fn audio_retention_secs(&self) -> Option<i64> {
+        (self.audio_retention_hours > 0).then(|| i64::from(self.audio_retention_hours) * 3_600)
     }
     pub fn logs_dir(&self) -> PathBuf {
         self.data_dir.join("logs")
@@ -355,6 +376,8 @@ mod tests {
             ("DATA_DIR", ""),
             ("GEMINI_TEXT_MODEL", "bad/model"),
             ("VOICES_PATH", ""),
+            ("AUDIO_RETENTION_HOURS", "abc"),
+            ("AUDIO_RETENTION_HOURS", "-1"),
         ] {
             std::fs::write(dir.path().join(".env"), format!("{name}={value}\n")).unwrap();
             assert!(
@@ -456,6 +479,23 @@ mod tests {
         assert_eq!(cfg.data_dir, dir.path().join("data"));
         assert!(dir.path().join("data/voices.json").is_file());
         assert!(!dir.path().join(".env").exists());
+    }
+
+    #[test]
+    fn audio_retention_zero_means_never() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = AppConfig::load(dir.path(), true, &environment()).unwrap();
+        assert_eq!(cfg.audio_retention_hours, DEFAULT_AUDIO_RETENTION_HOURS);
+        assert_eq!(cfg.audio_retention_secs(), Some(24 * 3_600));
+        let mut env = environment();
+        env.insert("AUDIO_RETENTION_HOURS".into(), " 0 ".into());
+        let cfg = AppConfig::load(dir.path(), true, &env).unwrap();
+        assert_eq!(cfg.audio_retention_secs(), None);
+        assert!(
+            std::fs::read_to_string(dir.path().join(".env"))
+                .unwrap()
+                .contains("# AUDIO_RETENTION_HOURS=24")
+        );
     }
 
     #[test]

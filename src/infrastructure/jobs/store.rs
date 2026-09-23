@@ -1,4 +1,10 @@
 //! SQLite-backed job table. Outputs live on disk under `DATA_DIR/audio`.
+//!
+//! `output_path` holds the WAV's file name. Rows written before 0.6.0 hold an
+//! absolute path; `output_file_in` reads both, so a `data/` folder that moves
+//! with a portable install keeps its recordings.
+
+use std::path::{Path, PathBuf};
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use tokio::sync::OnceCell;
@@ -69,6 +75,26 @@ pub struct JobRecord {
     pub created_at_secs: i64,
 }
 
+impl JobRecord {
+    /// Where the finished WAV is under the current `DATA_DIR`, if the job wrote one.
+    pub fn output_file(&self) -> Option<PathBuf> {
+        self.output_path
+            .as_deref()
+            .map(|p| output_file_in(&config().audio_dir(), p))
+    }
+}
+
+/// Resolves a stored `output_path` against `audio_dir`, keeping only the file
+/// name so old absolute rows from either OS and new bare names both work.
+pub fn output_file_in(audio_dir: &Path, output_path: &str) -> PathBuf {
+    let name = output_path
+        .rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(output_path);
+    audio_dir.join(name)
+}
+
 pub struct JobStore {
     pool: SqlitePool,
 }
@@ -106,7 +132,7 @@ impl JobStore {
         Ok(())
     }
 
-    async fn open_options(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
+    pub(crate) async fn open_options(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
             .connect_with(options)
@@ -124,6 +150,7 @@ impl JobStore {
         )
         .execute(&pool)
         .await?;
+        super::super::exams::create_schema(&pool).await?;
         // SQLite can open an existing database read-only despite requesting writes.
         // Exercise a real write and roll it back before accepting any requests.
         let mut transaction = pool.begin().await?;
@@ -205,13 +232,17 @@ impl JobStore {
         ))
     }
 
-    /// Deletes jobs created before `cutoff_secs` and returns their output paths for removal.
+    /// Deletes jobs created before `cutoff_secs` and returns their output paths
+    /// for removal. A job a saved exam refers to is never purged here.
     pub async fn purge_before(&self, cutoff_secs: i64) -> Result<Vec<String>, sqlx::Error> {
-        let rows: Vec<(String, Option<String>)> =
-            sqlx::query_as("SELECT id, output_path FROM jobs WHERE created_at_secs <= ?1")
-                .bind(cutoff_secs)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, output_path FROM jobs
+             WHERE created_at_secs <= ?1
+               AND id NOT IN (SELECT recording_job FROM exams WHERE recording_job IS NOT NULL)",
+        )
+        .bind(cutoff_secs)
+        .fetch_all(&self.pool)
+        .await?;
         let mut paths = Vec::new();
         for (id, path) in rows {
             sqlx::query("DELETE FROM jobs WHERE id = ?1")
@@ -227,6 +258,20 @@ impl JobStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_file_resolves_old_absolute_and_new_relative_names() {
+        let dir = Path::new("current-data").join("audio");
+        for stored in [
+            "/srv/data/audio/a.wav",
+            "D:\\app\\data\\audio\\a.wav",
+            "C:/mixed\\separators/a.wav",
+            "a.wav",
+        ] {
+            assert_eq!(output_file_in(&dir, stored), dir.join("a.wav"), "{stored}");
+        }
+        assert_eq!(output_file_in(&dir, "trailing/"), dir.join("trailing/"));
+    }
 
     #[tokio::test]
     async fn startup_write_probe_leaves_no_jobs() {

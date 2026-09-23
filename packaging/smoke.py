@@ -24,6 +24,10 @@ env = {k: v for k, v in os.environ.items() if k not in {
 }}
 env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
 env["NO_COLOR"] = "1"
+def payloads():
+    """Windows launcher extraction directories; every run must remove its own."""
+    return set(Path(tempfile.gettempdir()).glob("listening-generator-*")) if os.name == "nt" else set()
+existing_payloads = payloads()
 
 with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary:
     base = Path(temporary)
@@ -218,6 +222,52 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
         finally:
             stop(process)
         print("PASS: browser-opening failure leaves the server running (Linux).")
+
+    # Windows: closing the console window is how most people stop a double-clicked
+    # app. The server must stop and the launcher must still remove its payload.
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.WinDLL("user32")
+        before = payloads()
+        process = subprocess.Popen(command, cwd=base, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
+        try:
+            for _ in range(300):
+                assert process.poll() is None, process.returncode
+                try:
+                    urllib.request.urlopen(f"http://127.0.0.1:{port}", timeout=1).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            windows = []
+            @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+            def visit(hwnd, _):
+                owner = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+                name = ctypes.create_unicode_buffer(64)
+                user32.GetClassNameW(hwnd, name, 64)
+                if owner.value == process.pid and name.value == "ConsoleWindowClass":
+                    windows.append(hwnd)
+                return True
+            user32.EnumWindows(visit, 0)
+            if windows:
+                user32.PostMessageW(windows[0], 0x0010, 0, 0)  # WM_CLOSE, like the X button
+                process.wait(timeout=20)
+                for _ in range(50):
+                    with socket.socket() as probe:
+                        if probe.connect_ex(("127.0.0.1", port)) != 0:
+                            break
+                    time.sleep(0.1)
+                else:
+                    raise AssertionError("Server still listening after the console window closed")
+                assert not (payloads() - before), payloads() - before
+                print("PASS: closing the console window stops the server and removes the payload (Windows).")
+            else:
+                print("NOT TESTED: console window close; the new console is not a classic conhost window.")
+        finally:
+            if process.poll() is None:
+                subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True)
+                process.wait()
     moved = base / "moved app"
     appdir.rename(moved)
     command[0] = str(moved / artifact.name)
@@ -228,6 +278,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     failure("GEMINI_API_KEY")
     assert (base / "custom configuration" / ".env").is_file()
     assert (base / "custom configuration" / "voices.json").is_file()
+    assert not (payloads() - existing_payloads), payloads() - existing_payloads
     print("PASS: first run, malformed config, preservation, paths, logs/database failures, port conflict,")
     print("      pages/assets/WASM/CSS, server function, audio range/download,")
     print("      successful exit codes, shutdown, relocation and explicit configuration directory.")

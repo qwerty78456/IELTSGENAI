@@ -3,20 +3,70 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
-## [0.5.0] – 2026-09-23 — Portable releases
+## [0.5.0] – 2026-09-23 — Bản portable cho Windows và Linux
 
-- Portable Windows x64 EXE and Linux x86-64 AppImage packaging, with local
-  browser/server startup and configuration beside the original package.
-- First-run .env and voices.json templates; strict validation and clear console
-  errors for invalid configuration, inaccessible storage and occupied ports.
-- Validated voice mappings cached at startup; no silent fallback for invalid files.
-- SQLite and logging initialization before serving; graceful portable shutdown.
-- Repeatable build scripts, dependency notices, checksums and packaged smoke tests.
-- Startup rejects read-only databases and malformed/truncated music without panics;
-  configuration encoding errors and diagnostics do not expose API-key values.
-- Breaking startup change: all server modes now require a configured API key.
-  Dotenv loads only from the chosen configuration directory; no parent search.
-- Portable configuration does not add saved exams or change 24-hour audio retention.
+Ứng dụng chạy được như một file duy nhất: **EXE cho Windows 10/11 x64** và
+**AppImage cho Linux x86-64** (nền Ubuntu 22.04). Người dùng không cần Rust,
+Dioxus CLI hay Docker. Bấm chạy thì server cục bộ khởi động và trình duyệt mở
+`http://127.0.0.1:8080`. Cấu hình và dữ liệu nằm cạnh file gốc.
+
+### Điểm nhấn
+
+- **Lần chạy đầu tạo `.env` và `voices.json`** cạnh file EXE/AppImage (tạo
+  độc quyền, không bao giờ ghi đè), rồi dừng với hướng dẫn điền
+  `GEMINI_API_KEY`. File thiếu được tạo lại; file có sẵn được giữ nguyên.
+- **Lỗi khởi động rõ ràng, không panic.** Sai cú pháp dotenv, sai mã hoá,
+  thiếu key, model/IP/PORT/RUST_LOG không hợp lệ, `voices.json` hỏng hoặc có
+  tên giọng rỗng, file nhạc sai định dạng, thư mục data/log hoặc SQLite không
+  ghi được, cổng đã bị chiếm: đều báo lỗi kèm đường dẫn/biến liên quan và thoát
+  với mã khác 0. Thông báo lỗi không bao giờ chứa nội dung `.env` hay giá trị key.
+- **EXE Windows là launcher nhỏ viết bằng Rust** chứa nguyên server và
+  `public/` khớp phiên bản. Launcher giải nén vào thư mục tạm riêng, chạy server
+  với thư mục cấu hình gốc, trả lại mã thoát và dọn thư mục tạm, kể cả khi người
+  dùng đóng cửa sổ console bằng nút X. Khi chạy bằng double-click, lỗi khởi động
+  được giữ trên màn hình cho tới khi nhấn Enter.
+- **AppImage Type 2** chứa server, tài sản web, các thư viện không thuộc hệ
+  thống (libssl, libcrypto, libgcc_s), icon, desktop entry, CA fallback và giấy
+  phép. `AppRun` dùng `APPIMAGE` để tìm thư mục cấu hình cạnh file gốc.
+
+### Thêm
+
+- `src/infrastructure/startup.rs`: tuỳ chọn `--portable`, `--config-dir`,
+  `--no-open`, `--non-interactive`; listener tự quản lý, mở trình duyệt sau
+  khi khởi tạo xong (nếu không mở được thì vẫn in URL và server vẫn chạy),
+  tắt êm bằng Ctrl+C.
+- `tools/portable-launcher/` (launcher Windows), `packaging/` (script build
+  PowerShell/Linux, Containerfile Ubuntu 22.04, AppRun, smoke test
+  `smoke.py` chạy trên gói thật không gọi Gemini, `test-linux.ps1` cho
+  Ubuntu 22.04/24.04, giấy phép thư viện).
+- Test mới cho cấu hình lần đầu, file thiếu một phần, giữ file có sẵn,
+  dotenv/JSON hỏng, sai mã hoá, đường dẫn tương đối, không lộ key, WAV bị
+  cắt cụt, SQLite chỉ đọc (42 test tổng).
+- `docs/portable.md`, `docs/portable-verification-v0.5.0.md`.
+
+### Thay đổi
+
+- Cấu hình và `voices.json` được kiểm tra một lần lúc khởi động và giữ trong
+  bộ nhớ; sửa file thì phải khởi động lại. Không còn lặng lẽ quay về giọng mặc
+  định khi file hỏng.
+- SQLite và log được khởi tạo (kèm một lần ghi thử rồi rollback) trước khi
+  nhận request. `JobStore::global` không còn tự mở database.
+- Biến môi trường vẫn ghi đè giá trị trong file (tương thích Docker), nhưng
+  file cấu hình sai cú pháp luôn bị từ chối.
+- `dx serve` (debug) vẫn đi qua `dioxus::serve` nên hot reload giữ nguyên;
+  dev và Docker không tự mở trình duyệt.
+
+### Thay đổi không tương thích
+
+- Mọi chế độ server đều bắt buộc có `GEMINI_API_KEY` lúc khởi động (tính hợp
+  lệ với Google vẫn chỉ được kiểm tra khi sinh đề).
+- `.env` chỉ được đọc từ thư mục cấu hình đã chọn, không còn tìm ngược lên thư
+  mục cha.
+
+### Chưa làm trong bản này
+
+- Chưa lưu đề qua lần đóng trình duyệt; audio vẫn hết hạn sau 24 giờ.
+- Chưa ký số, chưa có ARM64, chưa tự cập nhật.
 
 ## [0.4.0] – 2026-09-22 — "Trọn một đề, một file WAV"
 

@@ -45,7 +45,7 @@ are unit-tested with plain `cargo test`.
 
 ```
 src/
-  main.rs                 wiring only: routes, dioxus::serve router + GET /audio/{job_id}, server bootstrap
+  main.rs                 wiring only: routes; server build calls infrastructure::startup::run(App)
   domain/                 pure; compiles on wasm and server
     format.rs             ExamFormat, PartSpec, TaskSpec, TaskKind, WordLimit, PlayCount, PassageKind
                           + presets ExamFormat::ielts_listening(), ::hsg_national()
@@ -63,7 +63,9 @@ src/
     tasks.rs              generate_task    -> TaskDraft { task, issues }
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
-    config.rs             AppConfig from env (.env in dev)
+    config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from .env + env
+    startup.rs            bootstrap -> SQLite -> router + GET /audio/{job_id}; dioxus::serve in debug
+                          (hot reload), else an explicit listener, browser opening, graceful Ctrl+C
     llm/gemini.rs         GeminiClient: generate_text, generate_json<T>, synthesize; one retry policy
     prompts/              topic_prompt, passage_prompt, task_prompt (+ TaskDraftDto)
     tts/                  voices.json mapping; synthesize_passage (2-voice or turn-by-turn); Announcer
@@ -180,8 +182,8 @@ Synthesis outlives an HTTP request, so it runs as a job: a row in SQLite
 with a deadline per kind that never cancels the job) and, once the job is
 complete, receives an `AudioTrack` whose `location` is the job id. The WAV
 itself is streamed by a plain axum route, `GET /audio/{job_id}`
-(`infrastructure/jobs/serve.rs`, mounted in `main.rs` through
-`dioxus::serve`), as `audio/wav` with `Range` support, so the player can
+(`infrastructure/jobs/serve.rs`, mounted beside the Dioxus router in
+`infrastructure/startup.rs`), as `audio/wav` with `Range` support, so the player can
 seek and the download link needs no blob. It is deliberately not a server
 function: those redirect requests that accept `text/html`, which is exactly
 what a download link sends. An exam job reads two parts at a time and
@@ -193,7 +195,10 @@ per process.
 
 `dx build --release` produces a server binary and a `public/` folder; the
 Dockerfile packages both on `debian:bookworm-slim`. Configuration is
-environment only (`.env.example`). Put a reverse proxy with TLS and **some
+environment only (`.env.example`). The same server also ships as a portable
+Windows EXE and Linux AppImage (`--portable`: `.env`, `voices.json` and
+`data/` beside the package, browser opened after startup); see
+`docs/portable.md`. Put a reverse proxy with TLS and **some
 authentication** in front before exposing it: the app has rate limits but
 no login, and every request spends Gemini credit.
 

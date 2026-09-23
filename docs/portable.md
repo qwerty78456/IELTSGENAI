@@ -41,9 +41,12 @@ Windows (MSVC build tools installed):
 The Windows server and packaging launcher statically link the C runtime.
 The launcher embeds only the server, public assets, and dependency notices,
 extracts into a private temporary directory, passes console I/O through,
-waits for the child, and cleans up. Errors pause only when the launcher owns
-the console, stdin is interactive, and --non-interactive was not supplied.
-Forced process termination or power loss can leave a temporary directory.
+waits for the child, and cleans up. Closing the console window (and logoff or
+shutdown) stops the server too; the launcher's console handler holds Windows'
+close deadline until the payload is removed. Errors pause only when the
+launcher owns the console, stdin is interactive, and --non-interactive was not
+supplied. Forced termination (Task Manager) or power loss can still leave a
+listening-generator-* directory under %TEMP%.
 
 Linux from Windows with an existing running Podman machine:
 
@@ -75,7 +78,9 @@ and all server-feature unit tests. The smoke script tests the actual package
 in a temporary path with spaces/Unicode and no real API key. It checks missing
 and malformed config, environment overrides, preservation, storage errors,
 occupied ports, both pages, JS/WASM/CSS, an audio-job server function, WAV ranges
-and downloads, shutdown, and relocation.
+and downloads, shutdown, and relocation. On Windows it also closes a real
+console window (WM_CLOSE, like the X button) and asserts that no launcher
+payload directory remains after any run.
 
 Audit EXE imports and Linux ldd output. Verify package inventories contain only
 runtime files and notices. Test AppImages on Ubuntu 22.04 and a newer distribution.

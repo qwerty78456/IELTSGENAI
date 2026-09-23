@@ -7,7 +7,8 @@ your_api_key_here with your Gemini API key, then restart. Internet and a browser
 are required for generation. No Rust, Docker or separate server installation is needed.
 
 The browser opens after initialization. The console prints the address (default
-http://127.0.0.1:8080). Keep the console open. Ctrl+C stops the server.
+http://127.0.0.1:8080). Keep the console open. Ctrl+C, or closing the
+console window, stops the server.
 Windows startup errors stay visible when double-clicked; press Enter to close.
 Run from a terminal on Linux to read errors.
 

@@ -59,9 +59,11 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   DTOs must be plain serialisable types. Do not reintroduce `#[cfg(feature = "server")]`
   blocks inside server-fn bodies.
 - **`src/infrastructure/` is `#![cfg(feature = "server")]`** and must not define `#[server]`
-  functions. `main.rs` gates the module, calls `infrastructure::bootstrap()` (config, data
-  dirs, tracing) and then `dioxus::serve` with `dioxus::server::router(App)` plus the one plain
-  axum route `GET /audio/{job_id}`; the browser build uses `dioxus::launch`.
+  functions. `main.rs` gates the module and calls `infrastructure::startup::run(App)`:
+  `bootstrap()` (validated config loaded once, data dirs, tracing), SQLite, then
+  `dioxus::server::router(App)` plus the one plain axum route `GET /audio/{job_id}`, served by
+  `dioxus::serve` in debug (hot reload) or an explicit listener otherwise (portable mode opens
+  the browser); startup errors are returned, not panicked. The browser build uses `dioxus::launch`.
 - **`src/ui/` talks to the server only through `crate::application`.** The part view holds a
   single `HomeState` signal; the exam view a single `ExamState` signal provided by the `Navbar`
   layout. Both only display issues; rule checks belong to the domain. Browser-side orchestration

@@ -21,7 +21,8 @@ Version 0.5.0 supports a single Windows x64 EXE and a Linux x86-64 AppImage
 (Ubuntu 22.04 baseline). Put the package in a writable folder and run it.
 First launch creates .env and voices.json beside the package, then stops
 with instructions to set GEMINI_API_KEY. Edit .env and run again; the app
-opens your browser at http://127.0.0.1:8080. Keep the console open; Ctrl+C stops it.
+opens your browser at http://127.0.0.1:8080. Keep the console open; Ctrl+C or
+closing the console window stops it.
 No Rust or Docker installation is needed by users. Generation still needs
 internet access and a Gemini API key.
 

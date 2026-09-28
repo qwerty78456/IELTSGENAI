@@ -1,0 +1,61 @@
+/* Gemini API key entry, shown above every page while no key is configured */
+.key-setup {
+    max-width: 1200px;
+    margin: 1.5rem auto 0;
+    padding: 1.5rem;
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    border-top: 4px solid #b00020;
+}
+
+.key-setup h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.25rem;
+    color: #2c3e50;
+}
+
+.key-setup code {
+    background: #f1f3f5;
+    padding: 0.05rem 0.3rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+.key-warning {
+    padding: 1rem;
+    background: #fdecea;
+    border: 1px solid #f5c2c7;
+    border-left: 4px solid #b00020;
+    border-radius: 4px;
+    color: #5c1017;
+    margin: 1rem 0;
+}
+
+.key-warning p {
+    margin: 0;
+}
+
+.key-warning .key-warning-title {
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+
+.key-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    max-width: 36rem;
+}
+
+.key-remember {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.9rem;
+    color: #495057;
+}
+
+.key-form button {
+    align-self: flex-start;
+}

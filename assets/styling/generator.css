@@ -949,6 +949,12 @@ a.download-button {
     margin: 0 0 0.75rem;
 }
 
+.spend-status {
+    color: #555;
+    font-size: 0.9rem;
+    margin: 0 0 0.75rem;
+}
+
 .save-status.failed {
     color: #b00020;
 }

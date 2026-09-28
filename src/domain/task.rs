@@ -1,8 +1,18 @@
 //! Tasks and items: the questions printed on the paper, with their key.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use super::format::TaskSpec;
+
+/// Reads a missing *or null* field as its default. Language models write
+/// `"shared_options": null` as often as they leave the field out.
+pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tfng {
@@ -70,11 +80,11 @@ pub struct Item {
     /// The statement, question or sentence stem; empty for summary gaps.
     pub stem: String,
     /// Per-item options (multiple choice). Empty when the task shares options.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub options: Vec<Choice>,
     pub answer: Answer,
     /// Verbatim words from the passage that justify the key.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub evidence: String,
 }
 
@@ -83,7 +93,7 @@ pub struct Task {
     pub spec: TaskSpec,
     pub instruction: String,
     /// Options listed once above the items (multiple selection, matching, who-mentioned).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub shared_options: Vec<Choice>,
     /// Summary paragraph with gaps written as "(26)______".
     #[serde(default)]
@@ -108,5 +118,20 @@ mod tests {
         let parsed: Answer =
             serde_json::from_str(r#"{"kind":"letters","value":["B","D"]}"#).unwrap();
         assert_eq!(parsed, Answer::Letters(vec!['B', 'D']));
+    }
+
+    #[test]
+    fn null_lists_and_evidence_read_as_empty() {
+        let item: Item = serde_json::from_str(
+            r#"{"number": 11, "stem": "Why?", "options": null, "evidence": null,
+                "answer": {"kind": "letters", "value": ["A"]}}"#,
+        )
+        .unwrap();
+        assert!(item.options.is_empty() && item.evidence.is_empty());
+        let item: Item = serde_json::from_str(
+            r#"{"number": 11, "stem": "Why?", "answer": {"kind": "letters", "value": ["A"]}}"#,
+        )
+        .unwrap();
+        assert!(item.options.is_empty());
     }
 }

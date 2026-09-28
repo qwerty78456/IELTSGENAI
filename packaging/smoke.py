@@ -25,6 +25,21 @@ env = {k: v for k, v in os.environ.items() if k not in {
 }}
 env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
 env["NO_COLOR"] = "1"
+def windows_key_persisted():
+    """Whether the Windows user or machine environment holds GEMINI_API_KEY (value not read out)."""
+    if os.name != "nt":
+        return False
+    import winreg
+    scopes = [(winreg.HKEY_CURRENT_USER, "Environment"),
+              (winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment")]
+    for root, path in scopes:
+        try:
+            with winreg.OpenKey(root, path) as key:
+                if str(winreg.QueryValueEx(key, "GEMINI_API_KEY")[0]).strip():
+                    return True
+        except OSError:
+            pass
+    return False
 def payloads():
     """Windows launcher extraction directories; every run must remove its own."""
     return set(Path(tempfile.gettempdir()).glob("listening-generator-*")) if os.name == "nt" else set()
@@ -46,7 +61,9 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
         assert "never-print-this-secret" not in output, output
         return output
 
-    failure("GEMINI_API_KEY")
+    # The first run writes both templates before validating anything. Without a
+    # key it would start and ask in the browser, so an invalid port stops it here.
+    failure("PORT", {"PORT": "0"})
     config = appdir / ".env"
     voices = appdir / "voices.json"
     assert config.is_file() and voices.is_file()
@@ -71,8 +88,8 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     assert config.read_text() == valid and voices.is_file()
     original_voices = voices.read_bytes()
     config.unlink()
-    failure("GEMINI_API_KEY")
-    assert voices.read_bytes() == original_voices
+    failure("PORT", {"PORT": "0"})
+    assert config.is_file() and voices.read_bytes() == original_voices
     config.write_text(valid, encoding="utf-8")
     if os.name != "nt" and os.geteuid() != 0:
         config.chmod(0)
@@ -204,6 +221,23 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     finally:
         stop(process)
 
+    # Without a key anywhere the server still starts and asks for one in the
+    # browser. On Windows the key may also come from the registry, which this
+    # test must not change.
+    if windows_key_persisted():
+        print("NOT TESTED: starting without a key; GEMINI_API_KEY is set in the Windows environment.")
+    else:
+        config.write_text(f"IP=127.0.0.1\nPORT={port}\n", encoding="utf-8")
+        process, url, _ = start({"GEMINI_API_KEY": ""})
+        try:
+            logs = logpath.read_text(errors="replace")
+            assert "GEMINI_API_KEY): missing" in logs, logs
+            assert urllib.request.urlopen(url + "/exam").status == 200
+        finally:
+            stop(process)
+        config.write_text(valid, encoding="utf-8")
+        print("PASS: without a key the server starts and asks for one in the browser.")
+
     # Linux: make desktop helpers unavailable without changing OS associations.
     # Windows' system command resolver cannot be safely disabled for this test.
     if os.name != "nt":
@@ -276,7 +310,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     stop(process, terminal_interrupt=True)
     # A relative --config-dir is relative to the launch directory.
     command += ["--config-dir", "custom configuration"]
-    failure("GEMINI_API_KEY")
+    failure("PORT", {"PORT": "0"})
     assert (base / "custom configuration" / ".env").is_file()
     assert (base / "custom configuration" / "voices.json").is_file()
     assert not (payloads() - existing_payloads), payloads() - existing_payloads

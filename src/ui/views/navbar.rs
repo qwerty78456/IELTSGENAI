@@ -2,6 +2,7 @@ use crate::Route;
 use dioxus::prelude::*;
 
 use super::exam::ExamState;
+use crate::ui::components::key_setup::KeySetup;
 
 const NAVBAR_CSS: Asset = asset!("/assets/styling/navbar.css");
 
@@ -29,6 +30,8 @@ pub fn Navbar() -> Element {
                 "Whole exam"
             }
         }
+
+        KeySetup {}
 
         Outlet::<Route> {}
     }

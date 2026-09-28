@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::domain::{AudioRequest, AudioTrack, ExamAudioRequest};
 
@@ -38,8 +39,12 @@ pub fn audio_url(job_id: &str) -> String {
 }
 
 /// Starts synthesising one part's passage; returns the job id to poll.
+/// `exam` names the saved exam the spend is booked to (none from the part page).
 #[server]
-pub async fn start_part_audio(request: AudioRequest) -> Result<String, ServerFnError> {
+pub async fn start_part_audio(
+    request: AudioRequest,
+    exam: Option<Uuid>,
+) -> Result<String, ServerFnError> {
     use crate::application::user_error;
     use crate::infrastructure::{jobs, rate_limiter};
 
@@ -55,13 +60,17 @@ pub async fn start_part_audio(request: AudioRequest) -> Result<String, ServerFnE
         .create(jobs::JobKind::PartAudio)
         .await
         .map_err(user_error)?;
-    jobs::spawn_part_audio(job_id.clone(), request);
+    jobs::spawn_part_audio(job_id.clone(), request, exam.map(|id| id.to_string()));
     Ok(job_id)
 }
 
 /// Starts rendering the whole exam recording; returns the job id to poll.
+/// `exam` names the saved exam the spend is booked to.
 #[server]
-pub async fn start_exam_audio(request: ExamAudioRequest) -> Result<String, ServerFnError> {
+pub async fn start_exam_audio(
+    request: ExamAudioRequest,
+    exam: Option<Uuid>,
+) -> Result<String, ServerFnError> {
     use crate::application::user_error;
     use crate::infrastructure::{jobs, rate_limiter};
 
@@ -77,7 +86,7 @@ pub async fn start_exam_audio(request: ExamAudioRequest) -> Result<String, Serve
         .create(jobs::JobKind::ExamAudio)
         .await
         .map_err(user_error)?;
-    jobs::spawn_exam_audio(job_id.clone(), request);
+    jobs::spawn_exam_audio(job_id.clone(), request, exam.map(|id| id.to_string()));
     Ok(job_id)
 }
 

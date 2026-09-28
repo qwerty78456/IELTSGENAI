@@ -8,7 +8,7 @@ use crate::domain::{Choice, Item, PartSpec, Passage, SpeakerConfig, Task, TaskKi
 pub struct TaskDraftDto {
     #[serde(default)]
     pub instruction: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::domain::task::null_as_default")]
     pub shared_options: Vec<Choice>,
     #[serde(default)]
     pub summary: Option<String>,
@@ -148,5 +148,23 @@ fn kind_rules(kind: &TaskKind, spec: &TaskSpec) -> String {
              - Each item's stem names the thing to match; `options` is empty; `answer` is one letter. Letters may repeat \
                only if the rubric says so; by default each letter is used at most once."
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn null_shared_options_are_accepted() {
+        // The shape gemini-3.8-flash returned for a multiple-choice block.
+        let draft: TaskDraftDto = serde_json::from_str(
+            r#"{"instruction": "Choose A, B or C.", "shared_options": null, "summary": null,
+                "items": [{"number": 11, "stem": "Why?", "options": [{"letter": "A", "text": "x"}],
+                           "answer": {"kind": "letters", "value": ["A"]}, "evidence": "x"}]}"#,
+        )
+        .unwrap();
+        assert!(draft.shared_options.is_empty());
+        assert_eq!(draft.items[0].options.len(), 1);
     }
 }

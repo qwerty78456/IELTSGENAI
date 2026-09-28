@@ -27,11 +27,13 @@ use crate::application::exams::{
     ExamSummary, SavedExam, delete_exam, list_exams, load_exam, save_exam,
 };
 use crate::application::passages::generate_passage;
+use crate::application::settings::{KeySource, api_key_status};
 use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
+use crate::application::usage::{UsageTotals, exam_usage, usage_totals};
 use crate::domain::{
-    AudioRequest, AudioTrack, Exam, ExamAudioRequest, FormatId, PassageRequest, TaskRequest,
-    ValidationIssue, has_errors, validate_exam, validate_passage, validate_task,
+    AudioRequest, AudioTrack, Exam, ExamAudioRequest, ExamUsage, FormatId, PassageRequest,
+    TaskRequest, ValidationIssue, has_errors, validate_exam, validate_passage, validate_task,
 };
 use crate::export::{docx, markdown};
 use crate::ui::clock::local_time;
@@ -108,6 +110,11 @@ pub struct ExamState {
     /// The saved exams on this server, most recently updated first.
     pub library: Vec<ExamSummary>,
     pub library_error: Option<String>,
+    /// What Gemini has billed for this exam so far (from the server's ledger).
+    pub spend: Option<ExamUsage>,
+    /// Spend on the whole server, and where its API key comes from.
+    pub totals: Option<UsageTotals>,
+    pub key_source: Option<KeySource>,
     /// Bumped on every new exam run or cancel; a running pipeline compares
     /// against it before every write, so late results of an old run are dropped.
     pub run: u32,
@@ -133,6 +140,9 @@ impl ExamState {
             save: SaveWork::default(),
             library: Vec::new(),
             library_error: None,
+            spend: None,
+            totals: None,
+            key_source: None,
             run: 0,
         }
     }
@@ -143,6 +153,8 @@ impl ExamState {
         Self {
             run: self.run + 1,
             library: self.library.clone(),
+            totals: self.totals,
+            key_source: self.key_source,
             ..Self::for_format(format)
         }
     }
@@ -243,6 +255,9 @@ impl ExamState {
             },
             library: self.library.clone(),
             library_error: None,
+            spend: None,
+            totals: self.totals,
+            key_source: self.key_source,
             run: self.run + 1,
         }
     }
@@ -393,6 +408,12 @@ pub fn ExamView() -> Element {
     // The list is fetched after mount so the server render and the browser
     // agree on an empty panel until then.
     use_future(move || refresh_library(state));
+    use_future(move || async move {
+        refresh_spend(state).await;
+        if let Ok(status) = api_key_status().await {
+            state.write().key_source = Some(status.source);
+        }
+    });
 
     let handle_save = move |_| request_save(state);
 
@@ -418,6 +439,7 @@ pub fn ExamView() -> Element {
                         .flatten()
                         .map(|job_id| (job_id, fresh.run));
                     state.set(fresh);
+                    spawn_forever(refresh_spend(state));
                     if let Some((job_id, run)) = resume {
                         spawn_forever(fetch_exam_audio(state, run, job_id));
                     }
@@ -606,6 +628,7 @@ pub fn ExamView() -> Element {
                     },
                 }
                 p { class: "{save_class}", "{save_text}" }
+                {spend_view(current.spend)}
                 div { class: "download-buttons",
                     button {
                         class: "download-button info",
@@ -638,6 +661,14 @@ pub fn ExamView() -> Element {
                 h2 { class: "panel-header", "Saved exams" }
                 p { class: "panel-help",
                     "Kept on this server. Open one to continue where you left off; deleting an exam also deletes its recording."
+                }
+                if let Some(totals) = current.totals {
+                    p { class: "panel-help",
+                        "Gemini spend on this server: {totals.last_24h.cost_text()} in the last 24 hours, {totals.last_30_days.cost_text()} in the last 30 days."
+                        if let Some(source) = current.key_source {
+                            " API key from {source.describe()}."
+                        }
+                    }
                 }
                 if let Some(error) = current.library_error.clone() {
                     div { class: "error-message", "{error}" }
@@ -857,6 +888,61 @@ async fn refresh_library(mut state: Signal<ExamState>) {
     }
 }
 
+/// Fetches what the open exam has cost and the server's totals. The exam's
+/// figure is dropped if another exam was opened meanwhile.
+async fn refresh_spend(mut state: Signal<ExamState>) {
+    let id = state.peek().exam.id;
+    let (spend, totals) = join(exam_usage(id), usage_totals()).await;
+    let mut s = state.write();
+    if let Ok(spend) = spend
+        && s.exam.id == id
+    {
+        s.spend = Some(spend);
+    }
+    if let Ok(totals) = totals {
+        s.totals = Some(totals);
+    }
+}
+
+/// The exam's Gemini spend per step beside its budget, token counts on hover.
+/// Going over the budget only warns; nothing is blocked.
+fn spend_view(spend: Option<ExamUsage>) -> Element {
+    let Some(spend) = spend.filter(|s| !s.total().is_empty()) else {
+        return rsx! {
+            p { class: "spend-status", "Gemini spend for this exam: nothing yet." }
+        };
+    };
+    let total = spend.total();
+    let budget = spend
+        .budget_text()
+        .map(|b| format!(" of {b}"))
+        .unwrap_or_default();
+    let detail = format!(
+        "{} requests, {} reused from earlier recordings; tokens: {} in ({} cached), {} out, {} thinking",
+        total.requests,
+        total.reused,
+        total.input_tokens,
+        total.cached_tokens,
+        total.output_tokens,
+        total.thinking_tokens
+    );
+    rsx! {
+        p { class: "spend-status", title: "{detail}",
+            "Gemini spend for this exam: "
+            strong { "{total.cost_text()}" }
+            "{budget} (topics {spend.topics.cost_text()}, scripts {spend.scripts.cost_text()}, questions {spend.questions.cost_text()}, recording {spend.recordings.cost_text()})"
+        }
+        if spend.over_budget() {
+            div { class: "note-box",
+                span { class: "note-icon", "!" }
+                span {
+                    "This exam has cost more than its budget{budget} (EXAM_BUDGET_USD). Nothing is blocked, but every regeneration adds to it."
+                }
+            }
+        }
+    }
+}
+
 /// Keeps the list sorted by last update, newest first.
 fn upsert_summary(library: &mut Vec<ExamSummary>, summary: ExamSummary) {
     library.retain(|e| e.id != summary.id);
@@ -925,8 +1011,9 @@ async fn persist(mut state: Signal<ExamState>, mut snapshot: SavedExam, mut id: 
     }
 }
 
-/// Saves after a finished step, once saving is on.
+/// Saves after a finished step, once saving is on, and refreshes the spend.
 fn auto_save(state: Signal<ExamState>) {
+    spawn_forever(refresh_spend(state));
     if state.peek().auto_save_armed() {
         request_save(state);
     }
@@ -1011,12 +1098,17 @@ fn exam_audio_request(state: &ExamState) -> Result<ExamAudioRequest, String> {
 }
 
 async fn suggest_part_topic(mut state: Signal<ExamState>, run: u32, i: usize) {
-    let (format, number, theme) = {
+    let (format, number, theme, exam_id) = {
         let s = state.peek();
-        (s.format, s.exam.parts[i].spec.number, s.exam.theme.clone())
+        (
+            s.format,
+            s.exam.parts[i].spec.number,
+            s.exam.theme.clone(),
+            s.exam.id,
+        )
     };
     state.write().work[i].topic_step = Step::Running;
-    let outcome = suggest_topic(format, number, theme).await;
+    let outcome = suggest_topic(format, number, theme, Some(exam_id)).await;
     if !still_current(state, run) {
         return;
     }
@@ -1065,7 +1157,8 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
             s.audio.stale = true;
         }
     }
-    let outcome = generate_passage(request).await;
+    let exam_id = state.peek().exam.id;
+    let outcome = generate_passage(request, Some(exam_id)).await;
     if !still_current(state, run) {
         return false;
     }
@@ -1091,7 +1184,7 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
 
 /// Generates every task block of part `i`, one after another.
 async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
-    let (format, number, passage, speakers, task_count) = {
+    let (format, number, passage, speakers, task_count, exam_id) = {
         let s = state.peek();
         let part = &s.exam.parts[i];
         let Some(passage) = part.passage.clone() else {
@@ -1103,6 +1196,7 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
             passage,
             part.speakers.clone(),
             part.spec.tasks.len(),
+            s.exam.id,
         )
     };
     {
@@ -1119,7 +1213,7 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
             passage: passage.clone(),
             speakers: speakers.clone(),
         };
-        let outcome = generate_task(request).await;
+        let outcome = generate_task(request, Some(exam_id)).await;
         if !still_current(state, run) {
             return;
         }
@@ -1147,7 +1241,8 @@ async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAud
         step: Step::Running,
         ..AudioWork::default()
     };
-    let started = start_exam_audio(request).await;
+    let exam_id = state.peek().exam.id;
+    let started = start_exam_audio(request, Some(exam_id)).await;
     if !still_current(state, run) {
         return;
     }
@@ -1205,5 +1300,8 @@ async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String
     };
     if ready {
         auto_save(state);
+    } else {
+        // A failed recording was still billed for what it read.
+        spawn_forever(refresh_spend(state));
     }
 }

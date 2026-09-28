@@ -74,8 +74,9 @@ impl Passage {
         })
     }
 
-    /// The canonical "Speaker A: ..." text, one turn per line. This is what is
-    /// sent to text-to-speech and shown to the teacher.
+    /// The canonical "Speaker A: ..." text, one turn per line. This is what
+    /// the question prompts quote and what the teacher sees; text-to-speech
+    /// gets the lines without labels (Gemini reads its input verbatim).
     pub fn script_text(&self) -> String {
         self.lines
             .iter()

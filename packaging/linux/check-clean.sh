@@ -3,12 +3,13 @@
 set -euo pipefail
 artifact=$1
 cd /tmp
+# Without a key the first run starts anyway and asks for one in the browser.
 set +e
-APPIMAGE_EXTRACT_AND_RUN=1 "$artifact" --no-open --non-interactive > first-run.log 2>&1
+timeout --signal=INT 3 env APPIMAGE_EXTRACT_AND_RUN=1 "$artifact" --no-open --non-interactive > first-run.log 2>&1
 code=$?
 set -e
-test "$code" = 1
-grep -q GEMINI_API_KEY first-run.log
+test "$code" = 124
+grep -q 'GEMINI_API_KEY): missing' first-run.log
 test -f /test/.env && test -f /test/voices.json
 sed -i 's/your_api_key_here/offline-test-key/' /test/.env
 set +e
@@ -32,11 +33,11 @@ fi
 LD_LIBRARY_PATH="$PWD/squashfs-root/usr/lib" ldd squashfs-root/usr/bin/server > /tmp/packaged-ldd.txt
 if grep 'not found' /tmp/packaged-ldd.txt; then exit 1; fi
 set +e
-env -u APPIMAGE squashfs-root/AppRun --no-open --non-interactive > /tmp/extracted.log 2>&1
+timeout --signal=INT 3 env -u APPIMAGE squashfs-root/AppRun --no-open --non-interactive > /tmp/extracted.log 2>&1
 code=$?
 set -e
-test "$code" = 1
-grep -q GEMINI_API_KEY /tmp/extracted.log
+test "$code" = 124
+grep -q 'GEMINI_API_KEY): missing' /tmp/extracted.log
 test -f .env && test -f voices.json
 echo 'PASS: manual extraction, AppDir launch, dependency resolution, licenses and package inventory.'
 if [ ! -e /dev/fuse ]; then

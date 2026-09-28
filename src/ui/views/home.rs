@@ -236,7 +236,7 @@ pub fn Home() -> Element {
         state.write().is_generating_topic = true;
         let (format, part, run) = (state().format, state().part, state().run);
         spawn(async move {
-            let outcome = suggest_topic(format, part, String::new()).await;
+            let outcome = suggest_topic(format, part, String::new(), None).await;
             if !still_current(state, run) {
                 return;
             }
@@ -493,8 +493,9 @@ pub fn Home() -> Element {
                     div { class: "info-box",
                         p { class: "info-title", "How voices are used" }
                         p {
-                            "Up to two voices are read in one pass. A part with three voices (host and two guests) \
-                             is read turn by turn and joined, which takes longer."
+                            "The script is read in short chunks of up to two voices each and joined. A part with \
+                             three voices (host and two guests) simply needs more chunks. Chunks already read for \
+                             the same words and voices are reused at no cost."
                         }
                     }
                 }
@@ -697,7 +698,7 @@ async fn run_script(
     request: PassageRequest,
 ) -> Option<Passage> {
     state.write().is_generating_script = true;
-    let outcome = generate_passage(request).await;
+    let outcome = generate_passage(request, None).await;
     if !still_current(state, run) {
         return None;
     }
@@ -746,7 +747,7 @@ async fn run_tasks(
             passage: passage.clone(),
             speakers: speakers.clone(),
         };
-        let outcome = generate_task(request).await;
+        let outcome = generate_task(request, None).await;
         if !still_current(state, run) {
             return;
         }
@@ -774,7 +775,7 @@ async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest
         s.audio_job_id = None;
         s.audio = None;
     }
-    let started = start_part_audio(request).await;
+    let started = start_part_audio(request, None).await;
     if !still_current(state, run) {
         return;
     }

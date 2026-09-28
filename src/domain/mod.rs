@@ -14,6 +14,7 @@ pub mod format;
 pub mod passage;
 pub mod speaker;
 pub mod task;
+pub mod usage;
 pub mod validation;
 
 #[allow(unused_imports)] // consumed on the server only
@@ -26,4 +27,5 @@ pub use format::*;
 pub use passage::*;
 pub use speaker::*;
 pub use task::*;
+pub use usage::*;
 pub use validation::*;

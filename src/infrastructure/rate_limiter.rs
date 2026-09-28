@@ -12,6 +12,8 @@ pub enum Bucket {
     Passage,
     Task,
     Audio,
+    /// A Gemini API key typed into the browser.
+    KeyEntry,
 }
 
 impl Bucket {
@@ -21,6 +23,7 @@ impl Bucket {
             Bucket::Passage => 15,
             Bucket::Task => 30,
             Bucket::Audio => 5,
+            Bucket::KeyEntry => 5,
         }
     }
 }
@@ -56,7 +59,7 @@ impl RateLimiter {
     }
 }
 
-static LIMITERS: OnceLock<[RateLimiter; 4]> = OnceLock::new();
+static LIMITERS: OnceLock<[RateLimiter; 5]> = OnceLock::new();
 
 pub fn check(bucket: Bucket) -> Result<(), String> {
     let limiters = LIMITERS.get_or_init(|| {
@@ -65,6 +68,7 @@ pub fn check(bucket: Bucket) -> Result<(), String> {
             RateLimiter::new(Bucket::Passage.per_minute()),
             RateLimiter::new(Bucket::Task.per_minute()),
             RateLimiter::new(Bucket::Audio.per_minute()),
+            RateLimiter::new(Bucket::KeyEntry.per_minute()),
         ]
     });
     limiters[bucket as usize].check()

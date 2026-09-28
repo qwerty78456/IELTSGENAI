@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::domain::{Task, TaskRequest, ValidationIssue};
 
@@ -11,19 +12,24 @@ pub struct TaskDraft {
     pub issues: Vec<ValidationIssue>,
 }
 
-/// Generates one task of a part from its passage.
+/// Generates one task of a part from its passage. `exam` names the saved
+/// exam the spend is booked to (none from the part page).
 #[server]
-pub async fn generate_task(request: TaskRequest) -> Result<TaskDraft, ServerFnError> {
-    use crate::application::user_error;
-    use crate::domain::validate_task;
+pub async fn generate_task(
+    request: TaskRequest,
+    exam: Option<Uuid>,
+) -> Result<TaskDraft, ServerFnError> {
+    use crate::application::{usage, user_error};
+    use crate::domain::{UsageStep, validate_task};
     use crate::infrastructure::{llm::GeminiClient, prompts, rate_limiter};
 
     let (part, spec) = request.validate().map_err(user_error)?;
     rate_limiter::check(rate_limiter::Bucket::Task).map_err(ServerFnError::new)?;
     let client = GeminiClient::from_config().map_err(user_error)?;
     let prompt = prompts::task_prompt(&part, &spec, &request.passage, &request.speakers);
-    let draft: prompts::TaskDraftDto = client.generate_json(&prompt).await.map_err(user_error)?;
-    let task = draft.into_task(spec);
+    let draft = client.generate_json::<prompts::TaskDraftDto>(&prompt).await;
+    usage::record(UsageStep::Questions, exam, client.text_model(), &client).await;
+    let task = draft.map_err(user_error)?.into_task(spec);
     let issues = validate_task(&task, Some(&request.passage));
     Ok(TaskDraft { task, issues })
 }

@@ -7,8 +7,8 @@
 
 use crate::application::audio::{JobStatus, JobView, audio_job_status};
 
-/// Cadence and ceiling for one part's recording. A three-voice part is read
-/// turn by turn (30-50 synthesis requests), so five minutes was too short.
+/// Cadence and ceiling for one part's recording. A part is read as a few
+/// chunks one after another, each of which the client may retry.
 pub const PART_AUDIO_POLL_MS: u32 = 2_000;
 pub const PART_AUDIO_DEADLINE_MS: u32 = 15 * 60_000;
 /// Cadence and ceiling for the whole exam recording: every part is read,

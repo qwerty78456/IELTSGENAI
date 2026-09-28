@@ -25,6 +25,8 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Draft** | What generation returns: a passage or task plus validator **issues**. Everything is a draft until the teacher accepts it. | "final" |
 | **Issue** (`ValidationIssue`) | A validator finding with a severity: Error (unusable key) or Warning (look at it). | "bug" |
 | **Grounding** | The rule that a text key or evidence must occur verbatim in the passage. | |
+| **Usage** (`Usage`, `ExamUsage`) | What Gemini billed for a step: requests, reused chunks, input / cached / output / thinking tokens, and their USD price at the time. An exam's usage adds up every run, failed and superseded ones included. | "billing" (out of scope), "credits" |
+| **Budget** | The amount one exam should stay under (`EXAM_BUDGET_USD`). Passing it warns; it never blocks. | "quota", "limit" |
 | **Teacher** | The person we serve. | "user" |
 
 ## Format-specific vocabulary

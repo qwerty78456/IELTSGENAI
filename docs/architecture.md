@@ -51,35 +51,45 @@ src/
                           + presets ExamFormat::ielts_listening(), ::hsg_national()
     speaker.rs            SpeakerConfig (label, gender, accent, role)
     passage.rs            Passage / Line, parser for "Speaker A: ..." text, duration estimate
-    task.rs               Task, Item, Choice, Answer (letters | text | tfng)
+    task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty
+    usage.rs              Usage (tokens + µUSD), UsageStep, ExamUsage (per step, budget)
     exam.rs               Exam aggregate: parts, answer key, completeness
     audio.rs              AudioTrack, AudioProgram (tones, pauses, replays derived from the format)
     validation.rs         invariants -> Vec<ValidationIssue>; grounding of keys in the passage; validate_exam (structural completeness)
     commands.rs           PassageRequest, TaskRequest, AudioRequest, ExamAudioRequest (self-validating)
     error.rs              DomainError (teacher-readable)
   application/            #[server] functions = use cases; DTOs shared with the browser
-    topics.rs             suggest_topic
-    passages.rs           generate_passage -> PassageDraft { passage, issues }
+    topics.rs             suggest_topic                       (every Gemini use case takes `exam: Option<Uuid>`
+    passages.rs           generate_passage -> PassageDraft     for the usage ledger; the part page passes None)
     tasks.rs              generate_task    -> TaskDraft { task, issues }
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
+    usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record() after every Gemini call
+    settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over an operator key)
     exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job), ExamSummary
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
-    config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from .env + env
+    config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from
+                          .env < Windows registry environment < process environment; KeyOrigin
+    secrets.rs            the API key requests use: configured, else typed in the browser (memory only)
+    usage.rs              UsageStore: `usage` ledger table in jobs.db (one row per step run, any outcome)
     exams.rs              ExamStore: `exams` table (SavedExam JSON body + summary columns) in jobs.db; pins recording jobs
     startup.rs            bootstrap -> SQLite -> router + GET /audio/{job_id}; dioxus::serve in debug
                           (hot reload), else an explicit listener, browser opening, graceful Ctrl+C
-    llm/gemini.rs         GeminiClient: generate_text, generate_json<T>, synthesize; one retry policy
+    llm/gemini.rs         GeminiClient on /v1beta/interactions (store: false): generate_text, generate_json<T>,
+                          synthesize(SpeechRequest); one retry policy; usage meter shared by clones
+    llm/pricing.rs        price table per model (intro until 2026-12-31, list after), cost_micro_usd
     prompts/              topic_prompt, passage_prompt, task_prompt (+ TaskDraftDto)
-    tts/                  voices.json mapping; synthesize_passage (2-voice or turn-by-turn); Announcer
+    tts/                  voices.json mapping; synthesize_passage (chunks of <= 200 words, <= 2 voices);
+                          cache.rs (speech reuse under DATA_DIR/audio/cache); Announcer
     audio/wav.rs          Pcm16: silence, tone, append, WAV encode/decode (no crate)
     audio/program.rs      render_program(AudioProgram, passages, announcer, assets)
     jobs/store.rs         SQLite job table (JobStore); output_path is a file name resolved under DATA_DIR/audio
-    jobs/worker.rs        spawn_part_audio, spawn_exam_audio, retention clean-up (AUDIO_RETENTION_HOURS)
+    jobs/worker.rs        spawn_part_audio, spawn_exam_audio (usage recorded on success and failure),
+                          hourly clean-up (AUDIO_RETENTION_HOURS, SPEECH_CACHE_HOURS)
     jobs/serve.rs         serve_audio: plain axum handler streaming a finished WAV (audio/wav, Range)
     rate_limiter.rs       per-minute buckets
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
   export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
-  ui/                     components (audio player, exam library, issue list, loading popup, speaker modal), views (home, exam, navbar)
+  ui/                     components (audio player, exam library, issue list, key setup, loading popup, speaker modal), views (home, exam, navbar)
     jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
     clock.rs              local-time formatting (js-sys Date in the browser, UTC fallback on the server)
 ```
@@ -158,25 +168,55 @@ The teacher edits; nothing is "final" until they say so.
 
 ## Text-to-speech constraints
 
-* Gemini multi-speaker synthesis accepts **two** voices per request. A
-  two-voice passage is sent whole. Three voices (HSG part 1: host + two
-  guests) are synthesised **turn by turn** and joined with short gaps.
-* Output is 24 kHz mono 16-bit PCM; WAV is written without any audio
-  crate. A 30-minute exam WAV is about 86 MB; MP3 encoding is a roadmap
-  item (shell out to `ffmpeg` in the container).
-* The TTS model name is configuration (`GEMINI_TTS_MODEL`) because the
-  default, `gemini-2.5-pro-preview-tts`, is a preview model already on
-  Google's deprecation list (successor `gemini-3.1-flash-tts-preview`, no
-  shutdown date as of 2026-09-21). It accepts 8,192 input tokens per
-  request; longer scripts are read turn by turn automatically.
-* The text model is the `gemini-flash-latest` alias, which Google hot-swaps
-  to the newest Flash release (`gemini-3.8-flash` at the time of writing,
-  two weeks' notice for breaking changes). Left unpinned on purpose;
-  `GEMINI_TEXT_MODEL` pins a versioned id when needed.
-* Both calls go through `models/<id>:generateContent`, which Google now
-  labels "Legacy" next to the newer `interactions` endpoint. It is still
-  documented and served; moving to `interactions` is a change confined to
-  `infrastructure/llm/gemini.rs`.
+* Every Gemini call goes to the **Interactions API**
+  (`POST /v1beta/interactions`, GA since June 2026; `generateContent` is
+  "Legacy") with `"store": false`: the app keeps no conversation on Google's
+  side, and Google would otherwise keep each interaction for 55 days. Output
+  is read from the last `model_output` step; `thought` steps are skipped; an
+  `incomplete` status (max tokens) or a content-block code (`safety`, ...)
+  becomes a readable error, after the response has been metered.
+* Models are pinned: `gemini-3.8-flash` (GA) for text and
+  `gemini-3.8-flash-tts` (stable) for speech, both configuration. Text
+  requests send `thinking_level` (`GEMINI_THINKING_LEVEL`, default `low`;
+  3.8 Flash cannot turn thinking off and rejects `minimal`) and
+  `max_output_tokens: 8192` as a guard against runaway answers.
+* 3.8 TTS reads its input **word for word**. Directions go in each text
+  item's `speech_metadata.style`; with two voices each item also names its
+  `speech_metadata.speaker`, the passage label without spaces (`SpeakerA`),
+  matched to `speech_config {mode: conversational, speakers}`. Nothing but the
+  spoken words is ever in the text.
+* At most **two** voices and 8,192 input tokens per request, and a normal
+  request stays open about a minute. A passage is therefore cut into chunks
+  of consecutive turns, at most 200 words (about 80 s of audio, read in
+  about 30 s) and at most two speakers; a long monologue line is split at
+  sentence ends. Chunks are joined with 350 ms gaps. The three-voice HSG
+  interview is simply more chunks.
+* Raw 24 kHz mono 16-bit PCM is requested (`audio/l16`); a WAV reply is
+  parsed too. WAV is written without any audio crate. A 30-minute exam WAV
+  is about 80 MB; MP3 encoding is a roadmap item.
+* A chunk (or announcement) already synthesised for the same model, voices,
+  words and style is reused from `DATA_DIR/audio/cache` at no cost
+  (`tts/cache.rs`, SHA-256 key, `SPEECH_CACHE_HOURS`, default 72, 0 = off).
+  Re-rendering after editing one part pays for that part only.
+
+## Usage and cost
+
+Every billed response is added to the client's usage meter before it is
+parsed, so a reply that is cut off or fails to parse still counts. The
+server function (or recording job) then writes one row to the `usage` table
+of `jobs.db`: step, exam id (none from the part page), model, requests,
+reused chunks, input / cached / output / thinking tokens and the price in
+µUSD at the rate in force (`llm/pricing.rs`: 3.8 introductory prices until
+2026-12-31, list prices after; unknown models are counted as unpriced).
+Rows are written whatever the outcome and outlive their exam. The exam page
+shows the exam's spend per step beside `EXAM_BUDGET_USD` (default $0.70,
+warning only); the saved-exams panel shows the last 24 hours and 30 days.
+
+Measured 2026-09-28 for one full IELTS exam at thinking `low`: $0.308 now,
+$0.616 at 2027 list prices (text $0.039, recording $0.269 for 29,728 audio
+tokens at 32 tokens per second). At `medium` the same exam cost $0.48. The
+recording is almost 90 % of the cost; prompt caching cannot help because no
+prompt reaches the 4,096-token minimum.
 
 ## Jobs
 
@@ -237,7 +277,8 @@ a portable Windows EXE and Linux AppImage (`--portable`: `.env`,
 saved exams and their recordings travel with the folder); see
 `docs/portable.md`. Put a reverse proxy with TLS and **some
 authentication** in front before exposing it: the app has rate limits but
-no login, and every request spends Gemini credit.
+no login, and every request spends Gemini credit. A server bound to anything
+but a loopback address never accepts an API key from the browser.
 
 ## Roadmap (in order)
 

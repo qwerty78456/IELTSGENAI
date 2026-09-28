@@ -19,8 +19,9 @@ The CHANGELOG is written in Vietnamese; keep that convention.
 ## Commands
 
 Prereqs: Rust 1.85+ (edition 2024, developed on 1.92), `wasm32-unknown-unknown` target,
-Dioxus CLI 0.7.x (`cargo install dioxus-cli --version 0.7.9 --locked`), `.env` with
-`GEMINI_API_KEY` (copy from `.env.example`).
+Dioxus CLI 0.7.x (`cargo install dioxus-cli --version 0.7.9 --locked`), and a Gemini key in
+`GEMINI_API_KEY` (environment, or `.env` copied from `.env.example`; without one the app starts
+and asks in the browser).
 
 ```bash
 dx serve                                              # dev server, http://localhost:8080, hot reload
@@ -44,6 +45,8 @@ cargo test --features server --no-default-features multiple_select_needs_distinc
 ```
 
 or by module path, e.g. `cargo test --features server --no-default-features domain::validation::`.
+The ignored `live_probe` test calls the real API (about $0.01) and prints tokens, latency and
+audio tokens per second: `cargo test --features server --no-default-features live_probe -- --ignored --nocapture`.
 There is no rustfmt/clippy config; defaults apply.
 
 ## Architecture rules (compiler-enforced, keep them that way)
@@ -93,12 +96,23 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 
 ### Infrastructure facts that shape code
 
-- One `GeminiClient` (`infrastructure/llm/gemini.rs`) owns the retry policy (429/503/timeout,
-  exponential backoff) and JSON mode; do not add parallel HTTP paths. The API key goes in the
-  `x-goog-api-key` header, never in the URL.
-- Gemini multi-speaker TTS takes at most two voices and 8,192 input tokens per request;
-  three-voice or long passages are synthesised turn by turn and joined. Output is 24 kHz mono
-  16-bit PCM; WAV is encoded/decoded by hand in `infrastructure/audio/wav.rs` (no audio crate).
+- One `GeminiClient` (`infrastructure/llm/gemini.rs`) owns the retry policy (429/503/504/timeout,
+  exponential backoff), JSON mode and the usage meter; do not add parallel HTTP paths. Every
+  request is `POST /v1beta/interactions` with `"store": false` (Google stores interactions for
+  55 days otherwise). The API key goes in the `x-goog-api-key` header, never in the URL.
+- Gemini 3.8 TTS reads its input **verbatim**: delivery directions go in each item's
+  `speech_metadata.style`, speakers in `speech_metadata.speaker` (`"SpeakerA"`, the label
+  without spaces), never in the text. At most two voices and 8,192 input tokens per request, so
+  `tts/synthesize.rs` cuts a passage into chunks of at most 200 words and two speakers and joins
+  them; `tts/cache.rs` reuses a chunk synthesised before for the same model, voices, words and
+  style (`DATA_DIR/audio/cache`, `SPEECH_CACHE_HOURS`). Raw 24 kHz mono 16-bit PCM is requested
+  (`audio/l16`, WAV accepted too); WAV is encoded/decoded by hand in
+  `infrastructure/audio/wav.rs` (no audio crate).
+- Usage: every server function that calls Gemini records its client's `usage()` in the `usage`
+  table of `jobs.db` right after the call, whatever the outcome (`application::usage::record`),
+  and recording jobs record on completion and on failure. Prices live in
+  `infrastructure/llm/pricing.rs` (3.8 introductory rates until 2026-12-31, list rates after);
+  update that table when Google changes prices. Over-budget exams are warned about, never blocked.
 - Audio synthesis runs as background jobs (SQLite `jobs.db` + WAV under `DATA_DIR/audio/`);
   the browser polls `audio_job_status` (`ui/jobs.rs`, per-kind cadence and deadline) and streams
   the finished WAV from `/audio/{job_id}`, a plain axum route (`infrastructure/jobs/serve.rs`).
@@ -112,7 +126,11 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   `SavedExam` JSON body plus summary columns) behind `application/exams.rs`. The exam page
   saves on its own after each finished step once a script exists (`SaveWork` in
   `ui/views/exam.rs`, single-flight with one queued follow-up).
-- All configuration is environment only (`infrastructure/config.rs`, see `.env.example`).
+- All configuration is environment only (`infrastructure/config.rs`, see `.env.example`). The
+  API key is resolved process environment → Windows registry environment (user, then machine)
+  → `.env` → a key typed in the browser (`application/settings.rs`, kept in
+  `infrastructure/secrets.rs`), which is accepted only on a loopback bind, never over an operator
+  key, after a free check with Google. A missing key does not stop startup.
 
 ## Dioxus 0.7 API constraints (from `.github/agents/dioxus-0-7-rust-ui-expert.agent.md`)
 

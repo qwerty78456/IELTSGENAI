@@ -14,9 +14,13 @@ Missing templates are created exclusively, with mode 0600 on Unix. Existing
 files are preserved. Permission failures, malformed dotenv/JSON, empty voice
 defaults, invalid IP/port/model/log settings, invalid optional music, and
 unwritable logs/database cause startup failure. Error messages omit dotenv
-contents and API-key values. Environment variables override file values;
-syntax errors are still rejected. A missing/placeholder key exits after creating
-the templates. Startup makes no paid or credential-validation API requests.
+contents and API-key values. Environment variables override file values
+(on Windows the user and machine environment is read from the registry too, so
+a variable set after the console opened counts); syntax errors are still
+rejected. A missing or placeholder key no longer stops startup: the server
+starts, logs "GEMINI_API_KEY): missing" and the page asks for a key, which it
+accepts only when bound to a loopback address. Startup makes no paid or
+credential-validation API requests.
 
 Development and Docker retain their current-working-directory configuration
 and data conventions; no parent-directory dotenv search is performed. Docker

@@ -18,7 +18,7 @@ The CHANGELOG is written in Vietnamese; keep that convention.
 
 ## Commands
 
-Prereqs: Rust 1.85+ (edition 2024, developed on 1.92), `wasm32-unknown-unknown` target,
+Prereqs: Rust 1.88+ (edition 2024 let-chains; developed and released on 1.92), `wasm32-unknown-unknown` target,
 Dioxus CLI 0.7.x (`cargo install dioxus-cli --version 0.7.9 --locked`), and a Gemini key in
 `GEMINI_API_KEY` (environment, or `.env` copied from `.env.example`; without one the app starts
 and asks in the browser).
@@ -27,7 +27,12 @@ and asks in the browser).
 dx serve                                              # dev server, http://localhost:8080, hot reload
 dx build --release                                    # server binary + public/ under target/dx/vmq_mvp/release/web/
 docker compose up -d --build                          # containerised run on 127.0.0.1:8080
+pwsh -NoProfile -File packaging/build-windows.ps1      # portable EXE in dist/ (needs Rust 1.92.0, dx 0.7.9)
+python packaging/smoke.py dist/listening-exam-generator-<version>-windows-x64.exe   # test the real EXE
 ```
+
+Releases also run `cargo fmt --check` and record results in `docs/portable-verification-v<version>.md`
+and the CHANGELOG's "Con số biết nói" table.
 
 Two compile targets share the crate. Both checks must stay green after any change:
 

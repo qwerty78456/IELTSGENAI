@@ -1,10 +1,21 @@
-Listening Exam Generator 0.6.0
+Listening Exam Generator 0.7.0
 
 Windows 10/11 x64: run the EXE from a writable folder.
 Linux x86-64 (Ubuntu 22.04 or newer baseline): chmod +x the AppImage, then run it.
-First launch creates .env and voices.json beside the package. Edit .env and replace
-your_api_key_here with your Gemini API key, then restart. Internet and a browser
-are required for generation. No Rust, Docker or separate server installation is needed.
+First launch creates .env and voices.json beside the package and opens the browser.
+Internet and a browser are required for generation. No Rust, Docker or separate
+server installation is needed.
+
+Gemini API key, first match wins:
+  1. the GEMINI_API_KEY environment variable (on Windows this includes a user or
+     machine variable set after the console was opened);
+  2. GEMINI_API_KEY in .env (replace your_api_key_here);
+  3. otherwise every page shows a form to paste the key.
+The console says where the key came from, never the key. Read the warning above
+the form: the key travels over plain HTTP, the app has no login, and "Remember"
+writes it unencrypted to .env. The form works only when the app listens on
+127.0.0.1, never replaces a key from the environment or .env, and checks the key
+with Google (free) before keeping it.
 
 The browser opens after initialization. The console prints the address (default
 http://127.0.0.1:8080). Keep the console open. Ctrl+C, or closing the
@@ -18,17 +29,23 @@ Relative DATA_DIR, VOICES_PATH and MUSIC_PATH values are based on that directory
 Environment variables override file values; malformed files still cause failure.
 Edit configuration only while stopped; restart to reload it.
 
-The .env contains your secret key: do not share it. Data and logs are in ./data.
+Cost: text uses gemini-3.8-flash, speech gemini-3.8-flash-tts (paid tier). A full
+IELTS exam measured about 0.31 USD (0.62 USD at the prices Google announced from
+2027-01-01). The Whole exam page shows each exam's spend against EXAM_BUDGET_USD
+(0.70 by default; it only warns). GEMINI_THINKING_LEVEL (low by default) and
+SPEECH_CACHE_HOURS (72: speech already made for the same words and voices is
+reused for free) are in .env too.
+
+The .env may contain your secret key: do not share it. Data and logs are in ./data.
 Exams made on the Whole exam page are saved beside the package and reopen after a
 restart, recording included; their recordings stay until the exam is deleted. Other
 recordings expire after AUDIO_RETENTION_HOURS (24 by default; 0 keeps them all).
 Both pages export Word (DOCX) and Markdown.
 Missing configuration files are recreated; invalid files are never overwritten.
-The key is checked locally for format only; provider authentication errors appear
-when generating. Invalid ports/paths/settings stop startup.
+Invalid ports/paths/settings stop startup; a missing key does not.
 
 If Linux FUSE is unavailable:
-APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.6.0-linux-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.7.0-linux-x86_64.AppImage
 Ctrl+C in this mode may return shell status 130 from the AppImage runtime,
 even after "Server stopped cleanly.", and may leave its temporary extraction.
 Alternatively, run the AppImage with --appimage-extract once, then run

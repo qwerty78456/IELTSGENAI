@@ -51,8 +51,9 @@ Types of the **Listening Assessment Generation** context, as implemented in
 ### `Passage`
 `part`, `topic`, `lines: Vec<Line { speaker, text }>`.
 `Passage::parse` reads "Speaker A: ..." text; `script_text()` is the canonical
-form sent to TTS; `plain_text()` is used for grounding; `estimated_minutes()`
-assumes 150 words per minute.
+labelled form (question prompts, the teacher's view); `plain_text()` is used for
+grounding; `estimated_minutes()` assumes 150 words per minute. Text-to-speech
+receives the lines without labels, the speaker travelling beside each line.
 
 ### `Task`
 `spec`, `instruction`, `shared_options: Vec<Choice>`, `summary: Option<String>`
@@ -60,7 +61,8 @@ assumes 150 words per minute.
 
 ### `Item`
 `number`, `stem`, `options: Vec<Choice>` (multiple choice only), `answer: Answer`,
-`evidence` (verbatim quote from the passage).
+`evidence` (verbatim quote from the passage). A missing or `null` `options`,
+`evidence` or `shared_options` reads as empty (`task::null_as_default`).
 
 ### `Answer`
 Tagged JSON `{ "kind": ..., "value": ... }`:
@@ -93,6 +95,24 @@ reserved for per-part recordings and is not written yet.
 `AudioProgram::for_format(&ExamFormat)` yields the ordered segments:
 `Music`, `Tone`, `Silence { ms }`, `Announcement(String)`, `Passage { part }`,
 with a replay for `Twice` parts and the checking time at the end.
+
+## Usage
+
+### `Usage`
+What Gemini billed for one or more requests: `requests`, `reused` (speech
+answered from the cache, free), `input_tokens` (cached included),
+`cached_tokens`, `output_tokens` (text or audio), `thinking_tokens`,
+`micro_usd` (price when the requests were made, in millionths of a dollar) and
+`unpriced` (requests whose model has no known price). `add`, `usd()`,
+`cost_text()` ("$0.412", "+?" when something is unpriced).
+
+### `UsageStep`
+`Topic` | `Script` | `Questions` | `Recording`, stored by `key()`.
+
+### `ExamUsage`
+One `Usage` per step plus `budget_micro_usd` (0 = none); `total()`,
+`over_budget()`, `budget_text()`. Built by `application::usage::exam_usage`
+from the ledger; it includes failed and superseded runs.
 
 ## Commands
 

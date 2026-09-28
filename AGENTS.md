@@ -2,16 +2,17 @@
 
 ## Project Structure & Module Organization
 
-This is one Rust 2024/Dioxus 0.7 crate (`vmq_mvp`). `src/main.rs` wires the app. `src/domain/` holds exam types and validation; `src/application/` exposes server use cases; `src/infrastructure/` contains Gemini, prompts, TTS, audio, jobs, and configuration. `src/export/` renders Markdown, while `src/ui/` contains views and components. CSS and images live in `assets/`; architecture and domain terminology live in `docs/`. Tests are inline with the Rust modules they cover, rather than in a separate `tests/` directory.
+This is one Rust 2024/Dioxus 0.7 crate (`vmq_mvp`). `src/main.rs` wires the app. `src/domain/` holds exam types and validation; `src/application/` exposes server use cases; `src/infrastructure/` contains the Gemini client (Interactions API) and price table, prompts, TTS chunking and the speech cache, audio, jobs, saved exams, the usage ledger, and configuration. `src/export/` renders Markdown and DOCX, while `src/ui/` contains views and components. CSS and images live in `assets/`; architecture and domain terminology live in `docs/`. Tests are inline with the Rust modules they cover, rather than in a separate `tests/` directory.
 
 ## Build, Test, and Development Commands
 
-Use Rust 1.85+, the `wasm32-unknown-unknown` target, and Dioxus CLI 0.7.x. Copy `.env.example` to `.env` and set `GEMINI_API_KEY` before generating content.
+Use Rust 1.88+ (the code uses let-chains; releases are built with 1.92), the `wasm32-unknown-unknown` target, and Dioxus CLI 0.7.x. Generation needs a Gemini key: set `GEMINI_API_KEY` in the environment or in `.env` (copy `.env.example`); without one the app starts and asks for it in the browser. Every generation spends real money, so ask before running `live_probe` or generating exams.
 
 - `dx serve` starts the hot-reloading app at `http://localhost:8080`.
 - `dx build --release` builds the server and browser assets under `target/dx/vmq_mvp/release/web/`.
 - `cargo check` checks the default browser feature; `cargo check --features server --no-default-features` checks the server feature.
-- `cargo test --features server --no-default-features` runs the full unit-test suite, including server-only modules.
+- `cargo test --features server --no-default-features` runs the full unit-test suite, including server-only modules. The ignored `live_probe` test calls the paid API (`-- --ignored live_probe`).
+- `pwsh -NoProfile -File packaging/build-windows.ps1` then `python packaging/smoke.py dist/listening-exam-generator-<version>-windows-x64.exe` builds and tests the portable Windows EXE (see `docs/portable.md`).
 
 ## Coding Style & Naming Conventions
 
@@ -27,4 +28,4 @@ Recent commits use short imperative subjects, sometimes with prefixes such as `c
 
 ## Security & Configuration
 
-Configuration comes from environment variables. Keep `.env`, `.secrets/`, and generated `data/` out of commits. Public deployments need TLS and authentication because the app has no built-in login and generation incurs API usage.
+Configuration comes from environment variables (on Windows including the user and machine environment in the registry) and `.env`. Keep `.env`, `.secrets/`, and generated `data/` out of commits, and never print or log the API key. Public deployments need TLS and authentication because the app has no built-in login and generation incurs API usage; a server bound to anything but loopback never accepts a key from the browser.

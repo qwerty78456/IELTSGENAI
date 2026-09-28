@@ -5,90 +5,109 @@ Mọi thay đổi đáng kể của dự án được ghi ở đây. Định d�
 
 ## [0.7.0] – 2026-09-28 — 💸 "Một đề IELTS dưới 0,70 USD, kể cả khi Google tăng giá."
 
-Ba việc: chuyển sang **Gemini 3.8 Flash** (chữ) và **Gemini 3.8 Flash TTS**
-(giọng) qua **Interactions API**; đếm từng token, từng xu của mỗi đề; và cắt
-chi phí để một đề IELTS đầy đủ vẫn dưới 0,70 USD sau ngày 01/01/2027, khi giá
-khuyến mãi của 3.8 hết và giá nhân đôi. **Đo thật: một đề IELTS đầy đủ (4 topic,
-4 script, 6 khối câu hỏi, bản ghi 29 phút) ở thinking `low` tốn 0,308 USD hôm
-nay, 0,616 USD theo giá 2027.** Key API giờ lấy từ biến môi trường Windows
-trước, rồi `.env`; không có thì hỏi ngay trên trang, kèm cảnh báo bảo mật.
+Trước bản này, không ai biết một đề tốn bao nhiêu tiền Gemini: app không đọc
+con số nào Google trả về, và giọng đọc chạy trên `gemini-2.5-pro-preview-tts`,
+một bản preview đã vào danh sách ngừng hỗ trợ, giá 20 USD cho mỗi triệu token
+audio. **Từ 0.7.0, chữ chạy trên Gemini 3.8 Flash, giọng trên Gemini 3.8 Flash
+TTS, mọi request đi qua Interactions API, và từng token, từng xu của mỗi đề
+được ghi sổ.** Đo thật: một đề IELTS đầy đủ (4 topic, 4 script, 6 khối câu
+hỏi, bản ghi 29 phút) tốn **0,308 USD** hôm nay và **0,616 USD** theo giá Google
+công bố từ 01/01/2027, dưới mức 0,70 USD. Key API giờ lấy từ biến môi trường
+Windows trước, rồi `.env`; không có thì hỏi ngay trên trang.
 
 ### ✨ Điểm nhấn
 
-- **Gemini 3.8, gọi qua Interactions API.** `gemini-3.8-flash` (GA, ghim cứng
-  thay cho alias `gemini-flash-latest`) viết topic, script và câu hỏi;
-  `gemini-3.8-flash-tts` thay `gemini-2.5-pro-preview-tts` (bản preview đã vào
-  danh sách ngừng hỗ trợ, 20 USD/1 triệu token audio, 3.8 Flash TTS là 9 USD).
-  Mọi request đi `POST /v1beta/interactions` với `"store": false`, nên Google
-  không giữ bản sao (mặc định giữ 55 ngày).
-- **TTS 3.8 đọc nguyên văn, nên app không còn "dặn" giọng đọc bằng câu dẫn.**
-  Câu dẫn cũ ("Read the following listening-exam script aloud…") sẽ bị đọc
-  thành tiếng trên 3.8. Giờ chỉ dẫn giọng nằm trong `speech_metadata.style`,
-  người nói trong `speech_metadata.speaker`; văn bản chỉ còn đúng lời thoại.
-  Đã kiểm bằng cách cho Gemini chép lại audio: không một chữ thừa, hai giọng
-  luân phiên đúng.
-- **Chia đoạn thay cho "cả bài hoặc từng lượt".** Script được cắt thành các
-  đoạn tối đa 200 từ và 2 người nói (bài giảng dài cắt ở cuối câu); mỗi đoạn
-  là một request khoảng 30 giây, nối bằng khoảng lặng 350 ms. Phần 1 HSG ba
-  giọng không còn phải đọc từng lượt một. Một đoạn lỗi chỉ mất tiền đoạn đó.
-- **Dùng lại audio đã tổng hợp.** Mỗi đoạn được lưu theo SHA-256 của (model,
-  giọng, lời, style) ở `DATA_DIR/audio/cache`. Render lại đề không đổi gì:
-  **0 request, 0 USD**, xong trong vài giây (trước đây trả lại toàn bộ
-  khoảng 0,27 USD). Sửa một phần thì chỉ trả tiền phần đó; lời dẫn của đề chỉ
-  trả một lần. Biến mới `SPEECH_CACHE_HOURS` (mặc định 72, `0` là tắt).
-- **Sổ chi phí.** Mỗi request được đo từ `usage` của Gemini (input, cached,
-  output, thinking) và tính theo biểu giá đang áp dụng (giá khuyến mãi 3.8 đến
-  31/12/2026, giá niêm yết từ 01/01/2027). Mỗi bước chạy ghi một hàng vào bảng
-  `usage` trong `jobs.db`, **kể cả khi thất bại**: request đã tính tiền mà trả
-  về hỏng vẫn được ghi. Trang Whole exam hiện *Gemini spend for this exam:
-  $0.308 of $0.700 (topics …, scripts …, questions …, recording …)*, di chuột
-  để xem số token; vượt `EXAM_BUDGET_USD` (mặc định 0,70) thì cảnh báo, không
-  chặn. Khung Saved exams hiện tổng 24 giờ và 30 ngày của cả server.
-- **Thinking `low` mặc định.** Biến mới `GEMINI_THINKING_LEVEL` (low, medium,
-  high). Ở `low`, 14 request chữ của một đề không tốn token thinking nào; phần
-  chữ giảm từ 0,19 USD (medium) còn 0,039 USD. Validator vẫn bắt lỗi như cũ:
-  đề đo ở `low` có 3 lỗi giới hạn từ ở phần 4, đề `medium` cũng có lỗi cùng loại.
-- **API key: môi trường Windows → `.env` → trình duyệt.** Key đặt bằng `setx`
-  hay hộp thoại Environment Variables được đọc thẳng từ registry (HKCU rồi
-  HKLM), nên terminal hay IDE mở từ trước vẫn thấy. Không có key ở đâu, app vẫn
-  khởi động và mọi trang hiện ô nhập key với **cảnh báo bảo mật nghiêm túc**:
-  key đi qua HTTP thường, app không có đăng nhập, "Remember" ghi key không mã
-  hoá vào `.env`. Ô nhập chỉ nhận key khi server bind 127.0.0.1 hoặc ::1, không
-  bao giờ ghi đè key của môi trường hay `.env`, và kiểm key bằng một request
-  miễn phí trước khi giữ. Key không bao giờ được gửi ngược về trình duyệt hay
-  ghi vào log; console chỉ nói key lấy từ đâu.
+- **Biết đề này tốn bao nhiêu, ngay trên trang.** Dòng *Gemini spend for this
+  exam: $0.308 of $0.700 (topics $0.001, scripts $0.012, questions $0.026,
+  recording $0.269)* nằm dưới trạng thái lưu, cập nhật sau mỗi bước; di chuột
+  vào để xem số request, số token vào, ra, thinking. Vượt `EXAM_BUDGET_USD`
+  (mặc định 0,70) thì hiện cảnh báo, **không chặn gì**. Khung Saved exams hiện
+  tổng 24 giờ và 30 ngày của cả server, gồm cả trang từng phần.
+- **Tiền đã trả là được ghi, kể cả khi hỏng.** Mỗi bước chạy (topic, script,
+  khối câu hỏi, job ghi âm) ghi một hàng vào sổ `usage` trong `jobs.db`, dù
+  thành công, lỗi hay bị lần chạy mới thay thế. Mỗi request tính theo đúng
+  biểu giá lúc gọi: giá khuyến mãi của 3.8 tới 31/12/2026, giá niêm yết (gấp
+  đôi) từ 01/01/2027. Xoá đề không xoá sổ.
+- **Render lại đề không đổi gì: 0 đồng, vài giây.** Mỗi đoạn giọng đọc được
+  giữ lại theo dấu vân tay của (model, giọng, lời, cách đọc). Trước đây mỗi
+  lần bấm *Render exam audio* là trả lại trọn khoảng 0,27 USD và chờ vài phút;
+  giờ đề không đổi thì 20/20 đoạn dùng lại, sửa một phần thì chỉ trả tiền phần
+  đó, lời dẫn của đề chỉ trả một lần. `SPEECH_CACHE_HOURS` (mặc định 72, `0` là
+  tắt) quyết định giữ bao lâu kể từ lần dùng cuối.
+- **Thinking `low` mặc định, phần chữ rẻ đi khoảng 80 %.** Ở `low`, 14 request
+  chữ của một đề không tốn token thinking nào: 0,039 USD thay vì 0,19 USD ở
+  `medium`. Validator vẫn soi như cũ (đề đo ở `low` có 3 lỗi giới hạn từ ở
+  phần 4, đề `medium` cũng có lỗi cùng loại). Muốn nghĩ kỹ hơn thì đặt
+  `GEMINI_THINKING_LEVEL=medium` hoặc `high` trong `.env`.
+- **Key API: môi trường Windows → `.env` → trình duyệt.** Key đặt bằng `setx`
+  hay hộp thoại *Environment Variables* được đọc thẳng từ registry (của user
+  rồi của máy), nên terminal hay IDE mở từ trước vẫn thấy. Không có key ở đâu,
+  app vẫn khởi động và mọi trang hiện ô dán key dưới một **cảnh báo bảo mật
+  nghiêm túc**: key đi qua HTTP thường, app không có đăng nhập, *Remember* ghi
+  key không mã hoá vào `.env`. Ô nhập chỉ nhận key khi app nghe trên
+  127.0.0.1 hoặc ::1, không bao giờ ghi đè key của môi trường hay `.env`, và
+  hỏi Google (miễn phí) xem key có dùng được không trước khi giữ. Key không
+  bao giờ quay về trình duyệt hay vào log; console chỉ nói key lấy từ đâu.
+- **Google không giữ bản sao nào.** Mọi request gửi kèm `"store": false`; mặc
+  định Interactions API lưu mỗi lần gọi 55 ngày.
 
 ### 🧰 Bên trong
 
-- `GeminiClient` viết lại cho Interactions: body snake_case, đọc bước
-  `model_output` cuối (bỏ bước `thought`); `status: incomplete` (hết
-  `max_output_tokens`) và mã chặn nội dung (`safety`, `recitation`…) thành lỗi
-  dễ đọc; thử lại cả 504. Bỏ đường fallback `responseMimeType`. Thêm
-  `max_output_tokens: 8192` để chặn câu trả lời chạy mãi.
-- Bộ đếm usage dùng chung giữa các bản clone của client, nên các phần chạy song
-  song của một job ghi âm cộng vào một tổng; job ghi âm ghi sổ cả khi thất bại.
-- `null` trong `shared_options`, `options` và `evidence` giờ đọc như rỗng. 3.8
-  Flash trả `"shared_options": null` cho câu trắc nghiệm, làm hỏng 2/6 khối câu
-  hỏi ở lần đo đầu (đã tính tiền mà không dùng được).
-- Mọi server function gọi Gemini nhận thêm `exam: Option<Uuid>` để ghi sổ theo
-  đề; trang từng phần truyền `None`.
+- `GeminiClient` viết lại cho `POST /v1beta/interactions`: body snake_case,
+  model ghim cứng `gemini-3.8-flash` và `gemini-3.8-flash-tts`, đọc bước
+  `model_output` cuối (bỏ bước `thought`). `status: incomplete` (hết
+  `max_output_tokens`, giờ chặn ở 8.192), `failed` và mã chặn nội dung
+  (`safety`, `recitation`…) thành câu lỗi dễ đọc. Thử lại thêm cả 504. Bỏ
+  đường vòng `responseMimeType` của API cũ.
+- TTS 3.8 đọc **nguyên văn**: cách đọc nằm trong `speech_metadata.style`,
+  người nói trong `speech_metadata.speaker` (`SpeakerA`, tức nhãn bỏ dấu cách);
+  văn bản chỉ còn đúng lời thoại. Script được cắt thành đoạn tối đa 200 từ và
+  2 người nói (bài giảng dài cắt ở cuối câu), nối bằng 350 ms im lặng. Phần 1
+  HSG ba giọng giờ là vài đoạn hai giọng thay vì đọc từng lượt một. App xin
+  PCM thô 24 kHz; WAV trả về vẫn đọc được.
+- Bộ đếm usage dùng chung giữa các bản sao của client, nên các phần chạy song
+  song trong một job ghi âm cộng vào một tổng; job ghi âm ghi sổ cả khi thất
+  bại. Mọi server function gọi Gemini nhận thêm `exam: Option<Uuid>`; trang
+  từng phần truyền `None`.
 - Test sống `live_probe` (`#[ignore]`, khoảng 0,01 USD): 1 text, 1 JSON, 2 TTS,
   in token, độ trễ và số token audio mỗi giây.
+
+### 🕵️ Hậu trường: những bug bị tóm trước khi tới tay giáo viên
+
+- **Câu dẫn cho giọng đọc sẽ bị đọc thành tiếng.** Tài liệu của 3.8 TTS nói
+  rõ văn bản được đọc nguyên văn, nên câu cũ *"Read the following
+  listening-exam script aloud…"* sẽ vang lên ở đầu mỗi phần. Đã chuyển sang
+  `speech_metadata` rồi kiểm bằng cách cho Gemini chép lại audio: đúng từng
+  chữ, không có câu dẫn hay nhãn người nói, hai giọng luân phiên đúng.
+- **`"shared_options": null` làm hỏng 2/6 khối câu hỏi.** Lần đo đầu, 3.8 Flash
+  trả `null` thay vì bỏ trống danh sách lựa chọn ở câu trắc nghiệm phần 2 và
+  3; hai khối đó đã tính tiền mà không dùng được. Giờ `null` trong
+  `shared_options`, `options` và `evidence` được đọc như rỗng, có test giữ
+  đúng dạng payload đã gặp.
+- **Âm thanh tính 32 token mỗi giây, không phải 25 như trang giá.** Dự toán
+  ban đầu thấp hơn thực tế 28 %. Probe đo được 32,0 và 32,1; ngân sách, bảng
+  chi phí và phần dự phòng khi thiếu số liệu đều tính lại theo số đo.
+- **Mỗi đoạn 250 từ mất khoảng 40 giây**, sát ngưỡng một phút mà request thường
+  bị đóng. Đoạn giờ tối đa 200 từ, khoảng 30 giây.
+- **Ở `medium`, một đề sẽ vượt ngân sách từ 2027** (0,961 USD). Đó là lý do
+  `low` là mặc định.
 
 ### 📊 Con số biết nói
 
 | Kiểm tra | Kết quả |
 |---|---|
+| `cargo fmt --check` app và launcher | sạch |
 | `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba |
-| `cargo test --features server --no-default-features` | **84/84** + 2 test bỏ qua (0.6.0: 53; thêm 31 test: thứ tự key, ghi `.env`, chặn key từ trình duyệt, body Interactions, đọc usage và giá, chia đoạn, cache, sổ usage, `null` options) |
-| Probe sống | cả 4 dạng request được chấp nhận; audio **32 token/giây** (trang giá ghi 25); TTS nhanh khoảng 2,5 lần thời gian thực |
-| Chép lại audio của probe bằng Gemini | đúng từng chữ, không có style hay nhãn người nói |
+| `cargo test --features server --no-default-features` | **84/84**, 2 test chạy tay (0.6.0: 53; thêm 31 test: thứ tự key, ghi `.env`, chặn key từ trình duyệt, body Interactions, đọc usage và giá, chia đoạn, cache, sổ usage, `null` options) |
+| Bản Windows 0.7.0 | `.exe` **8,7 MB** (0.6.0: 8,5 MB); chỉ gọi DLL hệ thống của Windows |
+| `smoke.py` trên chính file `.exe` phát hành | ✅ đạt, kể cả đóng cửa sổ console; trường hợp "không có key ở đâu" **không chạy được** trên máy build (xem dưới) |
+| WASM release (chưa qua wasm-opt, vẫn crash trên Windows như 0.5.0) | 3,79 MB → **3,88 MB** |
+| Probe sống | cả 4 dạng request được chấp nhận; audio **32 token/giây**; TTS nhanh khoảng 2,5 lần thời gian thực |
 | Đề IELTS đầy đủ, thinking `medium` | 0,480 USD (giá 2027: 0,961, vượt ngân sách) |
 | Đề IELTS đầy đủ, thinking `low` | **0,308 USD** (giá 2027: **0,616**), 34 request, bản ghi 29:10 |
-| Trong đó bản ghi âm | 0,269 USD (29.728 token audio), gần 90 % chi phí |
+| Trong đó bản ghi âm | 0,269 USD cho 29.728 token audio, gần 90 % chi phí |
 | Render lại đề không đổi gì | 0 request, 20/20 đoạn dùng lại, **0 USD** |
-| Server không có key trong process, có trong registry | "from the Windows environment" |
-| Smoke test portable | đã sửa theo cách khởi động mới, **chưa chạy lại** (cần build release) |
+| Server không có key trong process nhưng có trong registry | console báo *from the Windows environment* |
 | Tiền Gemini tốn cho toàn bộ kiểm tra | khoảng **0,80 USD** |
 
 ### Thêm
@@ -96,24 +115,51 @@ trước, rồi `.env`; không có thì hỏi ngay trên trang, kèm cảnh báo
 - `src/domain/usage.rs`, `src/application/settings.rs`,
   `src/application/usage.rs`, `src/infrastructure/secrets.rs`,
   `src/infrastructure/usage.rs`, `src/infrastructure/llm/pricing.rs`,
-  `src/infrastructure/tts/cache.rs`, `src/ui/components/key_setup.rs`.
+  `src/infrastructure/tts/cache.rs`, `src/ui/components/key_setup.rs`,
+  `docs/portable-verification-v0.7.0.md`.
 - Biến `GEMINI_THINKING_LEVEL`, `EXAM_BUDGET_USD`, `SPEECH_CACHE_HOURS`
   (`.env.example`, template portable, README).
 - Dependency `sha2` 0.10 (server) và `winreg` 0.55 (chỉ Windows).
 
 ### Thay đổi
 
-- Mặc định `GEMINI_TEXT_MODEL=gemini-3.8-flash`,
-  `GEMINI_TTS_MODEL=gemini-3.8-flash-tts`. Chỉ hỗ trợ model TTS thế hệ 3.8.
-- Thiếu key không còn làm app thoát lúc khởi động; smoke test portable sửa
-  theo.
+- Mặc định `GEMINI_TEXT_MODEL=gemini-3.8-flash` (thay alias
+  `gemini-flash-latest`), `GEMINI_TTS_MODEL=gemini-3.8-flash-tts`.
 - Rate limit riêng cho việc nhập key (5 lần/phút).
+- `packaging/smoke.py` và `packaging/linux/check-clean.sh` kiểm tra cách khởi
+  động mới khi thiếu key.
+- Phiên bản app và launcher portable: 0.7.0.
 
-### Lưu ý
+### ⚠️ Thay đổi không tương thích
 
-- Google đổi giá thì sửa bảng trong `src/infrastructure/llm/pricing.rs`.
-- Sau 2027, nếu cần thêm biên độ: `GEMINI_TTS_MODEL=gemini-3.8-flash-lite-tts`
-  (rẻ hơn một phần ba, chưa đo chất lượng giọng).
+- **Model TTS cũ không còn chạy.** Request giờ theo định dạng của TTS thế hệ
+  3.8; ai đã đặt `GEMINI_TTS_MODEL=gemini-2.5-…` hay `gemini-3.1-…` trong `.env`
+  phải xoá dòng đó hoặc đổi sang `gemini-3.8-flash-tts` /
+  `gemini-3.8-flash-lite-tts`.
+- **Thiếu key không còn làm app thoát.** App khởi động và hỏi trên trang; script
+  nào trông vào "thoát mã 1 khi thiếu key" phải sửa (smoke test đã sửa).
+- **Biến môi trường Windows thắng `.env`.** Máy có sẵn một `GEMINI_API_KEY` cũ
+  trong môi trường Windows sẽ dùng key đó thay cho key trong `.env`; console
+  nói rõ key lấy từ đâu.
+- Model nằm ngoài bảng giá (ví dụ một alias) vẫn chạy, nhưng request của nó ghi
+  là *chưa có giá* và số tiền hiện dạng `$0.012+?`.
+
+### Biết rồi, để bản sau
+
+- **Ô nhập key chưa được thấy chạy thật.** Máy build có `GEMINI_API_KEY` trong
+  môi trường Windows, nên không dựng được cảnh "không có key ở đâu" mà không
+  động vào máy; `smoke.py` in *NOT TESTED* cho trường hợp đó. Các luật chặn có
+  unit test.
+- AppImage Linux 0.7.0 chưa build.
+- Giá 2027 chỉ còn dư khoảng 0,08 USD mỗi đề và bản ghi âm chiếm gần 90 % chi
+  phí. `gemini-3.8-flash-lite-tts` rẻ hơn một phần ba nhưng chưa ai nghe thử.
+- Giá nằm cứng trong `src/infrastructure/llm/pricing.rs`: Google đổi giá thì
+  phải sửa code.
+- Cache giọng đọc chỉ dọn theo thời gian, không giới hạn dung lượng: một đề
+  IELTS khoảng 45 MB.
+- Chưa ai nghe chỗ nối giữa các đoạn trong một bản ghi đầy đủ.
+- Trang từng phần chưa có dòng chi phí riêng; chi phí của nó chỉ hiện trong
+  tổng của cả server.
 
 ## [0.6.0] – 2026-09-23 — 💾 "Đóng tab, mai mở lại vẫn còn."
 

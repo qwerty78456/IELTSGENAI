@@ -40,7 +40,7 @@ Use Rust 1.92.0, wasm32-unknown-unknown, Dioxus CLI 0.7.9, and Python 3.
 Windows (MSVC build tools installed):
 
     pwsh -NoProfile -File packaging/build-windows.ps1
-    python packaging/smoke.py dist/listening-exam-generator-0.5.0-windows-x64.exe
+    python packaging/smoke.py dist/listening-exam-generator-0.7.0-windows-x64.exe
 
 The Windows server and packaging launcher statically link the C runtime.
 The launcher embeds only the server, public assets, and dependency notices,
@@ -79,7 +79,10 @@ extraction cleanup, use --appimage-extract once and run squashfs-root/AppRun.
 
 Run cargo fmt/check, both cargo check feature combinations, the wasm check,
 and all server-feature unit tests. The smoke script tests the actual package
-in a temporary path with spaces/Unicode and no real API key. It checks missing
+in a temporary path with spaces/Unicode and makes no Gemini request. It removes
+`GEMINI_API_KEY` from the package's environment, but on Windows the server also
+reads the registry: on a machine whose user or machine environment holds a key,
+the "no key anywhere" case prints NOT TESTED instead of changing the registry. It checks missing
 and malformed config, environment overrides, preservation, storage errors,
 occupied ports, both pages, JS/WASM/CSS, an audio-job server function, WAV ranges
 and downloads, shutdown, and relocation. On Windows it also closes a real
@@ -89,7 +92,10 @@ payload directory remains after any run.
 Audit EXE imports and Linux ldd output. Verify package inventories contain only
 runtime files and notices. Test AppImages on Ubuntu 22.04 and a newer distribution.
 Record FUSE/graphical-browser tests separately from headless container tests.
-Code signing, ARM64, updates, and paid live generation are outside this release.
+Code signing, ARM64 and updates are outside this release. Paid live checks are
+separate from packaging: `cargo test --features server --no-default-features
+live_probe -- --ignored --nocapture` (about $0.01) confirms the Gemini request
+shapes and measures audio tokens per second.
 
 Run `pwsh -NoProfile -File packaging/test-linux.ps1` to verify the built AppImage
 on clean Ubuntu 22.04 and 24.04 containers. Each first tests startup before
@@ -97,7 +103,8 @@ installing Python, then runs the full smoke suite as an unprivileged user,
 including permission errors and missing browser helpers. Windows smoke tests
 do not alter system browser associations to force a browser-launch failure.
 
-See [the v0.5.0 verification record](portable-verification-v0.5.0.md) for measured
-results and platform limitations. Build scripts pin tools and lockfiles, but
+See [the v0.7.0 verification record](portable-verification-v0.7.0.md) (Windows)
+and [the v0.5.0 record](portable-verification-v0.5.0.md) (Windows and Linux,
+including platform limitations) for measured results. Build scripts pin tools and lockfiles, but
 do not promise byte-for-byte identical binaries (upstream OS packages, build
 timestamps and paths can vary).

@@ -17,8 +17,8 @@ Read `docs/architecture.md` first. `docs/domain_model.md` and
 
 ## Portable Windows and Linux applications
 
-Version 0.5.0 supports a single Windows x64 EXE and a Linux x86-64 AppImage
-(Ubuntu 22.04 baseline). Put the package in a writable folder and run it.
+The app ships as a single Windows x64 EXE (0.7.0) and a Linux x86-64
+AppImage (Ubuntu 22.04 baseline; the newest Linux build is 0.6.0). Put the package in a writable folder and run it.
 First launch creates .env and voices.json beside the package and opens your
 browser at http://127.0.0.1:8080. The Gemini API key comes from the
 GEMINI_API_KEY environment variable (on Windows also one set after the console
@@ -48,12 +48,12 @@ Do not distribute your .env or generated data/.
 
 ## Run locally
 
-Prerequisites: Rust 1.85+ (edition 2024; developed on 1.92), the Dioxus CLI
+Prerequisites: Rust 1.88+ (edition 2024 let-chains; developed and released on 1.92), the Dioxus CLI
 0.7.x (`cargo install dioxus-cli --version 0.7.9 --locked`), the
 `wasm32-unknown-unknown` target, and on Linux `pkg-config libssl-dev`.
 
 ```bash
-cp .env.example .env      # set GEMINI_API_KEY
+cp .env.example .env      # optional: GEMINI_API_KEY here, or in the environment
 dx serve                  # http://localhost:8080, hot reload
 ```
 
@@ -62,13 +62,17 @@ Checks that must stay green:
 ```bash
 cargo check                                          # browser side (default feature: web)
 cargo check --features server --no-default-features  # server side
-cargo test  --features server --no-default-features  # unit tests (domain, export, audio, prompts)
+cargo test  --features server --no-default-features  # unit tests (domain, export, audio, prompts, usage)
 ```
+
+`cargo test --features server --no-default-features live_probe -- --ignored --nocapture`
+calls the real API (about $0.01) and prints tokens, latency and audio tokens
+per second; nothing else in the test suite spends money.
 
 ## Run in Docker
 
 ```bash
-cp .env.example .env      # set GEMINI_API_KEY
+cp .env.example .env      # set GEMINI_API_KEY (a container never accepts a key from the browser)
 docker compose up -d --build
 ```
 
@@ -139,7 +143,8 @@ recording again without changes cost $0: every chunk was reused.
 ```
 src/domain/          pure types and rules (formats, passage, tasks, exam, validation, audio programme)
 src/application/     #[server] use cases the UI calls
-src/infrastructure/  server only: Gemini client, prompts, TTS, WAV, SQLite jobs and saved exams, config
+src/infrastructure/  server only: Gemini client (Interactions API) and prices, prompts, TTS chunks and
+                     speech cache, WAV, SQLite jobs, saved exams and usage ledger, config and key
 src/export/          Markdown and DOCX paper / key / transcript
 src/ui/              Dioxus components and views
 docs/                architecture, domain model, ubiquitous language, scope
@@ -155,6 +160,7 @@ topic per part and produces the whole paper, the answer key, every
 transcript and one exam recording with announcements, pauses and replays,
 streamed from `/audio/{job_id}`. Exams on that page are saved on the server
 automatically and can be reopened later, recording included; both pages export
-Markdown and Word (DOCX, laid out like the paper with answer boxes). See the
-roadmap at the end of `docs/architecture.md` for what comes next: MP3,
-authentication.
+Markdown and Word (DOCX, laid out like the paper with answer boxes). Every
+Gemini request is metered: the exam page shows what the exam has cost against
+its budget. See the roadmap at the end of `docs/architecture.md` for what comes
+next: MP3, authentication.

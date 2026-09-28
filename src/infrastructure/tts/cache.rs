@@ -169,7 +169,10 @@ mod tests {
         let base = key_for("gemini-3.8-flash-tts", &request("Hello."));
         assert_eq!(base, key_for("gemini-3.8-flash-tts", &request("Hello.")));
         assert_eq!(base.len(), 64);
-        assert_ne!(base, key_for("gemini-3.8-flash-lite-tts", &request("Hello.")));
+        assert_ne!(
+            base,
+            key_for("gemini-3.8-flash-lite-tts", &request("Hello."))
+        );
         assert_ne!(base, key_for("gemini-3.8-flash-tts", &request("Hello!")));
         let mut other_voice = request("Hello.");
         other_voice.voices[0].voice = "Puck".into();

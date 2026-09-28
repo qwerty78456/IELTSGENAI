@@ -281,7 +281,10 @@ pub fn remember_in_dotenv(path: &Path, name: &str, value: &str) -> Result<(), St
     let mut lines: Vec<String> = Vec::new();
     for line in existing.lines() {
         let setting = line.trim_start();
-        let setting = setting.strip_prefix("export ").unwrap_or(setting).trim_start();
+        let setting = setting
+            .strip_prefix("export ")
+            .unwrap_or(setting)
+            .trim_start();
         let names_it = setting
             .strip_prefix(name)
             .is_some_and(|rest| rest.trim_start().starts_with('='));
@@ -590,7 +593,10 @@ mod tests {
             origin(&none, &windows),
             ("from-windows".into(), KeyOrigin::Windows)
         );
-        assert_eq!(origin(&none, &none), ("from-dotenv".into(), KeyOrigin::DotEnv));
+        assert_eq!(
+            origin(&none, &none),
+            ("from-dotenv".into(), KeyOrigin::DotEnv)
+        );
         // A blank or placeholder value never hides a real key further down.
         let blank = HashMap::from([("GEMINI_API_KEY".into(), " ".into())]);
         let placeholder = HashMap::from([("GEMINI_API_KEY".into(), PLACEHOLDER_KEY.into())]);
@@ -598,7 +604,11 @@ mod tests {
             origin(&blank, &placeholder),
             ("from-dotenv".into(), KeyOrigin::DotEnv)
         );
-        std::fs::write(dir.path().join(".env"), "GEMINI_API_KEY=your_api_key_here\n").unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "GEMINI_API_KEY=your_api_key_here\n",
+        )
+        .unwrap();
         let cfg = AppConfig::load_with(dir.path(), true, &blank, &none).unwrap();
         assert!(cfg.gemini_api_key.is_none());
     }
@@ -644,7 +654,10 @@ mod tests {
 
         let fresh = dir.path().join("fresh/.env");
         remember_in_dotenv(&fresh, "GEMINI_API_KEY", "new-key").unwrap();
-        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "GEMINI_API_KEY=new-key\n");
+        assert_eq!(
+            std::fs::read_to_string(&fresh).unwrap(),
+            "GEMINI_API_KEY=new-key\n"
+        );
     }
 
     #[test]

@@ -474,7 +474,15 @@ fn priced_usage(model: &str, response: &Value, at_secs: i64) -> Usage {
         output_tokens: tokens.output,
         thinking_tokens: tokens.thinking,
         micro_usd: rates
-            .map(|r| cost_micro_usd(r, tokens.input, tokens.cached, tokens.output, tokens.thinking))
+            .map(|r| {
+                cost_micro_usd(
+                    r,
+                    tokens.input,
+                    tokens.cached,
+                    tokens.output,
+                    tokens.thinking,
+                )
+            })
             .unwrap_or(0),
         unpriced: u32::from(rates.is_none()),
         ..Usage::default()
@@ -503,7 +511,9 @@ fn check_status(response: &Value) -> Result<(), LlmError> {
             if let Some(block) = blocked(code) {
                 return Err(LlmError::Blocked(block));
             }
-            Err(LlmError::Malformed(format!("interaction {other}: {message}")))
+            Err(LlmError::Malformed(format!(
+                "interaction {other}: {message}"
+            )))
         }
     }
 }
@@ -584,8 +594,15 @@ mod tests {
             body["generation_config"]["max_output_tokens"],
             json!(MAX_OUTPUT_TOKENS)
         );
-        assert_eq!(body["response_format"]["mime_type"], json!("application/json"));
-        assert!(text_body("m", "p", "low", false).get("response_format").is_none());
+        assert_eq!(
+            body["response_format"]["mime_type"],
+            json!("application/json")
+        );
+        assert!(
+            text_body("m", "p", "low", false)
+                .get("response_format")
+                .is_none()
+        );
     }
 
     #[test]
@@ -703,7 +720,10 @@ mod tests {
         assert_eq!(usage.thinking_tokens, 600);
         assert_eq!(usage.micro_usd, 750 + 75 + 3_750);
         // An alias is priced through the model that served it.
-        assert_eq!(priced_usage("gemini-flash-latest", &response, 0).micro_usd, 4_575);
+        assert_eq!(
+            priced_usage("gemini-flash-latest", &response, 0).micro_usd,
+            4_575
+        );
         let unknown = priced_usage("some-model", &json!({ "usage": {} }), 0);
         assert_eq!((unknown.unpriced, unknown.micro_usd), (1, 0));
     }
@@ -720,14 +740,20 @@ mod tests {
             Err(LlmError::Blocked(code)) if code == "safety"
         ));
         assert!(matches!(
-            error_of(400, r#"{"error":{"code":"prohibited_content","message":"x"}}"#),
+            error_of(
+                400,
+                r#"{"error":{"code":"prohibited_content","message":"x"}}"#
+            ),
             LlmError::Blocked(_)
         ));
         assert!(matches!(
             error_of(400, r#"{"error":{"code":"invalid_request","message":"bad field"}}"#),
             LlmError::Rejected { status: 400, body } if body == "bad field"
         ));
-        assert!(matches!(error_of(500, "not json"), LlmError::Rejected { .. }));
+        assert!(matches!(
+            error_of(500, "not json"),
+            LlmError::Rejected { .. }
+        ));
     }
 
     /// Calls the real API with the key from the environment (process, then
@@ -739,10 +765,7 @@ mod tests {
         let key = std::env::var("GEMINI_API_KEY")
             .ok()
             .filter(|k| !k.trim().is_empty())
-            .or_else(|| {
-                super::super::super::config::windows_environment()
-                    .remove("GEMINI_API_KEY")
-            })
+            .or_else(|| super::super::super::config::windows_environment().remove("GEMINI_API_KEY"))
             .expect("GEMINI_API_KEY in the environment");
         let text_model = std::env::var("GEMINI_TEXT_MODEL").unwrap_or("gemini-3.8-flash".into());
         let tts_model = std::env::var("GEMINI_TTS_MODEL").unwrap_or("gemini-3.8-flash-tts".into());
@@ -762,7 +785,13 @@ mod tests {
             };
             let per_second = audio_ms
                 .filter(|ms| *ms > 0)
-                .map(|ms| format!(", {:.1} tokens/s of audio over {:.1} s", spent.output_tokens as f64 * 1000.0 / f64::from(ms), f64::from(ms) / 1000.0))
+                .map(|ms| {
+                    format!(
+                        ", {:.1} tokens/s of audio over {:.1} s",
+                        spent.output_tokens as f64 * 1000.0 / f64::from(ms),
+                        f64::from(ms) / 1000.0
+                    )
+                })
                 .unwrap_or_default();
             println!(
                 "{label}: {:.1} s, in {} (cached {}), out {}, thinking {}, {}{per_second}",
@@ -780,7 +809,12 @@ mod tests {
             .generate_text("Suggest one everyday topic for an IELTS Listening Part 1 conversation. Answer with the topic only.")
             .await
             .unwrap();
-        report(&format!("text ({text_model}) -> {text:?}"), before, started, None);
+        report(
+            &format!("text ({text_model}) -> {text:?}"),
+            before,
+            started,
+            None,
+        );
 
         #[derive(serde::Deserialize, Debug)]
         #[allow(dead_code)]
@@ -799,21 +833,44 @@ mod tests {
         let (before, started) = (client.usage(), Instant::now());
         let single = client
             .synthesize(&SpeechRequest {
-                turns: vec![turn(None, "Part one. You will hear a conversation between a receptionist and a caller.")],
+                turns: vec![turn(
+                    None,
+                    "Part one. You will hear a conversation between a receptionist and a caller.",
+                )],
                 voices: vec![voice("Announcer", "Charon")],
                 style: "slow and clear, like an exam announcer".into(),
             })
             .await
             .unwrap();
         std::fs::write(dir.join("ielts-probe-single.wav"), single.to_wav()).unwrap();
-        report(&format!("tts one voice ({tts_model})"), before, started, Some(single.duration_ms()));
+        report(
+            &format!("tts one voice ({tts_model})"),
+            before,
+            started,
+            Some(single.duration_ms()),
+        );
 
         let dialogue = [
-            ("Speaker A", "Good morning, Riverside Sports Centre. My name is Sarah. How can I help you today?"),
-            ("Speaker B", "Hi, I'd like to ask about joining the swimming club. I saw a poster in the library last week."),
-            ("Speaker A", "Of course. Membership is forty-five pounds a month, or four hundred and twenty for the whole year."),
-            ("Speaker B", "That sounds reasonable. Do I need to bring anything for the first session, like a photo?"),
-            ("Speaker A", "Just some identification and a passport-sized photo. The first session is on Tuesday at seven."),
+            (
+                "Speaker A",
+                "Good morning, Riverside Sports Centre. My name is Sarah. How can I help you today?",
+            ),
+            (
+                "Speaker B",
+                "Hi, I'd like to ask about joining the swimming club. I saw a poster in the library last week.",
+            ),
+            (
+                "Speaker A",
+                "Of course. Membership is forty-five pounds a month, or four hundred and twenty for the whole year.",
+            ),
+            (
+                "Speaker B",
+                "That sounds reasonable. Do I need to bring anything for the first session, like a photo?",
+            ),
+            (
+                "Speaker A",
+                "Just some identification and a passport-sized photo. The first session is on Tuesday at seven.",
+            ),
         ];
         let (before, started) = (client.usage(), Instant::now());
         let pair = client
@@ -828,16 +885,26 @@ mod tests {
         report("tts two voices", before, started, Some(pair.duration_ms()));
 
         // The raw usage object of one speech response, audio data left out.
-        let body = speech_body(&tts_model, &SpeechRequest {
-            turns: vec![turn(None, "Thank you.")],
-            voices: vec![voice("Announcer", "Charon")],
-            style: "calm".into(),
-        })
+        let body = speech_body(
+            &tts_model,
+            &SpeechRequest {
+                turns: vec![turn(None, "Thank you.")],
+                voices: vec![voice("Announcer", "Charon")],
+                style: "calm".into(),
+            },
+        )
         .unwrap();
         let raw = client.call(&tts_model, body, TTS_TIMEOUT).await.unwrap();
         client.add_usage(&priced_usage(&tts_model, &raw, now_secs()));
-        println!("raw speech usage: {}", raw.get("usage").cloned().unwrap_or_default());
-        println!("raw speech status/model: {:?} / {:?}", raw.get("status"), raw.get("model"));
+        println!(
+            "raw speech usage: {}",
+            raw.get("usage").cloned().unwrap_or_default()
+        );
+        println!(
+            "raw speech status/model: {:?} / {:?}",
+            raw.get("status"),
+            raw.get("model")
+        );
         println!("total: {}", client.usage().cost_text());
         println!("recordings: {}", dir.join("ielts-probe-*.wav").display());
     }

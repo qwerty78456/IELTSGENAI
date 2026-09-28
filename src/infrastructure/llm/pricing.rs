@@ -106,7 +106,10 @@ mod tests {
     fn cached_and_thinking_tokens_use_their_own_rates() {
         let rates = rates_for("gemini-3.8-flash", 0).unwrap();
         // 1,000 fresh input at 0.75, 1,000 cached at 0.075, 400 output + 600 thinking at 3.75.
-        assert_eq!(cost_micro_usd(rates, 2_000, 1_000, 400, 600), 750 + 75 + 3_750);
+        assert_eq!(
+            cost_micro_usd(rates, 2_000, 1_000, 400, 600),
+            750 + 75 + 3_750
+        );
         // 24,000 audio tokens (12.5 minutes at 32 tokens/s) on 3.8 Flash TTS: $0.216 now.
         let tts = rates_for("gemini-3.8-flash-tts", 0).unwrap();
         assert_eq!(cost_micro_usd(tts, 0, 0, 24_000, 0), 216_000);

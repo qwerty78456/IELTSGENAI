@@ -98,7 +98,10 @@ impl super::super::audio::Announcer for GeminiClient {
 
 /// One request for a chunk: the voices of the speakers in it, in order of
 /// appearance, and one turn per line. A one-voice chunk names no speaker.
-fn chunk_request(chunk: &[Line], assignments: &[VoiceAssignment]) -> Result<SpeechRequest, TtsError> {
+fn chunk_request(
+    chunk: &[Line],
+    assignments: &[VoiceAssignment],
+) -> Result<SpeechRequest, TtsError> {
     let mut voices: Vec<VoiceAssignment> = Vec::new();
     for line in chunk {
         if voices.iter().all(|v| v.label != line.speaker) {
@@ -118,7 +121,10 @@ fn chunk_request(chunk: &[Line], assignments: &[VoiceAssignment]) -> Result<Spee
             text: line.text.clone(),
         })
         .collect();
-    let words: usize = chunk.iter().map(|l| l.text.split_whitespace().count()).sum();
+    let words: usize = chunk
+        .iter()
+        .map(|l| l.text.split_whitespace().count())
+        .sum();
     if estimate_tokens(words, turns.len()) >= TTS_MAX_INPUT_TOKENS {
         return Err(TtsError::Llm(LlmError::Malformed(
             "a speech chunk is longer than one request allows".into(),
@@ -252,7 +258,12 @@ mod tests {
         chunks
             .iter()
             .flatten()
-            .flat_map(|l| l.text.split_whitespace().map(str::to_string).collect::<Vec<_>>())
+            .flat_map(|l| {
+                l.text
+                    .split_whitespace()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
             .collect()
     }
 
@@ -265,7 +276,11 @@ mod tests {
 
     #[test]
     fn short_dialogue_is_one_chunk() {
-        let lines = [line("A", "Hi there."), line("B", "Hello."), line("A", "Bye.")];
+        let lines = [
+            line("A", "Hi there."),
+            line("B", "Hello."),
+            line("A", "Bye."),
+        ];
         let chunks = speech_chunks(&lines, 250);
         assert_eq!(chunks, vec![lines.to_vec()]);
     }
@@ -273,11 +288,19 @@ mod tests {
     #[test]
     fn chunks_respect_the_word_budget_and_keep_every_word() {
         let lines: Vec<Line> = (0..12)
-            .map(|i| line(if i % 2 == 0 { "A" } else { "B" }, "one two three four five."))
+            .map(|i| {
+                line(
+                    if i % 2 == 0 { "A" } else { "B" },
+                    "one two three four five.",
+                )
+            })
             .collect();
         let chunks = speech_chunks(&lines, 12);
         for chunk in &chunks {
-            let count: usize = chunk.iter().map(|l| l.text.split_whitespace().count()).sum();
+            let count: usize = chunk
+                .iter()
+                .map(|l| l.text.split_whitespace().count())
+                .sum();
             assert!(count <= 12, "{chunk:?}");
         }
         assert_eq!(chunks.len(), 6);
@@ -324,7 +347,13 @@ mod tests {
         let run_on = vec!["and"; 25].join(" ");
         let pieces = split_turn(&run_on, 10);
         assert_eq!(pieces.len(), 3);
-        assert_eq!(pieces.iter().map(|p| p.split_whitespace().count()).sum::<usize>(), 25);
+        assert_eq!(
+            pieces
+                .iter()
+                .map(|p| p.split_whitespace().count())
+                .sum::<usize>(),
+            25
+        );
     }
 
     #[test]
@@ -344,7 +373,10 @@ mod tests {
         assert_eq!(solo.voices[0].voice, "Puck");
         assert_eq!(solo.turns[0].speaker, None);
         let pair = chunk_request(
-            &[line("Speaker B", "You first."), line("Speaker A", "Thanks.")],
+            &[
+                line("Speaker B", "You first."),
+                line("Speaker A", "Thanks."),
+            ],
             &assignments,
         )
         .unwrap();

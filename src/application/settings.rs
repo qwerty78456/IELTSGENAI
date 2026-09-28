@@ -46,9 +46,9 @@ pub struct KeyStatus {
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub fn entry_refusal(source: KeySource, loopback: bool) -> Option<&'static str> {
     match source {
-        KeySource::Environment | KeySource::WindowsEnvironment | KeySource::DotEnv => Some(
-            "This server already has a key from its environment or .env; change it there.",
-        ),
+        KeySource::Environment | KeySource::WindowsEnvironment | KeySource::DotEnv => {
+            Some("This server already has a key from its environment or .env; change it there.")
+        }
         _ if !loopback => Some(
             "This server is reachable from other computers, so it does not accept a key from the browser. Set GEMINI_API_KEY on the server and restart.",
         ),
@@ -105,7 +105,10 @@ pub async fn set_api_key(key: String, remember: bool) -> Result<KeyStatus, Serve
             .map_err(ServerFnError::new)?;
     }
     secrets::set_browser_key(key);
-    tracing::info!(remembered = remember, "Gemini API key entered in the browser");
+    tracing::info!(
+        remembered = remember,
+        "Gemini API key entered in the browser"
+    );
     Ok(current_status())
 }
 

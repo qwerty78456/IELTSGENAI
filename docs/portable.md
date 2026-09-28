@@ -103,8 +103,8 @@ installing Python, then runs the full smoke suite as an unprivileged user,
 including permission errors and missing browser helpers. Windows smoke tests
 do not alter system browser associations to force a browser-launch failure.
 
-See [the v0.7.0 verification record](portable-verification-v0.7.0.md) (Windows)
-and [the v0.5.0 record](portable-verification-v0.5.0.md) (Windows and Linux,
-including platform limitations) for measured results. Build scripts pin tools and lockfiles, but
+See [the v0.7.0 verification record](portable-verification-v0.7.0.md) and
+[the v0.5.0 record](portable-verification-v0.5.0.md) (with the full platform
+limitations) for measured results. Build scripts pin tools and lockfiles, but
 do not promise byte-for-byte identical binaries (upstream OS packages, build
 timestamps and paths can vary).

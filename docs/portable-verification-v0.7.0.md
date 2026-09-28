@@ -1,7 +1,6 @@
 # Portable v0.7.0 verification — 2026-09-28
 
-Windows only. The Linux AppImage was not rebuilt for 0.7.0; the newest Linux
-build in `dist/` is 0.6.0.
+Windows EXE and Linux AppImage, both from commit `b5c649c` (tag `v0.7.0`).
 
 ## What changed for packaging
 
@@ -55,6 +54,27 @@ removed from its process: it printed `from the Windows environment`, served
 `{"source":"WindowsEnvironment","can_enter":false}` (form hidden). A forced
 stop of the process tree left no payload directory.
 
+## Linux AppImage
+
+- Built with `packaging/build-linux.ps1` in the Ubuntu 22.04 builder image on
+  the project's own `ielts-portable-builder` Podman (WSL) machine; the other
+  project's `epg-builder` machine was not used. Inside the container:
+  `cargo fmt --check`, the three `cargo check`s and
+  `cargo test --locked --features server --no-default-features` (**84 passed**,
+  2 ignored) ran before `dx build`.
+- `listening-exam-generator-0.7.0-linux-x86_64.AppImage`: 12,618,232 bytes.
+  (The hex string at the end of the build log is the Podman container id, not
+  the artifact's checksum.)
+- `packaging/test-linux.ps1` passed on clean **Ubuntu 22.04 and 24.04**
+  containers as UID 65534: first run before Python is installed, manual
+  extraction with AppRun, dependency resolution, licenses and inventory, the
+  full smoke suite, **starting with no key anywhere** (server starts, logs the
+  missing key, `/exam` returns 200; Linux has no registry to fall back on),
+  a missing browser helper, and terminal Ctrl+C through the extraction
+  supervisor (exit -2 / shell 130, as documented since 0.5.0).
+- Not tested: native FUSE mounting (no `/dev/fuse` in the containers) and a
+  graphical desktop browser.
+
 ## Paid checks made during development (not part of the smoke test)
 
 With the developer's key, on the debug build of the same source:
@@ -86,6 +106,8 @@ Windows system DLLs:
 | File | SHA-256 |
 | --- | --- |
 | listening-exam-generator-0.7.0-windows-x64.exe | `c1f62c8fbcef6b75d1c5b2fe9d5a61d8b94b8e32123786e1af46695a08387575` |
+| listening-exam-generator-0.7.0-linux-x86_64.AppImage | `be9b83a1d7689049e2c476ba99863672b44abea85fe5373f33e4c6a7d54f4982` |
 
-Binaries stay in ignored `dist/`; no GitHub Release is published. Code
+Both packages, `README.txt` and the two SHA256SUMS files are published as the
+GitHub release `v0.7.0`. Code
 signing, ARM64 and auto-updates remain out of scope.

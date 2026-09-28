@@ -101,6 +101,8 @@ Windows trước, rồi `.env`; không có thì hỏi ngay trên trang.
 | `cargo test --features server --no-default-features` | **84/84**, 2 test chạy tay (0.6.0: 53; thêm 31 test: thứ tự key, ghi `.env`, chặn key từ trình duyệt, body Interactions, đọc usage và giá, chia đoạn, cache, sổ usage, `null` options) |
 | Bản Windows 0.7.0 | `.exe` **8,7 MB** (0.6.0: 8,5 MB); chỉ gọi DLL hệ thống của Windows |
 | `smoke.py` trên chính file `.exe` phát hành | ✅ đạt, kể cả đóng cửa sổ console; trường hợp "không có key ở đâu" **không chạy được** trên máy build (xem dưới) |
+| Bản Linux 0.7.0 | `.AppImage` **12,6 MB** (0.6.0: 12,5 MB), build trong container Ubuntu 22.04; fmt, check và 84 test chạy lại trong đó |
+| `smoke.py` trên AppImage thật, Ubuntu **22.04** và **24.04** sạch, user `nobody` | ✅ đạt, **kể cả khởi động khi không có key ở đâu**: server chạy, `/exam` trả 200 |
 | WASM release (chưa qua wasm-opt, vẫn crash trên Windows như 0.5.0) | 3,79 MB → **3,88 MB** |
 | Probe sống | cả 4 dạng request được chấp nhận; audio **32 token/giây**; TTS nhanh khoảng 2,5 lần thời gian thực |
 | Đề IELTS đầy đủ, thinking `medium` | 0,480 USD (giá 2027: 0,961, vượt ngân sách) |
@@ -146,11 +148,11 @@ Windows trước, rồi `.env`; không có thì hỏi ngay trên trang.
 
 ### Biết rồi, để bản sau
 
-- **Ô nhập key chưa được thấy chạy thật.** Máy build có `GEMINI_API_KEY` trong
-  môi trường Windows, nên không dựng được cảnh "không có key ở đâu" mà không
-  động vào máy; `smoke.py` in *NOT TESTED* cho trường hợp đó. Các luật chặn có
-  unit test.
-- AppImage Linux 0.7.0 chưa build.
+- **Ô nhập key chưa được ai nhìn thấy trong trình duyệt.** Trên Windows, máy
+  build có `GEMINI_API_KEY` trong môi trường nên `smoke.py` in *NOT TESTED*;
+  trên Linux smoke test xác nhận server khởi động không cần key, nhưng không
+  mở trình duyệt. Các luật chặn có unit test.
+- Chưa test mount FUSE thật của AppImage (container không có `/dev/fuse`).
 - Giá 2027 chỉ còn dư khoảng 0,08 USD mỗi đề và bản ghi âm chiếm gần 90 % chi
   phí. `gemini-3.8-flash-lite-tts` rẻ hơn một phần ba nhưng chưa ai nghe thử.
 - Giá nằm cứng trong `src/infrastructure/llm/pricing.rs`: Google đổi giá thì

@@ -54,6 +54,11 @@ pub enum LlmError {
     NoApiKey,
     #[error("Google rejected this API key. Check it in Google AI Studio and try again.")]
     KeyRejected,
+    /// The key requests use was refused; the text says where that key lives.
+    #[error(
+        "Google rejected the Gemini API key from {0}. Check it in Google AI Studio; the box at the top of the page says how to replace it."
+    )]
+    ActiveKeyRejected(&'static str),
     #[error("The AI service is busy right now. Please try again in a minute.")]
     Busy,
     #[error("The AI service did not answer in time. Please try again.")]
@@ -261,6 +266,7 @@ impl GeminiClient {
                 .await;
             let retry_reason = match sent {
                 Ok(response) if response.status().is_success() => {
+                    super::super::secrets::mark_accepted(&self.api_key);
                     return response
                         .json::<Value>()
                         .await
@@ -272,7 +278,12 @@ impl GeminiClient {
                 Ok(response) => {
                     let status = response.status().as_u16();
                     let body = response.text().await.unwrap_or_default();
-                    return Err(error_of(status, &body));
+                    return Err(match error_of(status, &body) {
+                        LlmError::KeyRejected => LlmError::ActiveKeyRejected(
+                            super::super::secrets::mark_rejected(&self.api_key),
+                        ),
+                        other => other,
+                    });
                 }
                 Err(e) if e.is_timeout() => LlmError::Timeout,
                 Err(e) => return Err(LlmError::Network(e.to_string())),
@@ -527,10 +538,14 @@ fn blocked(code: &str) -> Option<String> {
         .map(|block| block.to_string())
 }
 
-/// A non-2xx response: `{"error": {"code": "...", "message": "..."}}`.
+/// A non-2xx response: `{"error": {"code": "...", "message": "..."}}`, which
+/// Google sometimes wraps in a one-element array.
 fn error_of(status: u16, body: &str) -> LlmError {
     let parsed: Option<Value> = serde_json::from_str(body).ok();
-    let error = parsed.as_ref().and_then(|v| v.get("error"));
+    let error = parsed
+        .as_ref()
+        .map(|v| v.get(0).unwrap_or(v))
+        .and_then(|v| v.get("error"));
     let code = error
         .and_then(|e| e.get("code"))
         .and_then(Value::as_str)
@@ -542,10 +557,28 @@ fn error_of(status: u16, body: &str) -> LlmError {
         .and_then(|e| e.get("message"))
         .and_then(Value::as_str)
         .unwrap_or(body);
+    if rejects_key(status, message, error) {
+        return LlmError::KeyRejected;
+    }
     LlmError::Rejected {
         status,
         body: message.chars().take(500).collect(),
     }
+}
+
+/// Whether a refusal is about the API key: always for 401; for 400 and 403
+/// only when Google says so (`API_KEY_INVALID`, "API key not valid", "Please
+/// use API Key"), since both also mean a bad request or a denied model.
+fn rejects_key(status: u16, message: &str, error: Option<&Value>) -> bool {
+    let mut reasons = error
+        .and_then(|e| e.get("details"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|detail| detail.get("reason").and_then(Value::as_str));
+    let about_key = message.to_ascii_lowercase().contains("api key")
+        || reasons.any(|reason| reason.starts_with("API_KEY_"));
+    status == 401 || (matches!(status, 400 | 403) && about_key)
 }
 
 fn strip_fences(text: &str) -> &str {
@@ -753,6 +786,29 @@ mod tests {
         assert!(matches!(
             error_of(500, "not json"),
             LlmError::Rejected { .. }
+        ));
+    }
+
+    #[test]
+    fn refused_keys_are_told_apart_from_bad_requests() {
+        // As returned on 2026-10-05 by POST /v1beta/interactions with a made-up key.
+        let invalid = r#"[{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}]"#;
+        assert!(matches!(error_of(400, invalid), LlmError::KeyRejected));
+        // ... and with no key at all.
+        let missing = r#"[{"error":{"code":403,"message":"Method doesn't allow unregistered callers (callers without established identity). Please use API Key or other form of API consumer identity to call this API.","status":"PERMISSION_DENIED"}}]"#;
+        assert!(matches!(error_of(403, missing), LlmError::KeyRejected));
+        let reason_only =
+            r#"{"error":{"message":"denied","details":[{"reason":"API_KEY_SERVICE_BLOCKED"}]}}"#;
+        assert!(matches!(error_of(403, reason_only), LlmError::KeyRejected));
+        assert!(matches!(error_of(401, "{}"), LlmError::KeyRejected));
+        // The array wrapper no longer hides the message.
+        assert!(matches!(
+            error_of(400, r#"[{"error":{"code":400,"message":"bad field"}}]"#),
+            LlmError::Rejected { status: 400, body } if body == "bad field"
+        ));
+        assert!(matches!(
+            error_of(403, r#"{"error":{"message":"model not available"}}"#),
+            LlmError::Rejected { status: 403, .. }
         ));
     }
 

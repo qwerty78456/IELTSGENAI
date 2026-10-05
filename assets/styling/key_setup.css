@@ -1,4 +1,4 @@
-/* Gemini API key entry, shown above every page while no key is configured */
+/* Gemini API key entry, shown above every page while there is no key or Google rejected it */
 .key-setup {
     max-width: 1200px;
     margin: 1.5rem auto 0;

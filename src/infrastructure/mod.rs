@@ -62,13 +62,11 @@ pub fn bootstrap(
         .try_init()
         .map_err(|_| "Cannot initialize logging")?;
     let key_note = match cfg.key_origin {
-        Some(config::KeyOrigin::Process) => "from the process environment",
-        Some(config::KeyOrigin::Windows) => "from the Windows environment",
-        Some(config::KeyOrigin::DotEnv) => "from .env",
+        Some(origin) => format!("from {}", origin.describe()),
         None if cfg.address.ip().is_loopback() => {
-            "missing; set GEMINI_API_KEY or enter it in the browser"
+            "missing; set GEMINI_API_KEY or enter it in the browser".into()
         }
-        None => "missing; set GEMINI_API_KEY and restart",
+        None => "missing; set GEMINI_API_KEY and restart".into(),
     };
     config::initialize(cfg)?;
     println!("Configuration: {}", base.display());

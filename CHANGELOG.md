@@ -3,6 +3,48 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [Chưa phát hành]
+
+### Thay đổi
+
+- **Key bị Google từ chối thì nói rõ, và cho thay ngay trên trang.** Trước
+  đây, key sai trong biến môi trường hay `.env` hiện ra thành câu
+  *The AI service rejected the request (400): API key not valid…* (lộ mã HTTP,
+  không nói key nằm đâu), ô nhập key bị khoá vì "đã có key", và chỉ còn cách
+  sửa rồi khởi động lại. Giờ lỗi là *Google rejected the Gemini API key from
+  the Windows environment…*, đến từ mọi bước (topic, script, câu hỏi, ghi âm).
+  Trong vòng 5 giây, đầu trang hiện hộp *Google rejected the Gemini API key*;
+  trên app chạy ở 127.0.0.1 hoặc ::1, hộp này cho dán key khác (vẫn kiểm tra
+  miễn phí với Google trước). Key mới thay key hỏng trong bộ nhớ đến lần khởi
+  động lại. *Remember* chỉ hiện khi ghi vào `.env` thật sự có tác dụng: không
+  hiện nếu key hỏng nằm trong biến môi trường, vì biến môi trường luôn thắng
+  `.env`. Server mở cho máy khác thì vẫn không nhận key từ trình duyệt.
+- Lỗi của Google bọc trong mảng JSON (`[{"error": …}]`, kiểu Interactions API
+  trả cho lỗi key) giờ được đọc đúng câu thông báo thay vì in nguyên body.
+
+### 🧰 Bên trong
+
+- `error_of` nhận ra lỗi key: 401 luôn là lỗi key; 400 và 403 chỉ khi Google
+  nói về key (`API_KEY_INVALID`, *API key not valid*, *Please use API Key*),
+  vì hai mã này còn dùng cho request sai hay model bị chặn. Body thật lấy từ
+  hai lần gọi thử miễn phí (key bịa, không key) nằm trong unit test.
+- `GeminiClient` đổi lỗi key thành `LlmError::ActiveKeyRejected(nguồn)` và
+  báo cho `secrets`, nơi giữ (chỉ trong RAM) key bị từ chối gần nhất; Google
+  nhận lại key đó thì dấu tự xoá. Không thử lại, không tự chuyển sang nguồn
+  key khác.
+- `KeyStatus` thêm `rejected` và `can_remember`; `entry_refusal` nhận thêm
+  `rejected`. `KeySetup` hỏi `api_key_status` mỗi 5 giây (server trả lời từ
+  bộ nhớ, không gọi Google), nên lỗi key ở bất kỳ bước nào cũng làm hộp hiện
+  ra mà không phải sửa từng chỗ báo lỗi trong các view.
+
+### Biết rồi, để bản sau
+
+- Các lỗi khác ngoài lỗi key vẫn hiện mã HTTP, ví dụ *rejected the request
+  (400)*.
+- Chưa thử thay key hỏng bằng một key thật trên trình duyệt; đã thử với key
+  bịa trong biến môi trường (hộp hiện, không có *Remember*, key bịa thứ hai bị
+  từ chối) và với key thật trong môi trường Windows (hộp không hiện).
+
 ## [0.7.0] – 2026-09-28 — 💸 "Một đề IELTS dưới 0,70 USD, kể cả khi Google tăng giá."
 
 Trước bản này, không ai biết một đề tốn bao nhiêu tiền Gemini: app không đọc

@@ -37,7 +37,9 @@ Options: --no-open, --non-interactive, --config-dir PATH. Relative paths
 are resolved against the configuration directory. Environment values override
 file settings, but malformed files always fail. Configuration is loaded once;
 restart after edits. A key typed in the browser is checked with Google before
-it is kept; other keys are checked when generating.
+it is kept; other keys are checked when generating. If Google rejects the
+configured key, every page says where that key came from and, on 127.0.0.1,
+lets you paste a working one that replaces it until the next restart.
 Exams built on the Whole exam page are saved on the server and reopen after a
 restart, recording included. Their recordings are kept until the exam is deleted;
 other recordings expire after AUDIO_RETENTION_HOURS (24 by default).

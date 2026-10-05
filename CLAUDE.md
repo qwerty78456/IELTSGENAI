@@ -134,8 +134,11 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 - All configuration is environment only (`infrastructure/config.rs`, see `.env.example`). The
   API key is resolved process environment → Windows registry environment (user, then machine)
   → `.env` → a key typed in the browser (`application/settings.rs`, kept in
-  `infrastructure/secrets.rs`), which is accepted only on a loopback bind, never over an operator
-  key, after a free check with Google. A missing key does not stop startup.
+  `infrastructure/secrets.rs`), which is accepted only on a loopback bind, never over a working
+  operator key, after a free check with Google. A missing key does not stop startup. A key Google
+  refuses becomes `LlmError::ActiveKeyRejected` (naming its source) and is remembered in
+  `secrets`; `KeySetup` polls `api_key_status` and then offers a browser key that replaces it in
+  memory until restart. Keys are never retried or tried in turn: there is no automatic fallback.
 
 ## Dioxus 0.7 API constraints (from `.github/agents/dioxus-0-7-rust-ui-expert.agent.md`)
 

@@ -49,6 +49,17 @@ pub enum KeyOrigin {
     DotEnv,
 }
 
+impl KeyOrigin {
+    /// Where the key lives, for messages to the teacher and the startup log.
+    pub fn describe(self) -> &'static str {
+        match self {
+            KeyOrigin::Process => "the server's environment",
+            KeyOrigin::Windows => "the Windows environment",
+            KeyOrigin::DotEnv => ".env",
+        }
+    }
+}
+
 /// Settings persisted in the Windows registry, the user's before the machine's.
 /// A process started before `setx` or the "Environment Variables" dialog ran
 /// (an open terminal, an IDE, a launcher) does not inherit them, so they are

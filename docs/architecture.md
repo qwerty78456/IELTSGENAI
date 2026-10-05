@@ -64,12 +64,13 @@ src/
     tasks.rs              generate_task    -> TaskDraft { task, issues }
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
     usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record() after every Gemini call
-    settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over an operator key)
+    settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over a working operator key)
     exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job), ExamSummary
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
     config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from
                           .env < Windows registry environment < process environment; KeyOrigin
-    secrets.rs            the API key requests use: configured, else typed in the browser (memory only)
+    secrets.rs            the API key requests use: typed in the browser (memory only), else configured;
+                          remembers the key Google last rejected (KeyStatus.rejected)
     usage.rs              UsageStore: `usage` ledger table in jobs.db (one row per step run, any outcome)
     exams.rs              ExamStore: `exams` table (SavedExam JSON body + summary columns) in jobs.db; pins recording jobs
     startup.rs            bootstrap -> SQLite -> router + GET /audio/{job_id}; dioxus::serve in debug

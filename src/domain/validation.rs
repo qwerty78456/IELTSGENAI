@@ -10,6 +10,7 @@ use super::exam::Exam;
 use super::format::{PartSpec, TaskKind};
 use super::passage::{Passage, count_words};
 use super::speaker::SpeakerConfig;
+use super::speech::{display_text, markup_problems};
 use super::task::{Answer, Choice, Item, Task};
 use super::voice::voice_conflicts;
 
@@ -100,7 +101,8 @@ pub fn validate_speakers(spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<Val
 }
 
 /// A passage must use only the configured labels, all of them, and fit the
-/// part's duration window (by estimate).
+/// part's duration window (by estimate). Speech markup that would be read
+/// aloud, left out or lost gets a warning naming the turn.
 pub fn validate_passage(
     passage: &Passage,
     spec: &PartSpec,
@@ -145,15 +147,24 @@ pub fn validate_passage(
             ),
         ));
     }
+    // `[FILL IN]` is markup to `display_text`, so it is looked for in the raw text.
     if passage
         .lines
         .iter()
-        .any(|l| l.text.contains("___") || l.text.contains("[FILL"))
+        .any(|l| l.display_text().contains("___") || l.text.contains("[FILL"))
     {
         issues.push(ValidationIssue::error(
             None,
             "The script contains gaps; scripts must be complete",
         ));
+    }
+    for (i, line) in passage.lines.iter().enumerate() {
+        for problem in markup_problems(&line.text) {
+            issues.push(ValidationIssue::warning(
+                None,
+                format!("{} (turn {}): {problem}", line.speaker, i + 1),
+            ));
+        }
     }
     issues.extend(line_up_drift(passage, speakers));
     issues
@@ -486,9 +497,11 @@ fn check_letter_answer(
     issues
 }
 
-/// Lower-case, punctuation stripped, apostrophes removed, single spaces: the
-/// comparison form used for grounding checks.
+/// Speech markup removed, lower-case, punctuation stripped, apostrophes
+/// removed, single spaces: the comparison form used for grounding checks, so
+/// a key or quote matches whether or not a `<sigh>` sits in the script.
 pub fn normalize(text: &str) -> String {
+    let text = display_text(text);
     let mut out = String::with_capacity(text.len());
     let mut pending_space = false;
     for c in text.chars() {
@@ -708,6 +721,67 @@ mod tests {
         assert_eq!(
             validate_passage(&parsed, part1, &edited).len(),
             baseline.len()
+        );
+    }
+
+    #[test]
+    fn grounding_ignores_speech_markup() {
+        let passage = Passage::parse(
+            3,
+            "retro-walking",
+            "Speaker A: Walking backwards can ease <sigh> knee pain |mhm| and improve [music] balance.",
+            &["Speaker A".to_string()],
+        )
+        .unwrap();
+        // Evidence quoted without the tag, and with it.
+        for evidence in [
+            "can ease knee pain",
+            "can ease <sigh> knee pain and improve",
+        ] {
+            let mut task = short_answer_task("knee pain");
+            task.items[0].evidence = evidence.into();
+            let issues = validate_task(&task, Some(&passage));
+            assert!(issues.is_empty(), "{evidence}: {issues:?}");
+        }
+        // A key that only exists across the removed note still matches.
+        let issues = validate_task(&short_answer_task("improve balance"), Some(&passage));
+        assert!(!has_errors(&issues), "{issues:?}");
+        assert_eq!(normalize("Well <sigh>, it's |mhm| FINE."), "well its fine");
+    }
+
+    #[test]
+    fn markup_problems_are_warnings_naming_the_turn() {
+        let hsg = ExamFormat::hsg_national();
+        let part1 = hsg.part(1).unwrap();
+        let speakers = part1.default_speakers.clone();
+        let labels: Vec<String> = speakers.iter().map(|s| s.label.clone()).collect();
+        let filler = "word ".repeat(150);
+        let script = format!(
+            "{}: {filler}
+{}: {filler} and <smirk> then
+{}: {filler} [FILL IN]",
+            labels[0], labels[1], labels[2]
+        );
+        let passage = Passage::parse(1, "topic", &script, &labels).unwrap();
+        let issues = validate_passage(&passage, part1, &speakers);
+        let markup: Vec<&ValidationIssue> = issues
+            .iter()
+            .filter(|i| i.message.contains("(turn "))
+            .collect();
+        assert_eq!(markup.len(), 1, "{issues:?}");
+        assert_eq!(markup[0].severity, Severity::Warning);
+        assert_eq!(
+            markup[0].message,
+            format!(
+                "{} (turn 2): <smirk> is not a speech tag; it is left out of the recording",
+                labels[1]
+            )
+        );
+        // The gap is still an error, reported once.
+        assert!(has_errors(&issues));
+        assert_eq!(
+            issues.iter().filter(|i| i.message.contains("gaps")).count(),
+            1
         );
     }
 

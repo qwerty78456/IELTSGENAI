@@ -26,6 +26,10 @@ pub struct SavedExam {
     /// A script changed after the recording was made.
     #[serde(default)]
     pub recording_stale: bool,
+    /// New scripts are expressive (`PassageRequest::expressive`). Exams saved
+    /// before 0.8 load as plain; the exam page starts new exams expressive.
+    #[serde(default)]
+    pub expressive: bool,
     /// Server-populated.
     #[serde(default)]
     pub created_at_secs: i64,
@@ -285,6 +289,7 @@ mod tests {
         assert_eq!(part1.tasks[0].items.len(), 5);
         assert!(part1.audio.is_some());
         assert!(saved.recording_stale);
+        assert!(!saved.expressive);
 
         let every_speaker = exam.parts.iter().flat_map(|p| p.speakers.iter()).chain(
             exam.format

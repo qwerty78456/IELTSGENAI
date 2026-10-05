@@ -60,18 +60,23 @@ pub fn render_key(tasks: &[Task]) -> String {
     out
 }
 
-/// The script with the voice line-up, for the teacher's copy.
+/// The transcript with the voice line-up, for the teacher's copy (never
+/// the student paper, which names no voice): the words a listener hears,
+/// without speech tags.
 pub fn render_transcript(passage: &Passage, speakers: &[SpeakerConfig]) -> String {
     let mut out = format!(
         "### Transcript - Part {}\n\n*{}*\n\n",
         passage.part, passage.topic
     );
     for speaker in speakers {
-        out.push_str(&format!("- {}\n", speaker.describe()));
+        out.push_str(&format!("- {}\n", speaker.describe_with_voice()));
     }
     out.push('\n');
     for line in &passage.lines {
-        out.push_str(&format!("**{}:** {}\n\n", line.speaker, line.text));
+        let words = line.display_text();
+        if !words.is_empty() {
+            out.push_str(&format!("**{}:** {words}\n\n", line.speaker));
+        }
     }
     out
 }
@@ -165,5 +170,54 @@ mod tests {
         assert!(doc.contains("# Mock 1"));
         assert!(doc.contains("## Part 4"));
         assert!(doc.contains("# Answer key"));
+    }
+
+    #[test]
+    fn transcripts_have_no_delivery_tags() {
+        use crate::domain::{SpeakerRole, Voice, VoiceSource};
+
+        let labels = ["Speaker A".to_string(), "Speaker B".to_string()];
+        let passage = Passage::parse(
+            1,
+            "Booking",
+            "Speaker A: Well <sigh>, I suppose |mhm| so [music].\nSpeaker B: <laugh>\nSpeaker B: Fine <chuckle> by me | really!",
+            &labels,
+        )
+        .unwrap();
+        let speakers = vec![
+            SpeakerConfig::new(
+                "Speaker A",
+                crate::domain::Gender::Female,
+                crate::domain::Accent::British,
+                SpeakerRole::Receptionist,
+            )
+            .with_voice(Voice {
+                id: "en-gb-advisor-1".into(),
+                name: "Oliver".into(),
+                gender: crate::domain::Gender::Female,
+                accent: crate::domain::Accent::British,
+                source: VoiceSource::Library,
+                description: String::new(),
+            }),
+            SpeakerConfig::new(
+                "Speaker B",
+                crate::domain::Gender::Male,
+                crate::domain::Accent::American,
+                SpeakerRole::Guest,
+            ),
+        ];
+        let transcript = render_transcript(&passage, &speakers);
+        for markup in ['<', '>', '|', '[', ']'] {
+            assert!(!transcript.contains(markup), "{markup}: {transcript}");
+        }
+        assert!(transcript.contains("**Speaker A:** Well, I suppose so."));
+        assert!(transcript.contains("**Speaker B:** Fine by me really!"));
+        assert_eq!(transcript.matches("**Speaker B:**").count(), 1);
+        // The transcript names the voice; the paper never lists speakers.
+        assert!(
+            transcript.contains("- Speaker A: Female, British English, Receptionist; voice Oliver")
+        );
+        let format = ExamFormat::ielts_listening();
+        assert!(!render_part_paper(&format.parts[0], &[]).contains("Oliver"));
     }
 }

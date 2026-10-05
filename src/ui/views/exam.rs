@@ -136,6 +136,9 @@ pub struct ExamState {
     pub run: u32,
     /// The speaker whose edit dialog is open: (part index, speaker index).
     pub editing_speaker: Option<(usize, usize)>,
+    /// New scripts are expressive (`PassageRequest::expressive`): on for a
+    /// new exam, as saved for an opened one (off for exams from before 0.8).
+    pub expressive: bool,
 }
 
 impl Default for ExamState {
@@ -163,6 +166,7 @@ impl ExamState {
             key_source: None,
             run: 0,
             editing_speaker: None,
+            expressive: true,
         }
     }
 
@@ -192,6 +196,7 @@ impl ExamState {
             recording_job: self.audio.job_id.clone(),
             recording: self.audio.track.clone(),
             recording_stale: self.audio.stale,
+            expressive: self.expressive,
             created_at_secs: 0,
             updated_at_secs: 0,
         }
@@ -206,6 +211,7 @@ impl ExamState {
             recording_job,
             recording,
             recording_stale,
+            expressive,
             updated_at_secs,
             ..
         } = saved;
@@ -279,6 +285,7 @@ impl ExamState {
             key_source: self.key_source,
             run: self.run + 1,
             editing_speaker: None,
+            expressive,
         }
     }
 
@@ -694,6 +701,19 @@ pub fn ExamView() -> Element {
                         note_edit(state);
                     },
                 }
+                label { class: "expressive-toggle",
+                    input {
+                        r#type: "checkbox",
+                        checked: current.expressive,
+                        disabled: busy,
+                        onchange: move |evt| {
+                            state.write().expressive = evt.checked();
+                            note_edit(state);
+                        },
+                    }
+                    " Expressive delivery (sighs, laughs)"
+                }
+                p { class: "muted", "New scripts may carry a few sighs, coughs, laughs and chuckles that the voices perform. Transcripts, questions and downloads show only the words." }
                 p { class: "{save_class}", "{save_text}" }
                 {spend_view(current.spend)}
                 div { class: "download-buttons",
@@ -1234,6 +1254,7 @@ fn part_request(state: &ExamState, i: usize) -> Result<PassageRequest, String> {
         part: part.spec.number,
         topic: state.work[i].topic.clone(),
         speakers: part.speakers.clone(),
+        expressive: state.expressive,
     };
     request.validate().map_err(|e| e.to_string())?;
     Ok(request)

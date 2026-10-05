@@ -700,7 +700,12 @@ mod tests {
             &labels,
         )
         .unwrap();
-        let plan = super::super::synthesize::plan_passage(&passage, &assigned.speakers).unwrap();
+        let plan = super::super::synthesize::plan_passage(
+            &passage,
+            &assigned.speakers,
+            client.tts_model(),
+        )
+        .unwrap();
         let mut sent: Vec<&str> = plan
             .requests
             .iter()
@@ -764,7 +769,12 @@ mod tests {
         // The plan `synthesize_passage` follows, without the speech cache (it
         // needs the server's configuration).
         let before = client.usage();
-        let plan = super::super::synthesize::plan_passage(&passage, &assigned.speakers).unwrap();
+        let plan = super::super::synthesize::plan_passage(
+            &passage,
+            &assigned.speakers,
+            client.tts_model(),
+        )
+        .unwrap();
         let mut pcm = crate::infrastructure::audio::Pcm16::silence(0, 24_000);
         for (request, gap_ms) in plan.requests.iter().zip(&plan.gaps_ms) {
             pcm.append(&crate::infrastructure::audio::Pcm16::silence(

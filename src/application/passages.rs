@@ -33,6 +33,7 @@ pub async fn generate_passage(
             &spec,
             &request.topic,
             &request.speakers,
+            request.expressive,
         ))
         .await;
     usage::record(UsageStep::Script, exam, client.text_model(), &client).await;
@@ -70,6 +71,7 @@ mod tests {
             speakers: FormatId::IeltsListening.format().parts[0]
                 .default_speakers
                 .clone(),
+            expressive: true,
         };
         let spec = request.validate().unwrap();
         let draft = draft_from(

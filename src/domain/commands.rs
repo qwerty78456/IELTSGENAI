@@ -50,6 +50,11 @@ pub struct PassageRequest {
     pub part: u8,
     pub topic: String,
     pub speakers: Vec<SpeakerConfig>,
+    /// An expressive script: the prompt allows a few speech tags from
+    /// `EXAM_SPEECH_TAGS` (`<sigh>`, `<laugh>`...). Requests from before 0.8
+    /// write plain scripts.
+    #[serde(default)]
+    pub expressive: bool,
 }
 
 impl PassageRequest {
@@ -317,7 +322,32 @@ mod tests {
             part: 1,
             topic: "Booking a room at a sports centre".into(),
             speakers,
+            expressive: true,
         };
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn passage_requests_without_expressive_are_plain() {
+        let request = PassageRequest {
+            format: FormatId::IeltsListening,
+            part: 1,
+            topic: "Booking a room at a sports centre".into(),
+            speakers: FormatId::IeltsListening.format().parts[0]
+                .default_speakers
+                .clone(),
+            expressive: true,
+        };
+        let mut json = serde_json::to_value(&request).unwrap();
+        json.as_object_mut().unwrap().remove("expressive");
+        let loaded: PassageRequest = serde_json::from_value(json).unwrap();
+        assert!(!loaded.expressive);
+        assert_eq!(
+            PassageRequest {
+                expressive: true,
+                ..loaded
+            },
+            request
+        );
     }
 }

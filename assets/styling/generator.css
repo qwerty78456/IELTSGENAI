@@ -1010,6 +1010,20 @@ body {
     font-size: 0.9rem;
 }
 
+.expressive-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.75rem;
+    font-weight: 500;
+    color: #495057;
+    cursor: pointer;
+}
+
+.expressive-toggle + .muted {
+    margin: 0.25rem 0 0;
+}
+
 .panel-help {
     color: #555;
     font-size: 0.875rem;

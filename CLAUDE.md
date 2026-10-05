@@ -102,6 +102,17 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   and a unit test for the validator arm.
 - Passage speaker labels are always "Speaker A/B/C"; names live inside the lines. TTS and
   grounding checks depend on this.
+- Speech markup has one grammar, `domain/speech.rs`. `Line.text` keeps it and only the
+  teacher's on-screen script (`script_text()`) shows it. Transcripts never carry markup: question
+  prompts, "Download script", Markdown and DOCX use `transcript_text()` / `display_text()`,
+  grounding (`normalize`) and `word_count()` strip it, and TTS gets `speech_text()` (documented
+  tags kept, anything that would be read aloud dropped). `describe_with_voice()` is for
+  transcripts and keys only, never the student paper.
+- Adding a speech tag: measure it first with `tools/voice_lab.py probe --only E3` (put it in the
+  E3 sentences, mid-sentence, several takes; read the ear's `spoken_markup` and listen). Add it
+  to `EXAM_SPEECH_TAGS` only if it is performed and never read aloud; a tag read aloud even once
+  goes in `READ_ALOUD_TAGS`. Record the result under G3 in `docs/voices.md`. `SPEECH_TAGS`
+  follows Google's documentation only.
 - Every speaker of a part has a voice of its own (`SpeakerConfig.voice: VoiceChoice`: `Auto`,
   `Assigned` by the app, `Chosen` by the teacher and never replaced). The browser assigns as soon
   as the catalogue is there; `start_part_audio` / `start_exam_audio` assign again on the server
@@ -136,7 +147,10 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   `speech_metadata.style`, speakers in `speech_metadata.speaker` (`"SpeakerA"`, the label
   without spaces), never in the text. The style is per turn, short and the same for every turn
   of a speaker: its role's `delivery_style()` plus `EXAM_PACE` (long or changing styles make
-  voices drift). Never put accent, gender, age or a name in a style. At most two voices and 8,192
+  voices drift, gate G5: there is no per-line style). Never put accent, gender, age or a name in a
+  style. The only markup in the text is what `speech_text` keeps: the few `EXAM_SPEECH_TAGS` an
+  expressive script (`PassageRequest.expressive`) asks for, and `|backchannels|` only in a
+  two-voice request on a model that is not lite; tags are atomic and never count as words. At most two voices and 8,192
   input tokens per request, so `tts/synthesize.rs` (`plan_passage`) cuts a passage into chunks of
   at most 200 words and two speakers, listing the voices in label order, and joins them; a
   designed voice (`voice_…`) reads alone, one turn per request. At most 3 speech requests run at

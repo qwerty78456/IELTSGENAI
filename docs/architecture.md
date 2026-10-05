@@ -50,7 +50,8 @@ src/
     format.rs             ExamFormat, PartSpec, TaskSpec, TaskKind, WordLimit, PlayCount, PassageKind
                           + presets ExamFormat::ielts_listening(), ::hsg_national()
     speaker.rs            SpeakerConfig (label, gender, accent, role)
-    passage.rs            Passage / Line, parser for "Speaker A: ..." text, duration estimate
+    passage.rs            Passage / Line, parser for "Speaker A: ..." text, script/transcript views, duration estimate
+    speech.rs             speech markup: SPEECH_TAGS, EXAM_SPEECH_TAGS, display/speech text, markup problems
     task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty
     usage.rs              Usage (tokens + µUSD), UsageStep, ExamUsage (per step, budget)
     exam.rs               Exam aggregate: parts, answer key, completeness
@@ -185,7 +186,10 @@ The teacher edits; nothing is "final" until they say so.
   item's `speech_metadata.style`; with two voices each item also names its
   `speech_metadata.speaker`, the passage label without spaces (`SpeakerA`),
   matched to `speech_config {mode: conversational, speakers}`. Nothing but the
-  spoken words is ever in the text.
+  spoken words is ever in the text, apart from what `speech_text` keeps: the
+  few speech tags of an expressive script (`<sigh>`, `<cough>`, `<laugh>`,
+  `<chuckle>`, measured in `docs/voices.md`) and backchannels in a two-voice
+  request.
 * At most **two** voices and 8,192 input tokens per request, and a normal
   request stays open about a minute. A passage is therefore cut into chunks
   of consecutive turns, at most 200 words (about 80 s of audio, read in

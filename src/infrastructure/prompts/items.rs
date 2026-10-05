@@ -32,7 +32,8 @@ impl TaskDraftDto {
 }
 
 /// The question prompt for one task of a part. The passage is embedded in
-/// full; keys must be quoted verbatim so the validator can ground them.
+/// full as its transcript (the words a listener hears, no speech tags); keys
+/// must be quoted verbatim so the validator can ground them.
 pub fn task_prompt(
     part: &PartSpec,
     spec: &TaskSpec,
@@ -66,7 +67,7 @@ pub fn task_prompt(
         part.title,
         part.passage.label(),
         speaker_lines.join("\n"),
-        passage.script_text(),
+        passage.transcript_text(),
         spec.kind.label(),
         spec.first,
         spec.last,
@@ -166,5 +167,36 @@ mod tests {
         .unwrap();
         assert!(draft.shared_options.is_empty());
         assert_eq!(draft.items[0].options.len(), 1);
+    }
+
+    #[test]
+    fn question_prompts_quote_the_transcript() {
+        use crate::domain::FormatId;
+
+        let format = FormatId::IeltsListening.format();
+        let part = format.part(1).unwrap().clone();
+        let labels: Vec<String> = part
+            .default_speakers
+            .iter()
+            .map(|s| s.label.clone())
+            .collect();
+        let passage = Passage::parse(
+            1,
+            "booking",
+            "Speaker A: Good morning <laugh>, how can I help?
+Speaker B: I'd like to |mhm| book a room.",
+            &labels,
+        )
+        .unwrap();
+        let prompt = task_prompt(&part, &part.tasks[0], &passage, &part.default_speakers);
+        assert!(
+            prompt.contains("Speaker A: Good morning, how can I help?"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("Speaker B: I'd like to book a room."),
+            "{prompt}"
+        );
+        assert!(!prompt.contains("<laugh>") && !prompt.contains("|mhm|"));
     }
 }

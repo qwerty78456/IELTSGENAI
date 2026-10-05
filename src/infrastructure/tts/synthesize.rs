@@ -14,9 +14,17 @@
 //! limits, a failure costs one chunk rather than the passage, and an edit
 //! invalidates only its own chunk in the speech cache. A three-voice passage
 //! (the HSG interview) is simply chunked so that no chunk has a third voice.
+//!
+//! Each turn is sent as `speech::speech_text`: documented speech tags
+//! (`<sigh>`) are kept and performed, anything the model would read aloud by
+//! mistake (unknown tags, `[notes]`, stray pipes) is dropped, and
+//! `|backchannels|` survive only in a two-voice request on a model that
+//! performs them. A tag is one token wherever a turn is cut and never counts
+//! towards the word budget.
 
 use futures_util::{StreamExt, TryStreamExt, stream};
 
+use crate::domain::speech::{self, Token};
 use crate::domain::{
     DomainError, Passage, SpeakerConfig, SpeakerRole, Voice, VoiceSource, voice_conflicts,
 };
@@ -100,6 +108,13 @@ pub fn reads_alone(voice: &Voice) -> bool {
     PER_TURN_ALL || voice.source == VoiceSource::Designed || Voice::is_designed_id(&voice.id)
 }
 
+/// Whether a TTS model performs `|backchannels|`: 3.8 Flash TTS does, the
+/// lite model is not documented to (Google: "works best with
+/// gemini-3.8-flash-tts").
+pub fn performs_backchannels(model: &str) -> bool {
+    !model.contains("lite")
+}
+
 /// Synthesises a whole passage with each speaker's own voice. Returns 24 kHz
 /// mono PCM. `reuse` decides whether earlier takes of a chunk may be reused.
 pub async fn synthesize_passage(
@@ -111,7 +126,7 @@ pub async fn synthesize_passage(
     if let Some(conflict) = voice_conflicts(speakers).into_iter().next() {
         return Err(TtsError::SharedVoice(conflict));
     }
-    let plan = plan_passage(passage, speakers)?;
+    let plan = plan_passage(passage, speakers, client.tts_model())?;
     // The futures are made up front: a stream that maps with a closure here
     // is not provably `Send` for every lifetime, which `tokio::spawn` needs.
     let requests: Vec<_> = plan
@@ -155,12 +170,14 @@ impl super::super::audio::Announcer for GeminiClient {
     }
 }
 
-/// The requests that read `passage`, without sending any. Every speaker who
-/// speaks needs a voice (`NoVoice` otherwise); the same voice table serves
-/// every chunk.
+/// The requests that read `passage` on the TTS `model`, without sending any.
+/// Every speaker who speaks needs a voice (`NoVoice` otherwise); the same
+/// voice table serves every chunk. A turn with nothing left to say once its
+/// markup is cleaned (a lone `[music]`) is skipped.
 pub fn plan_passage(
     passage: &Passage,
     speakers: &[SpeakerConfig],
+    model: &str,
 ) -> Result<PassagePlan, TtsError> {
     let mut table: Vec<(&SpeakerConfig, &Voice)> = Vec::new();
     for label in passage.speakers_used() {
@@ -182,30 +199,33 @@ pub fn plan_passage(
             voice: voice.id.clone(),
         })
         .collect();
-    let turns = passage
-        .lines
-        .iter()
-        .map(|line| {
-            let (speaker, _) = table
-                .iter()
-                .find(|(s, _)| s.label == line.speaker)
-                .ok_or_else(|| TtsError::NoVoice(line.speaker.clone()))?;
-            Ok(Turn {
-                speaker: line.speaker.clone(),
-                text: line.text.clone(),
-                style: speaker_style(&speaker.role),
-            })
-        })
-        .collect::<Result<Vec<Turn>, TtsError>>()?;
+    let mut turns = Vec::with_capacity(passage.lines.len());
+    for line in &passage.lines {
+        let (speaker, _) = table
+            .iter()
+            .find(|(s, _)| s.label == line.speaker)
+            .ok_or_else(|| TtsError::NoVoice(line.speaker.clone()))?;
+        // Backchannels are kept here and dropped per chunk (`chunk_request`).
+        let text = line.speech_text(true);
+        if text.is_empty() {
+            continue;
+        }
+        turns.push(Turn {
+            speaker: line.speaker.clone(),
+            text,
+            style: speaker_style(&speaker.role),
+        });
+    }
     let alone = |label: &str| {
         table
             .iter()
             .any(|(speaker, voice)| speaker.label == label && reads_alone(voice))
     };
     let chunks = speech_chunks(&merge_turns(&turns), MAX_WORDS_PER_REQUEST, alone);
+    let backchannels = performs_backchannels(model);
     let requests = chunks
         .iter()
-        .map(|chunk| chunk_request(chunk, &assignments))
+        .map(|chunk| chunk_request(chunk, &assignments, backchannels))
         .collect::<Result<Vec<_>, _>>()?;
     Ok(PassagePlan {
         requests,
@@ -231,10 +251,13 @@ fn gaps(chunks: &[Vec<Turn>]) -> Vec<u32> {
 
 /// One request for a chunk: the voices of the speakers in it, in label
 /// order (as `assignments` is), and one turn per stretch. A one-voice chunk
-/// names no speaker.
+/// names no speaker. `|backchannels|` stay only in a two-voice chunk and
+/// only when `backchannels` (the model performs them); elsewhere a listener
+/// would hear nobody answer, so they are dropped.
 fn chunk_request(
     chunk: &[Turn],
     assignments: &[VoiceAssignment],
+    backchannels: bool,
 ) -> Result<SpeechRequest, TtsError> {
     for turn in chunk {
         if assignments.iter().all(|a| a.label != turn.speaker) {
@@ -247,18 +270,27 @@ fn chunk_request(
         .cloned()
         .collect();
     let one_voice = voices.len() == 1;
+    let keep_backchannels = backchannels && voices.len() == MAX_MULTI_SPEAKER_VOICES;
     let turns: Vec<SpeechTurn> = chunk
         .iter()
         .map(|turn| SpeechTurn {
             speaker: (!one_voice).then(|| turn.speaker.clone()),
-            text: turn.text.clone(),
+            text: if keep_backchannels {
+                turn.text.clone()
+            } else {
+                speech::speech_text(&turn.text, false)
+            },
             style: turn.style.clone(),
         })
         .collect();
-    let count = |text: &str| text.split_whitespace().count();
-    let words: usize = chunk.iter().map(|t| count(&t.text)).sum();
-    let style_words: usize = chunk.iter().map(|t| count(&t.style)).sum();
-    if estimate_tokens(words, style_words, turns.len()) >= TTS_MAX_INPUT_TOKENS {
+    let tokens: Vec<Token> = turns.iter().flat_map(|t| speech::tokens(&t.text)).collect();
+    let words = tokens.iter().filter(|t| t.spoken).count();
+    let markup = tokens.len() - words;
+    let style_words: usize = chunk
+        .iter()
+        .map(|t| t.style.split_whitespace().count())
+        .sum();
+    if estimate_tokens(words, markup, style_words, turns.len()) >= TTS_MAX_INPUT_TOKENS {
         return Err(TtsError::Llm(LlmError::Malformed(
             "a speech chunk is longer than one request allows".into(),
         )));
@@ -267,14 +299,16 @@ fn chunk_request(
 }
 
 /// Rough input-token estimate: about 1.4 tokens per English word, text and
-/// styles alike, plus the per-turn annotation, with headroom.
-fn estimate_tokens(words: usize, style_words: usize, turns: usize) -> usize {
-    ((words + style_words) as f32 * 1.4) as usize + turns * 16 + 64
+/// styles alike, a few per speech tag, plus the per-turn annotation, with
+/// headroom.
+fn estimate_tokens(words: usize, markup: usize, style_words: usize, turns: usize) -> usize {
+    ((words + style_words) as f32 * 1.4) as usize + markup * 4 + turns * 16 + 64
 }
 
 /// Cuts turns into request-sized chunks. A turn longer than `max_words` is
 /// split at sentence ends (at word boundaries for a sentence that is itself
-/// too long). A chunk never exceeds `max_words` words or
+/// too long). Speech tags never count as words. A chunk never exceeds
+/// `max_words` words or
 /// `MAX_MULTI_SPEAKER_VOICES` speakers, a speaker for whom `alone` holds
 /// never shares one, and the order of the words never changes.
 fn speech_chunks(turns: &[Turn], max_words: usize, alone: impl Fn(&str) -> bool) -> Vec<Vec<Turn>> {
@@ -284,7 +318,7 @@ fn speech_chunks(turns: &[Turn], max_words: usize, alone: impl Fn(&str) -> bool)
     let mut current_words = 0;
     for turn in turns {
         for piece in split_turn(&turn.text, max_words) {
-            let words = piece.split_whitespace().count();
+            let words = speech::spoken_words(&piece);
             let new_speaker = current.iter().all(|t| t.speaker != turn.speaker);
             let speakers = current
                 .iter()
@@ -324,38 +358,53 @@ fn speech_chunks(turns: &[Turn], max_words: usize, alone: impl Fn(&str) -> bool)
     chunks
 }
 
-/// A turn as pieces of at most `max_words` words, broken after sentence ends
-/// where possible. A turn that fits is returned unchanged.
+/// A turn as pieces of at most `max_words` spoken words, broken after
+/// sentence ends where possible. Speech tags and backchannels are tokens of
+/// their own (`speech::tokens`): never cut, never counted, kept with the
+/// word before them. A turn that fits is returned unchanged.
 fn split_turn(text: &str, max_words: usize) -> Vec<String> {
-    let words: Vec<&str> = text.split_whitespace().collect();
-    if words.len() <= max_words {
+    let tokens = speech::tokens(text);
+    let spoken = |tokens: &[Token]| tokens.iter().filter(|t| t.spoken).count();
+    if spoken(&tokens) <= max_words {
         return vec![text.trim().to_string()];
     }
-    let mut sentences: Vec<Vec<&str>> = vec![Vec::new()];
-    for word in words {
-        sentences.last_mut().expect("never empty").push(word);
-        let end = word.trim_end_matches(['"', '\'', ')', ']', '”', '’']);
-        if end.ends_with(['.', '?', '!']) {
+    let join = |tokens: &[Token]| tokens.iter().map(|t| t.text).collect::<Vec<_>>().join(" ");
+    let mut sentences: Vec<Vec<Token>> = vec![Vec::new()];
+    let mut ended = false;
+    for token in tokens {
+        // Markup after a sentence end stays with that sentence, so a piece
+        // never opens with a tag (where the model tends to drop it).
+        if ended && token.spoken {
             sentences.push(Vec::new());
+        }
+        sentences.last_mut().expect("never empty").push(token);
+        if token.spoken {
+            let end = token.text.trim_end_matches(['"', '\'', ')', ']', '”', '’']);
+            ended = end.ends_with(['.', '?', '!']);
         }
     }
     let mut pieces: Vec<String> = Vec::new();
-    let mut piece: Vec<&str> = Vec::new();
+    let mut piece: Vec<Token> = Vec::new();
     for sentence in sentences.into_iter().filter(|s| !s.is_empty()) {
-        if !piece.is_empty() && piece.len() + sentence.len() > max_words {
-            pieces.push(piece.join(" "));
+        let words = spoken(&sentence);
+        if !piece.is_empty() && spoken(&piece) + words > max_words {
+            pieces.push(join(&piece));
             piece.clear();
         }
-        if sentence.len() > max_words {
-            for part in sentence.chunks(max_words) {
-                pieces.push(part.join(" "));
+        if words > max_words {
+            for token in sentence {
+                if token.spoken && spoken(&piece) == max_words {
+                    pieces.push(join(&piece));
+                    piece.clear();
+                }
+                piece.push(token);
             }
         } else {
             piece.extend(sentence);
         }
     }
     if !piece.is_empty() {
-        pieces.push(piece.join(" "));
+        pieces.push(join(&piece));
     }
     pieces
 }
@@ -379,6 +428,8 @@ fn merge_turns(turns: &[Turn]) -> Vec<Turn> {
 mod tests {
     use super::*;
     use crate::domain::{Accent, Gender, Line, VoiceChoice};
+
+    const MODEL: &str = "gemini-3.8-flash-tts";
 
     fn turn(s: &str, t: &str) -> Turn {
         Turn {
@@ -427,10 +478,7 @@ mod tests {
             topic: "test".into(),
             lines: lines
                 .iter()
-                .map(|(speaker, text)| Line {
-                    speaker: speaker.to_string(),
-                    text: text.to_string(),
-                })
+                .map(|(speaker, text)| Line::new(*speaker, *text))
                 .collect(),
             written_for: Vec::new(),
         }
@@ -548,7 +596,7 @@ mod tests {
                 voice: "en-gb-assistant-2".into(),
             },
         ];
-        let solo = chunk_request(&[turn("Speaker B", "Just me.")], &assignments).unwrap();
+        let solo = chunk_request(&[turn("Speaker B", "Just me.")], &assignments, true).unwrap();
         assert_eq!(solo.voices.len(), 1);
         assert_eq!(solo.voices[0].voice, "en-gb-assistant-2");
         assert_eq!(solo.turns[0].speaker, None);
@@ -559,11 +607,12 @@ mod tests {
                 turn("Speaker A", "Thanks."),
             ],
             &assignments,
+            true,
         )
         .unwrap();
         assert_eq!(pair.turns[1].speaker.as_deref(), Some("Speaker A"));
         assert!(!pair.turns.iter().any(|t| t.text.contains("Speaker")));
-        assert!(chunk_request(&[turn("Speaker C", "Who?")], &assignments).is_err());
+        assert!(chunk_request(&[turn("Speaker C", "Who?")], &assignments, true).is_err());
     }
 
     #[test]
@@ -575,6 +624,7 @@ mod tests {
         let plan = plan_passage(
             &passage(&[("Speaker B", "You first."), ("Speaker A", "Thank you.")]),
             &speakers,
+            MODEL,
         )
         .unwrap();
         assert_eq!(plan.requests.len(), 1);
@@ -624,7 +674,7 @@ mod tests {
                 )
             })
             .collect();
-        let plan = plan_passage(&passage(&lines), &speakers).unwrap();
+        let plan = plan_passage(&passage(&lines), &speakers, MODEL).unwrap();
         assert!(plan.requests.len() > 3);
         for request in &plan.requests {
             assert!(request.voices.len() <= MAX_MULTI_SPEAKER_VOICES);
@@ -648,7 +698,7 @@ mod tests {
         let mut unvoiced = speakers.to_vec();
         unvoiced[1].voice = VoiceChoice::Auto;
         assert!(matches!(
-            plan_passage(&passage(&lines), &unvoiced),
+            plan_passage(&passage(&lines), &unvoiced, MODEL),
             Err(TtsError::NoVoice(label)) if label == "Speaker B"
         ));
     }
@@ -667,6 +717,7 @@ mod tests {
         let plan = plan_passage(
             &passage(&[("Speaker A", "Good morning."), ("Speaker B", "Hello.")]),
             &speakers,
+            MODEL,
         )
         .unwrap();
         let styles: Vec<&str> = plan.requests[0]
@@ -718,7 +769,7 @@ mod tests {
             ("Speaker B", "Rivers matter."),
             ("Speaker A", "Indeed they do."),
         ];
-        let plan = plan_passage(&passage(&lines), &speakers).unwrap();
+        let plan = plan_passage(&passage(&lines), &speakers, MODEL).unwrap();
         for request in &plan.requests {
             if request.voices.iter().any(|v| v.voice.starts_with("voice_")) {
                 assert_eq!(request.voices.len(), 1, "{request:?}");
@@ -756,6 +807,7 @@ mod tests {
                 ("Speaker A", "Bye."),
             ]),
             &speakers,
+            MODEL,
         )
         .unwrap();
         if PER_TURN_ALL {
@@ -787,11 +839,107 @@ mod tests {
                 ("Speaker A", "Thank you."),
             ]),
             &speakers,
+            MODEL,
         )
         .unwrap();
         // A | B (two chunks of one long turn) | A.
         assert_eq!(plan.requests.len(), 4);
         assert_eq!(plan.gaps_ms, [0, TURN_GAP_MS, CHUNK_GAP_MS, TURN_GAP_MS]);
         assert_eq!(plan.gaps_ms.len(), plan.requests.len());
+    }
+
+    #[test]
+    fn tags_are_atomic_and_do_not_count() {
+        // Eight words and two tags: the budget of four cuts at the sentence end.
+        let text = "One two <short pause> three four. Five six <sigh> seven eight.";
+        assert_eq!(
+            split_turn(text, 4),
+            [
+                "One two <short pause> three four.",
+                "Five six <sigh> seven eight."
+            ]
+        );
+        // A tag after a sentence end stays with that sentence.
+        assert_eq!(
+            split_turn("One two three four. <sigh> Five six seven eight.", 4),
+            ["One two three four. <sigh>", "Five six seven eight."]
+        );
+        // A tag is never cut, even where a run-on sentence is cut at words.
+        let pieces = split_turn("a b <short pause> c d |oh really?| e", 2);
+        assert_eq!(pieces, ["a b <short pause>", "c d |oh really?|", "e"]);
+        // Tags do not use up the budget of a chunk.
+        let turns = [
+            turn("Speaker A", "One <laugh> two <sigh> three."),
+            turn("Speaker B", "Four <cough> five."),
+        ];
+        assert_eq!(speech_chunks(&turns, 5, no_one_alone).len(), 1);
+        assert_eq!(speech_chunks(&turns, 4, no_one_alone).len(), 2);
+        // They are counted lightly in the token estimate.
+        assert!(estimate_tokens(10, 2, 0, 1) > estimate_tokens(10, 0, 0, 1));
+        assert!(estimate_tokens(10, 2, 0, 1) < estimate_tokens(12, 0, 0, 1) + 8);
+    }
+
+    #[test]
+    fn unknown_markup_never_reaches_tts() {
+        let speakers = [
+            voiced("Speaker A", Gender::Female, SpeakerRole::Host, "en-gb-a"),
+            voiced("Speaker B", Gender::Male, SpeakerRole::Guest, "en-gb-b"),
+            voiced("Speaker C", Gender::Male, SpeakerRole::Expert, "en-gb-c"),
+        ];
+        let lines = [
+            ("Speaker A", "Welcome <smirk> to the show [music] today."),
+            (
+                "Speaker B",
+                "Thanks |mhm| for <long pause> having me | here <Sigh>, really.",
+            ),
+            ("Speaker C", "[applause]"),
+            ("Speaker C", "And me |uh-huh| too."),
+        ];
+        let sent = |model: &str| -> Vec<(usize, String)> {
+            let plan = plan_passage(&passage(&lines), &speakers, model).unwrap();
+            plan.requests
+                .iter()
+                .flat_map(|r| r.turns.iter().map(|t| (r.voices.len(), t.text.clone())))
+                .collect()
+        };
+        for model in [MODEL, "gemini-3.8-flash-lite-tts"] {
+            let turns = sent(model);
+            // The lone "[applause]" turn is skipped.
+            assert_eq!(turns.len(), 3, "{turns:?}");
+            for (_, text) in &turns {
+                for unwanted in ["smirk", "[", "]", "long pause", "applause"] {
+                    assert!(!text.contains(unwanted), "{model}: {text}");
+                }
+            }
+            assert_eq!(turns[0].1, "Welcome to the show today.");
+            assert!(turns[1].1.contains("<sigh>, really."), "{turns:?}");
+        }
+        // Backchannels: kept in A and B's two-voice request on Flash TTS only;
+        // C reads alone, where nobody could answer.
+        let flash = sent(MODEL);
+        assert_eq!(
+            flash[1],
+            (
+                2,
+                "Thanks |mhm| for having me here <sigh>, really.".to_string()
+            )
+        );
+        assert_eq!(flash[2], (1, "And me too.".to_string()));
+        let lite = sent("gemini-3.8-flash-lite-tts");
+        assert_eq!(lite[1].1, "Thanks for having me here <sigh>, really.");
+        assert!(lite.iter().all(|(_, text)| !text.contains('|')));
+    }
+
+    #[test]
+    fn plain_scripts_are_sent_unchanged() {
+        let speakers = [voiced(
+            "Speaker A",
+            Gender::Female,
+            SpeakerRole::Host,
+            "en-gb-a",
+        )];
+        let text = "Good morning, everyone.  Today we look at rivers.";
+        let plan = plan_passage(&passage(&[("Speaker A", text)]), &speakers, MODEL).unwrap();
+        assert_eq!(plan.requests[0].turns[0].text, text);
     }
 }

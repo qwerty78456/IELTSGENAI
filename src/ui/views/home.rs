@@ -39,6 +39,8 @@ pub struct HomeState {
     pub topic: String,
     pub topic_error: Option<String>,
     pub is_generating_topic: bool,
+    /// New scripts are expressive (`PassageRequest::expressive`); on by default.
+    pub expressive: bool,
 
     /// The line-up once it differs from the part's defaults (an edit, or
     /// voices assigned); empty means the defaults. See `effective_speakers`.
@@ -90,6 +92,7 @@ impl HomeState {
             topic: String::new(),
             topic_error: None,
             is_generating_topic: false,
+            expressive: true,
             custom_speakers: Vec::new(),
             show_speakers: false,
             editing_speaker_idx: None,
@@ -111,10 +114,12 @@ impl HomeState {
         }
     }
 
-    /// A fresh state for another format that still supersedes runs in flight.
+    /// A fresh state for another format that still supersedes runs in flight
+    /// and keeps the teacher's choice of expressive scripts.
     fn switch_format(&self, format: FormatId) -> Self {
         Self {
             run: self.run + 1,
+            expressive: self.expressive,
             ..Self::for_format(format)
         }
     }
@@ -545,6 +550,16 @@ pub fn Home() -> Element {
                     if let Some(error) = state().topic_error.clone() {
                         div { class: "error-message", "{error}" }
                     }
+                    label { class: "expressive-toggle",
+                        input {
+                            r#type: "checkbox",
+                            checked: state().expressive,
+                            disabled: state().is_busy(),
+                            onchange: move |evt| state.write().expressive = evt.checked(),
+                        }
+                        " Expressive delivery (sighs, laughs)"
+                    }
+                    p { class: "muted", "New scripts may carry a few sighs, coughs, laughs and chuckles that the voices perform. Transcripts, questions and downloads show only the words." }
                 }
 
                 // Column 2: speakers
@@ -694,8 +709,9 @@ pub fn Home() -> Element {
                                 }
                                 button {
                                     class: "download-button secondary",
+                                    title: "The words of the script, without speech tags such as <sigh>",
                                     onclick: {
-                                        let script = passage.script_text();
+                                        let script = passage.transcript_text();
                                         let name = format!("{file_prefix}_script.txt");
                                         move |_| download_text(&script, &name)
                                     },
@@ -840,6 +856,7 @@ fn build_script_request(
         part: state.part,
         topic: state.topic.clone(),
         speakers,
+        expressive: state.expressive,
     };
     request.validate().map_err(|e| e.to_string())?;
     Ok(request)

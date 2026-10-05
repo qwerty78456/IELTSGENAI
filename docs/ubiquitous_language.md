@@ -18,7 +18,11 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Voice choice** (`VoiceChoice`) | How a speaker got its voice: Automatic (none yet), assigned by the app, or chosen by the teacher (kept). | |
 | **Voice catalogue** (`VoiceCatalogue`) | Every voice this server gives speakers (the pools, in preference order) and the announcer: the built-in pools plus `voices.json` overrides. | "voice list" is fine in UI text |
 | **Voice sample** (`VoiceSample`) | A short recording of one voice, made once and kept, behind "Listen". | "preview" |
-| **Delivery style** (`SpeakerRole::delivery_style`) | A few words on how a speaker sounds ("polite and helpful"), sent beside the text and never spoken; never age, gender, accent or a name. | "stage direction" |
+| **Delivery style** (`SpeakerRole::delivery_style`) | A few words on how a speaker sounds ("polite and helpful"), sent beside the text and never spoken; never age, gender, accent or a name. One per speaker, the same on every turn: there is no per-line style (it moves the voice). | "stage direction" |
+| **Speech tag** (`speech::SPEECH_TAGS`, `EXAM_SPEECH_TAGS`) | A sound written inside a line in angle brackets, `<sigh>`, that the speech model performs instead of reading. Scripts ask only for `<sigh>`, `<cough>`, `<laugh>`, `<chuckle>`, mid-sentence; transcripts, questions and grounding never see them. | "[sigh]", "(laughs)", "emotion tag" |
+| **Backchannel** | A listener's short reaction inside the other speaker's turn, written `\|mhm\|`. Recognised and kept only in a two-voice request on Flash TTS; never asked for, never printed. | |
+| **Expressive script** (`PassageRequest::expressive`) | A script that may carry a few speech tags, one every few turns; its emotion otherwise comes from wording and punctuation. On by default for new work. | "emotional script" |
+| **Transcript** (`Passage::transcript_text`) | The words a listener hears, by speaker, without speech tags: what is printed, downloaded and quoted to question prompts. The **script** (`script_text`) is the same with its tags, for the teacher's screen. | |
 | **Task** | One question block under one rubric: a task kind over a contiguous item range. | "exercise", "section" |
 | **Task kind** (`TaskKind`) | T/F/NG, who-mentioned, multiple selection, multiple choice, short answer, summary / note / sentence completion, matching. | |
 | **Item** | One numbered question with its key and evidence. | "question" is fine in UI text; the type is `Item` |

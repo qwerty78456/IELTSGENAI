@@ -269,20 +269,26 @@ fn key_table(entries: &[KeyEntry]) -> Table {
         .layout(TableLayoutType::Fixed)
 }
 
-/// The script with the voice line-up, for the teacher's copy.
+/// The transcript with the voice line-up, for the teacher's copy (never
+/// the student paper, which names no voice): the words a listener hears,
+/// without speech tags.
 fn transcript_blocks(mut docx: Docx, passage: &Passage, speakers: &[SpeakerConfig]) -> Docx {
     docx = docx
         .add_paragraph(bold(&format!("Transcript - Part {}", passage.part)))
         .add_paragraph(italic(&passage.topic));
     for speaker in speakers {
-        docx = docx.add_paragraph(para(&speaker.describe()));
+        docx = docx.add_paragraph(para(&speaker.describe_with_voice()));
     }
     docx = docx.add_paragraph(blank());
     for line in &passage.lines {
+        let words = line.display_text();
+        if words.is_empty() {
+            continue;
+        }
         docx = docx.add_paragraph(
             Paragraph::new()
                 .add_run(text(&format!("{}: ", line.speaker)).bold())
-                .add_run(text(&line.text)),
+                .add_run(text(&words)),
         );
     }
     docx.add_paragraph(blank())
@@ -569,6 +575,7 @@ mod tests {
             recording_job: None,
             recording: None,
             recording_stale: false,
+            expressive: false,
             created_at_secs: 0,
             updated_at_secs: 0,
         };
@@ -588,5 +595,49 @@ mod tests {
         assert!(bytes.len() > 2_000);
         let part = render_part_docx(&ExamFormat::hsg_national().parts[0], &[], None);
         assert_eq!(&part[..4], b"PK\x03\x04");
+    }
+
+    #[test]
+    fn transcripts_have_no_delivery_tags() {
+        use crate::domain::{Voice, VoiceSource};
+
+        let mut exam = filled_exam();
+        let part = &mut exam.parts[0];
+        let labels: Vec<String> = part.speakers.iter().map(|s| s.label.clone()).collect();
+        part.passage = Some(
+            Passage::parse(
+                1,
+                "Topic 1",
+                "Speaker A: Well <sigh>, I suppose |mhm| so [music].\nSpeaker B: <laugh>\nSpeaker C: Fine <chuckle> by me | really!",
+                &labels,
+            )
+            .unwrap(),
+        );
+        let voiced = part.speakers[0].clone().with_voice(Voice {
+            id: "en-gb-advisor-1".into(),
+            name: "Oliver".into(),
+            gender: part.speakers[0].gender,
+            accent: part.speakers[0].accent,
+            source: VoiceSource::Library,
+            description: String::new(),
+        });
+        part.speakers[0] = voiced;
+        let part = &exam.parts[0];
+        let passage = part.passage.as_ref().unwrap();
+        let transcript = document_xml(transcript_blocks(Docx::new(), passage, &part.speakers));
+        // Markup would appear escaped ("&lt;") or as itself.
+        for markup in ["&lt;", "&gt;", "|", "[", "]"] {
+            assert!(!transcript.contains(markup), "{markup}");
+        }
+        assert!(transcript.contains("Well, I suppose so."));
+        assert!(transcript.contains("Fine by me really!"));
+        assert!(transcript.contains("; voice Oliver"));
+        // The whole exam: transcripts clean, and the voice only in the transcripts.
+        let whole = document_xml(exam_document(&exam));
+        for markup in ["&lt;sigh", "&lt;laugh", "|mhm|", "[music]"] {
+            assert!(!whole.contains(markup), "{markup}");
+        }
+        let transcripts_at = whole.find(">Transcripts</w:t>").unwrap();
+        assert!(!whole[..transcripts_at].contains("Oliver"));
     }
 }

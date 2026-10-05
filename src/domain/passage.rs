@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::error::DomainError;
 use super::speaker::SpeakerConfig;
+use super::speech;
 use super::voice::{SpeakerChange, speaker_change};
 
 /// Speaking rate used to estimate a script's duration before synthesis.
@@ -13,7 +14,27 @@ pub const WORDS_PER_MINUTE: f32 = 150.0;
 pub struct Line {
     /// A `SpeakerConfig::label`, e.g. "Speaker A".
     pub speaker: String,
+    /// The spoken words, plus any speech markup (`<sigh>`, see `speech`).
     pub text: String,
+}
+
+impl Line {
+    pub fn new(speaker: impl Into<String>, text: impl Into<String>) -> Self {
+        Self {
+            speaker: speaker.into(),
+            text: text.into(),
+        }
+    }
+
+    /// What a listener hears: the text without speech markup.
+    pub fn display_text(&self) -> String {
+        speech::display_text(&self.text)
+    }
+
+    /// What the speech model gets (`speech::speech_text`).
+    pub fn speech_text(&self, backchannels: bool) -> String {
+        speech::speech_text(&self.text, backchannels)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,9 +120,9 @@ impl Passage {
         speaker_change(&self.written_for, current)
     }
 
-    /// The canonical "Speaker A: ..." text, one turn per line. This is what
-    /// the question prompts quote and what the teacher sees; text-to-speech
-    /// gets the lines without labels (Gemini reads its input verbatim).
+    /// The canonical "Speaker A: ..." text, one turn per line, speech tags
+    /// included: what the teacher sees on screen. Text-to-speech gets the
+    /// lines without labels (Gemini reads its input verbatim).
     pub fn script_text(&self) -> String {
         self.lines
             .iter()
@@ -110,17 +131,36 @@ impl Passage {
             .join("\n")
     }
 
-    /// Spoken words only, used for grounding checks.
+    /// "Speaker A: ..." lines with the words a listener hears and no speech
+    /// markup: what question prompts quote and what is downloaded and printed
+    /// as the transcript. A turn that is only markup is left out.
+    pub fn transcript_text(&self) -> String {
+        self.lines
+            .iter()
+            .filter_map(|l| {
+                let words = l.display_text();
+                (!words.is_empty()).then(|| format!("{}: {words}", l.speaker))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Spoken words only, without speech markup: the grounding haystack.
     pub fn plain_text(&self) -> String {
         self.lines
             .iter()
-            .map(|l| l.text.as_str())
+            .map(Line::display_text)
+            .filter(|words| !words.is_empty())
             .collect::<Vec<_>>()
             .join(" ")
     }
 
+    /// Words a listener hears; speech tags never count.
     pub fn word_count(&self) -> usize {
-        self.lines.iter().map(|l| count_words(&l.text)).sum()
+        self.lines
+            .iter()
+            .map(|l| count_words(&l.display_text()))
+            .sum()
     }
 
     pub fn estimated_minutes(&self) -> f32 {
@@ -169,6 +209,34 @@ mod tests {
         assert_eq!(passage.lines[1].text, "Hello, how are you?");
         assert_eq!(passage.speakers_used(), labels());
         assert_eq!(passage.word_count(), 7);
+    }
+
+    #[test]
+    fn text_views_keep_or_drop_speech_markup() {
+        let text = "Speaker A: Well <sigh>, I suppose |mhm| so.\nSpeaker B: <laugh>\nSpeaker B: Fine [music] by me!";
+        let passage = Passage::parse(1, "markup", text, &labels()).unwrap();
+        // The teacher's view keeps the tags; parse keeps them in the line.
+        assert_eq!(passage.script_text(), text);
+        assert_eq!(passage.lines[0].text, "Well <sigh>, I suppose |mhm| so.");
+        assert_eq!(
+            passage.transcript_text(),
+            "Speaker A: Well, I suppose so.\nSpeaker B: Fine by me!"
+        );
+        assert_eq!(passage.plain_text(), "Well, I suppose so. Fine by me!");
+        assert_eq!(passage.word_count(), 7);
+        assert_eq!(
+            passage.lines[0].speech_text(false),
+            "Well <sigh>, I suppose so."
+        );
+        assert_eq!(
+            passage.lines[0].speech_text(true),
+            "Well <sigh>, I suppose |mhm| so."
+        );
+        let line = Line::new("Speaker A", "Hi <laugh> there.");
+        assert_eq!(
+            (line.speaker.as_str(), line.display_text().as_str()),
+            ("Speaker A", "Hi there.")
+        );
     }
 
     #[test]

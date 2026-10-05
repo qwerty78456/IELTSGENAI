@@ -109,10 +109,51 @@ marks nothing. A regenerated script still flags the exam recording
 Vec<SpeakerConfig>` (the line-up the script was written for; `#[serde(default)]`,
 empty before 0.8). `generate_passage` returns `parse(..).for_speakers(&request.speakers)`;
 `speakers_changed(&current) -> SpeakerChange` compares with it (all false when
-empty). `Passage::parse` reads "Speaker A: ..." text; `script_text()` is the canonical
-labelled form (question prompts, the teacher's view); `plain_text()` is used for
-grounding; `estimated_minutes()` assumes 150 words per minute. Text-to-speech
-receives the lines without labels, the speaker travelling beside each line.
+empty). `Passage::parse` reads "Speaker A: ..." text. `Line.text` keeps any
+speech markup (below); `Line::display_text()` and `Line::speech_text(backchannels)`
+are its two readings. The text views:
+
+| View | Markup | Used by |
+|------|--------|---------|
+| `script_text()` | kept | the teacher's on-screen script |
+| `transcript_text()` | none | question prompts, "Download script", transcripts |
+| `plain_text()` | none | grounding (`normalize` strips markup too) |
+| `word_count()` / `estimated_minutes()` | not counted | length checks (150 words per minute) |
+
+Text-to-speech receives each line's `speech_text` without labels, the speaker
+travelling beside each line.
+
+### Speech markup (`speech.rs`)
+Gemini 3.8 TTS reads its text aloud except inline tags in angle brackets
+(`<sigh>`), which it performs, and `|backchannels|` in a two-voice request. The
+one grammar for that markup:
+- `SPEECH_TAGS` — every tag Google documents for 3.8, variants included; used to
+  recognise markup. `speech_tag(name)` gives the documented form (lower case,
+  "laughs" read as "laugh").
+- `EXAM_SPEECH_TAGS` — `sigh`, `cough`, `laugh`, `chuckle`: the only tags an
+  expressive script asks for (measured, `docs/voices.md` gate G3).
+  `READ_ALOUD_TAGS` — `long pause`, `whispers`, `whispering`: heard read aloud,
+  never sent.
+- The scanner: `<x>` is a tag when x is 1-32 letters, spaces, hyphens or
+  apostrophes starting and ending with a letter (so `5 < 6` stays text); `[x]`
+  on one line is a note; `|x|` is a backchannel; any other `|` is a stray pipe.
+- `display_text(text)` — the words a listener hears: all markup removed, the
+  seams tidied (one space, none before punctuation, no comma left over).
+- `speech_text(text, backchannels)` — what TTS gets: documented tags kept in
+  lower case (except `READ_ALOUD_TAGS`), unknown tags, notes and stray pipes
+  dropped, backchannels kept only when asked for. Text without markup is
+  returned unchanged, so earlier takes stay cached.
+- `tokens(text)` / `spoken_words(text)` — whitespace-separated pieces with
+  markup kept whole; a tag never counts as a word.
+- `markup_problems(text)` — teacher-readable problems with one turn: an unknown
+  tag, a tag read aloud, a tag not tested for exams, a `[note]` (except
+  `[FILL ...]`, a gap), a stray pipe, `(laughs)` or `*sighs*` written as a stage
+  direction, a tag opening the turn, more than one tag in a turn under 40 words.
+
+There is no per-line delivery style: a style that changes between lines moves
+the voice (gate G5), so every turn of a speaker keeps its role's
+`delivery_style()` and emotion comes from wording, punctuation and the allowed
+tags.
 
 ### `Task`
 `spec`, `instruction`, `shared_options: Vec<Choice>`, `summary: Option<String>`
@@ -183,10 +224,13 @@ from the ledger; it includes failed and superseded runs.
 
 | Command            | Validates                                              |
 |--------------------|--------------------------------------------------------|
-| `PassageRequest`   | topic length/content, part exists, speaker count/labels (first Error; warnings never block) |
+| `PassageRequest`   | topic length/content, part exists, speaker count/labels (first Error; warnings never block). `expressive` (`#[serde(default)]`, false) lets the script carry a few `EXAM_SPEECH_TAGS` |
 | `TaskRequest`      | part and task index exist, passage not empty            |
 | `AudioRequest`     | passage not empty, every used label configured, every speaker has a voice (none on `Auto`) with a valid id, no shared voice, no voice of the other gender |
 | `ExamAudioRequest` | one valid `AudioRequest` per part of the format (errors name the part) |
+
+Both pages start new work expressive; a saved exam keeps the choice
+(`SavedExam.expressive`, false for exams saved before 0.8).
 
 Voices are assigned before an `AudioRequest` is validated: the browser and the
 server both run `assign_voices` first. `AudioRequest.fresh` (`#[serde(default)]`)
@@ -204,9 +248,13 @@ issue that blocks. `validate_speakers` adds a Warning per `voice_conflicts`
 entry: the script does not depend on the voice, the recording does.
 `validate_passage` adds a Warning per speaker whose gender, accent or role
 differs from `written_for` ("Speaker B was … when the script was written and
-is now …; rewrite the script or keep it"); a new voice alone gives none. The
-grounding rule: text keys and evidence must occur in the normalised passage
-text.
+is now …; rewrite the script or keep it"); a new voice alone gives none. It
+also adds a Warning per `markup_problems` entry, prefixed with the turn
+("Speaker B (turn 4): <smirk> is not a speech tag; it is left out of the
+recording"); a gap (`___`, `[FILL ...]`) stays an Error. The grounding rule:
+text keys and evidence must occur in the normalised passage text, where
+`normalize` drops speech markup first, so a quote matches with or without a
+`<sigh>` in it.
 
 A saved exam (`application::exams::check`) must have each part's speaker count
 and distinct labels and valid voice ids, but two speakers sharing a voice are

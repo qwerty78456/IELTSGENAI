@@ -14,3 +14,5 @@
 /dist/
 /tools/portable-launcher/target/
 __pycache__/
+# Hand-testing output (downloaded audio, papers)
+/TESTING_DUMP/

@@ -368,7 +368,7 @@ pub fn Home() -> Element {
                                     }
                                 },
                                 for id in FormatId::ALL {
-                                    option { value: "{id.key()}", "{id.format().name}" }
+                                    option { value: "{id.key()}", selected: id == state().format, "{id.format().name}" }
                                 }
                             }
                         }
@@ -391,7 +391,7 @@ pub fn Home() -> Element {
                                     }
                                 },
                                 for part in exam_format.parts.iter() {
-                                    option { value: "{part.number}", "{part.title}: {part.passage.label()}" }
+                                    option { value: "{part.number}", selected: part.number == state().part, "{part.title}: {part.passage.label()}" }
                                 }
                             }
                         }

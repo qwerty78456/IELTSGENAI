@@ -600,7 +600,7 @@ pub fn ExamView() -> Element {
                                     }
                                 },
                                 for id in FormatId::ALL {
-                                    option { value: "{id.key()}", "{id.format().name}" }
+                                    option { value: "{id.key()}", selected: id == current.format, "{id.format().name}" }
                                 }
                             }
                         }

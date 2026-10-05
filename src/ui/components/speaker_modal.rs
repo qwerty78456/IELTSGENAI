@@ -53,8 +53,8 @@ pub fn SpeakerEditModal(
                             onchange: move |evt| {
                                 edited_gender.set(if evt.value() == "male" { Gender::Male } else { Gender::Female });
                             },
-                            option { value: "male", "Male" }
-                            option { value: "female", "Female" }
+                            option { value: "male", selected: edited_gender() == Gender::Male, "Male" }
+                            option { value: "female", selected: edited_gender() == Gender::Female, "Female" }
                         }
                     }
 
@@ -69,7 +69,7 @@ pub fn SpeakerEditModal(
                                 }
                             },
                             for accent in Accent::ALL {
-                                option { value: "{accent.key()}", "{accent.label()}" }
+                                option { value: "{accent.key()}", selected: accent == edited_accent(), "{accent.label()}" }
                             }
                         }
                     }
@@ -81,9 +81,9 @@ pub fn SpeakerEditModal(
                             value: "{edited_role_key()}",
                             onchange: move |evt| edited_role_key.set(evt.value()),
                             for key in SpeakerRole::PRESET_KEYS {
-                                option { value: "{key}", "{SpeakerRole::from_key(key, \"\").label()}" }
+                                option { value: "{key}", selected: edited_role_key() == key, "{SpeakerRole::from_key(key, \"\").label()}" }
                             }
-                            option { value: "other", "Other (custom)" }
+                            option { value: "other", selected: edited_role_key() == "other", "Other (custom)" }
                         }
                     }
 

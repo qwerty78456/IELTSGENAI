@@ -278,7 +278,9 @@ pub fn voice_conflicts(speakers: &[SpeakerConfig]) -> Vec<String> {
     conflicts
 }
 
-/// What a speaker edit makes out of date.
+/// What a speaker edit makes out of date. Always derived by comparing the
+/// line-up a script or recording was made for with the current one
+/// (`Passage::written_for`, `ExamPart::recorded_for`), never stored as a flag.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SpeakerChange {
     /// The script was written for other people: labels, gender, accent
@@ -290,7 +292,13 @@ pub struct SpeakerChange {
 }
 
 /// Compares two line-ups speaker by speaker (matched by label). Nothing is
-/// out of date when `before` is empty: there is nothing to compare with.
+/// out of date when `before` is empty: there is nothing to compare with
+/// (a script or recording made before 0.8).
+///
+/// Voices count only when both sides have one. A speaker on `Auto` has no
+/// voice yet, so the app assigning one (when the catalogue loads, or after
+/// "Automatic") changes nothing that was made; a recording is only ever
+/// made with voices, and a teacher's voice edit lands as `Chosen`.
 pub fn speaker_change(before: &[SpeakerConfig], after: &[SpeakerConfig]) -> SpeakerChange {
     if before.is_empty() {
         return SpeakerChange::default();
@@ -310,8 +318,12 @@ pub fn speaker_change(before: &[SpeakerConfig], after: &[SpeakerConfig]) -> Spea
         let person = earlier.gender != speaker.gender
             || earlier.accent != speaker.accent
             || earlier.role != speaker.role;
+        let voice = matches!(
+            (earlier.voice_id(), speaker.voice_id()),
+            (Some(then), Some(now)) if then != now
+        );
         change.script |= person;
-        change.recording |= person || earlier.voice_id() != speaker.voice_id();
+        change.recording |= person || voice;
     }
     change
 }
@@ -639,8 +651,44 @@ mod tests {
         let mut gender = before.clone();
         gender[1].gender = Gender::Female;
         assert_eq!(speaker_change(&before, &gender), both);
+        let mut accent = before.clone();
+        accent[0].accent = Accent::American;
+        assert_eq!(speaker_change(&before, &accent), both);
         assert_eq!(speaker_change(&before, &before[..1]), both);
+        let mut relabelled = before.clone();
+        relabelled[1].label = "Speaker C".into();
+        assert_eq!(speaker_change(&before, &relabelled), both);
         assert_eq!(speaker_change(&[], &before), SpeakerChange::default());
+
+        // The teacher's choice of the same voice the app had picked: nothing.
+        let mut chosen = before.clone();
+        chosen[0] = chosen[0].clone().with_voice(catalogue()[0].clone());
+        assert_eq!(speaker_change(&before, &chosen), SpeakerChange::default());
+
+        // Voices count only when both sides have one: the app assigning a
+        // voice to a speaker on Auto (the catalogue arriving) is no change,
+        // and neither is a speaker sent back to Auto before it is reassigned.
+        let unvoiced = [
+            female_british("Speaker A"),
+            speaker("Speaker B", Gender::Male, Accent::British),
+        ];
+        assert_eq!(speaker_change(&unvoiced, &before), SpeakerChange::default());
+        assert_eq!(speaker_change(&before, &unvoiced), SpeakerChange::default());
+        let mut automatic = before.clone();
+        automatic[1].voice = VoiceChoice::Auto;
+        assert_eq!(
+            speaker_change(&before, &automatic),
+            SpeakerChange::default()
+        );
+        // Reassigned to another voice, it is a change again.
+        automatic[1].voice = assigned("gb-m-2");
+        assert_eq!(
+            speaker_change(&before, &automatic),
+            SpeakerChange {
+                script: false,
+                recording: true
+            }
+        );
     }
 
     #[test]

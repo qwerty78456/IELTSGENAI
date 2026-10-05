@@ -9,7 +9,10 @@
 //!
 //! Speakers get their voices here, from the catalogue `Navbar` loads: the
 //! domain's `assign_voices` runs whenever the line-up changes, and the server
-//! assigns the same way when a recording starts and sends the line-up back.
+//! assigns the same way when a recording starts and sends the line-up back,
+//! kept as `recorded_for` beside the recording. What a speaker edit makes out
+//! of date is derived, never flagged: the script against its `written_for`
+//! ("Rewrite" or "Keep"), the recording against `recorded_for`.
 
 use dioxus::prelude::*;
 
@@ -19,7 +22,7 @@ use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::domain::{
     AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
-    ValidationIssue, VoiceChoice, assign_voices, has_errors,
+    ValidationIssue, VoiceChoice, assign_voices, has_errors, speaker_change, validate_passage,
 };
 use crate::export::{docx, markdown};
 use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, download_text};
@@ -67,6 +70,10 @@ pub struct HomeState {
     pub audio_job_id: Option<String>,
     /// The finished recording: the server streams it at `audio_url`.
     pub audio: Option<AudioTrack>,
+    /// The line-up, voices included, the recording was made with (sent back
+    /// by `start_part_audio`). The recording is stale while the speakers
+    /// sound different from it (`speaker_change(..).recording`).
+    pub recorded_for: Vec<SpeakerConfig>,
 }
 
 impl Default for HomeState {
@@ -100,6 +107,7 @@ impl HomeState {
             audio_error: None,
             audio_job_id: None,
             audio: None,
+            recorded_for: Vec::new(),
         }
     }
 
@@ -128,6 +136,24 @@ impl HomeState {
         self.audio_error = None;
         self.audio_job_id = None;
         self.audio = None;
+        self.recorded_for.clear();
+    }
+
+    /// The script's issues against the current speakers: after a speaker
+    /// edit, or a script kept for new speakers.
+    fn revalidate_passage(&mut self) {
+        let speakers = effective_speakers(self);
+        let format = self.format.format();
+        if let (Some(passage), Some(spec)) = (&self.passage, format.part(self.part)) {
+            self.passage_issues = validate_passage(passage, spec, &speakers);
+        }
+    }
+
+    /// A recording exists and its speakers no longer sound like the
+    /// current ones.
+    fn recording_stale(&self) -> bool {
+        self.audio.is_some()
+            && speaker_change(&self.recorded_for, &effective_speakers(self)).recording
     }
 
     fn is_busy(&self) -> bool {
@@ -227,11 +253,40 @@ fn effective_speakers(state: &HomeState) -> Vec<SpeakerConfig> {
 }
 
 /// Replaces the line-up after an edit; a speaker left on `Auto` gets its
-/// voice from the assignment effect in `Home`.
+/// voice from the assignment effect in `Home`. The script's issues follow
+/// the new line-up; nothing is flagged (see `recording_stale`).
 fn set_speakers(mut state: Signal<HomeState>, speakers: Vec<SpeakerConfig>) {
     let mut s = state.write();
     s.custom_speakers = speakers;
     s.editing_speaker_idx = None;
+    s.revalidate_passage();
+}
+
+/// Starts recording the script with the current speakers; `fresh` asks for
+/// a new take that reuses nothing read before.
+fn start_audio(
+    mut state: Signal<HomeState>,
+    catalogue: VoiceCatalogueCtx,
+    speakers: Vec<SpeakerConfig>,
+    fresh: bool,
+) {
+    let Some(passage) = state.peek().passage.clone() else {
+        return;
+    };
+    if !catalogue.is_ready() {
+        return;
+    }
+    let request = AudioRequest {
+        passage,
+        speakers,
+        fresh,
+    };
+    if let Err(e) = request.validate() {
+        state.write().audio_error = Some(e.to_string());
+        return;
+    }
+    let run = state.peek().run;
+    spawn(run_audio(state, run, request));
 }
 
 #[component]
@@ -305,23 +360,42 @@ pub fn Home() -> Element {
         spawn(run_tasks(state, run, format, part, passage, speakers()));
     };
 
-    let handle_generate_audio = move |_| {
-        let Some(passage) = state().passage.clone() else {
-            return;
+    let handle_generate_audio = move |_| start_audio(state, catalogue, speakers(), false);
+    let handle_new_take = move |_| start_audio(state, catalogue, speakers(), true);
+
+    // After a speaker edit: write the script again for the new speakers,
+    // and its questions too if there were any.
+    let handle_rewrite = move |_| {
+        let with_questions = !state().tasks.is_empty();
+        let request = match build_script_request(&state(), speakers()) {
+            Ok(request) => request,
+            Err(message) => {
+                state.write().script_error = Some(message);
+                return;
+            }
         };
-        if !catalogue.is_ready() {
-            return;
-        }
-        let request = AudioRequest {
-            passage,
-            speakers: speakers(),
-        };
-        if let Err(e) = request.validate() {
-            state.write().audio_error = Some(e.to_string());
-            return;
-        }
+        state.write().reset_results();
         let run = state().run;
-        spawn(run_audio(state, run, request));
+        let (format, part) = (request.format, request.part);
+        let current_speakers = request.speakers.clone();
+        spawn(async move {
+            let Some(passage) = run_script(state, run, request).await else {
+                return;
+            };
+            if with_questions && !has_errors(&state.peek().passage_issues) {
+                run_tasks(state, run, format, part, passage, current_speakers).await;
+            }
+        });
+    };
+
+    // "Keep this script": the script stands for the edited speakers.
+    let handle_keep_script = move |_| {
+        let current = speakers();
+        let mut s = state.write();
+        if let Some(passage) = s.passage.take() {
+            s.passage = Some(passage.for_speakers(&current));
+        }
+        s.revalidate_passage();
     };
 
     let handle_check_audio = move |_| {
@@ -361,6 +435,7 @@ pub fn Home() -> Element {
             let audio_request = AudioRequest {
                 passage: passage.clone(),
                 speakers: effective_speakers(&state.peek()),
+                fresh: false,
             };
             let audio_request = match audio_request.validate() {
                 Ok(()) => Some(audio_request),
@@ -501,7 +576,7 @@ pub fn Home() -> Element {
                                     if let Some(speaker) = list.get_mut(idx) {
                                         *speaker = with_choice(speaker.clone(), choice);
                                     }
-                                    state.write().custom_speakers = list;
+                                    set_speakers(state, list);
                                 },
                             }
                         }
@@ -566,6 +641,29 @@ pub fn Home() -> Element {
 
                             IssueList { issues: state().passage_issues.clone() }
 
+                            if passage.speakers_changed(&speakers()).script {
+                                div { class: "note-box",
+                                    span { class: "note-icon", "!" }
+                                    div { class: "note-body",
+                                        span { "The speakers changed after this script was written; names, pronouns and wording may no longer fit." }
+                                        div { class: "note-actions",
+                                            button {
+                                                class: "voice-button",
+                                                disabled: state().is_busy(),
+                                                onclick: handle_rewrite,
+                                                if state().tasks.is_empty() { "Rewrite the script" } else { "Rewrite script and questions" }
+                                            }
+                                            button {
+                                                class: "voice-button",
+                                                disabled: state().is_busy(),
+                                                onclick: handle_keep_script,
+                                                "Keep this script"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
                             div { class: "script-preview",
                                 h3 { "Script" }
                                 pre { class: "script-content", "{passage.script_text()}" }
@@ -584,6 +682,15 @@ pub fn Home() -> Element {
                                     title: if catalogue.is_ready() { "" } else { "Waiting for the list of voices" },
                                     onclick: handle_generate_audio,
                                     if state().is_generating_audio { "Recording..." } else { "Generate audio" }
+                                }
+                                if state().audio.is_some() {
+                                    button {
+                                        class: "download-button secondary",
+                                        disabled: state().is_generating_audio || !catalogue.is_ready(),
+                                        title: "Reads every chunk again instead of reusing the earlier take, and pays for this part's speech again.",
+                                        onclick: handle_new_take,
+                                        "New take (skip cache)"
+                                    }
                                 }
                                 button {
                                     class: "download-button secondary",
@@ -671,6 +778,13 @@ pub fn Home() -> Element {
                                         onclick: handle_check_audio,
                                         "Check again"
                                     }
+                                }
+                            }
+
+                            if state().recording_stale() {
+                                div { class: "note-box",
+                                    span { class: "note-icon", "!" }
+                                    span { "A voice changed after this recording was made; generate the audio again." }
                                 }
                             }
 
@@ -836,11 +950,12 @@ async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest
     };
     {
         // Keep the voices the server records with (the same rule as here,
-        // so normally nothing changes).
+        // so normally nothing changes), and note them as the recording's.
         let mut s = state.write();
         if effective_speakers(&s) != started.speakers {
-            s.custom_speakers = started.speakers;
+            s.custom_speakers = started.speakers.clone();
         }
+        s.recorded_for = started.speakers;
         s.audio_job_id = Some(started.job_id.clone());
     }
     fetch_audio(state, run, started.job_id).await;

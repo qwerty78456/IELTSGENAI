@@ -94,6 +94,46 @@ fn check(saved: &SavedExam) -> Result<(), String> {
     {
         return Err("The recording reference is not a job id".into());
     }
+    for part in &saved.exam.parts {
+        check_speakers(part)?;
+    }
+    Ok(())
+}
+
+/// The shape of a part's speakers: the right count, distinct labels, voice
+/// ids that are ids. Two speakers on one voice are kept as they are: the
+/// recording refuses them, but a save never loses the teacher's work.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+fn check_speakers(part: &crate::domain::ExamPart) -> Result<(), String> {
+    use crate::domain::{Voice, first_error, validate_speakers};
+
+    let issues = validate_speakers(&part.spec, &part.speakers);
+    if let Some(error) = first_error(&issues) {
+        let message = &error.message;
+        return Err(if message.starts_with(part.spec.title.as_str()) {
+            message.clone()
+        } else {
+            format!("{}: {message}", part.spec.title)
+        });
+    }
+    let line_ups = [
+        part.speakers.as_slice(),
+        part.recorded_for.as_slice(),
+        part.passage
+            .as_ref()
+            .map_or(&[][..], |p| p.written_for.as_slice()),
+    ];
+    if line_ups
+        .iter()
+        .flat_map(|speakers| speakers.iter())
+        .filter_map(|s| s.voice_id())
+        .any(|id| Voice::check_id(id).is_err())
+    {
+        return Err(format!(
+            "{}: a speaker's voice is not a voice id",
+            part.spec.title
+        ));
+    }
     Ok(())
 }
 
@@ -260,5 +300,106 @@ mod tests {
         let again: SavedExam =
             serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
         assert_eq!(again, saved);
+    }
+
+    #[test]
+    fn opening_a_0_7_exam_marks_nothing_stale() {
+        use crate::domain::{Exam, assign_exam_voices, validate_passage};
+        use crate::infrastructure::tts::voices::VoiceCatalog;
+
+        let saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        // What the exam page shows for a part: its passage issues and
+        // whether a speaker changed since the script or recording.
+        let shown = |exam: &Exam| {
+            exam.parts
+                .iter()
+                .map(|part| {
+                    let passage = part.passage.as_ref();
+                    (
+                        passage.map(|p| p.speakers_changed(&part.speakers)),
+                        passage.map(|p| validate_passage(p, &part.spec, &part.speakers)),
+                        part.recording_stale(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let opened = shown(&saved.exam);
+        for (i, part) in saved.exam.parts.iter().enumerate() {
+            assert!(part.recorded_for.is_empty());
+            assert!(!opened[i].2, "{}", part.spec.title);
+            if let Some(change) = opened[i].0 {
+                assert_eq!(change, crate::domain::SpeakerChange::default());
+            }
+        }
+        let part1 = &saved.exam.parts[0];
+        assert!(part1.passage.as_ref().unwrap().written_for.is_empty());
+
+        // The catalogue arrives and every speaker on Auto gets a voice, as
+        // the exam page does on open: still nothing is stale or warned about.
+        let catalog = VoiceCatalog::builtin();
+        let line_ups: Vec<_> = saved
+            .exam
+            .parts
+            .iter()
+            .map(|p| p.speakers.clone())
+            .collect();
+        let mut voiced = saved.exam.clone();
+        for (part, assigned) in voiced
+            .parts
+            .iter_mut()
+            .zip(assign_exam_voices(&line_ups, catalog.voices()))
+        {
+            assert!(assigned.unvoiced.is_empty());
+            part.speakers = assigned.speakers;
+        }
+        assert!(
+            voiced
+                .parts
+                .iter()
+                .flat_map(|p| p.speakers.iter())
+                .all(|s| matches!(s.voice, VoiceChoice::Assigned(_)))
+        );
+        assert_eq!(shown(&voiced), opened);
+    }
+
+    #[test]
+    fn saving_keeps_shared_voices_but_checks_the_shape() {
+        use crate::domain::{Voice, VoiceSource};
+
+        let mut saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        let shared = Voice {
+            id: "en-gb-shared-1".into(),
+            name: "Shared".into(),
+            gender: Gender::Female,
+            accent: Accent::British,
+            source: VoiceSource::Library,
+            description: String::new(),
+        };
+        // Part 1's three Female British speakers on one voice: saved anyway.
+        let part1 = &mut saved.exam.parts[0];
+        part1.speakers = part1
+            .speakers
+            .iter()
+            .map(|s| s.clone().with_voice(shared.clone()))
+            .collect();
+        part1.recorded_for = part1.speakers.clone();
+        assert_eq!(check(&saved), Ok(()));
+
+        let mut forged = saved.clone();
+        if let VoiceChoice::Chosen(voice) = &mut forged.exam.parts[0].speakers[1].voice {
+            voice.id = "../../etc/passwd".into();
+        }
+        let error = check(&forged).unwrap_err();
+        assert!(error.contains("not a voice id"), "{error}");
+
+        let mut short = saved.clone();
+        short.exam.parts[0].speakers.pop();
+        let error = check(&short).unwrap_err();
+        assert!(error.starts_with("Part 1 needs exactly 3"), "{error}");
+
+        let mut twins = saved.clone();
+        twins.exam.parts[0].speakers[1].label = "Speaker A".into();
+        let error = check(&twins).unwrap_err();
+        assert!(error.starts_with("Part 1: Duplicate"), "{error}");
     }
 }

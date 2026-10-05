@@ -901,6 +901,28 @@ body {
     font-weight: bold;
 }
 
+/* A note with choices: "Rewrite the script" / "Keep this script" */
+.note-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.note-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+}
+
+/* A part's speakers on the whole-exam page */
+.part-voices .speakers-list {
+    margin-top: 0.5rem;
+}
+
+.part-voices {
+    margin-bottom: 0.75rem;
+}
+
 /* Whole-exam page */
 .exam-setup {
     margin-bottom: 1.5rem;

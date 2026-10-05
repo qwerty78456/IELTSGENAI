@@ -79,7 +79,12 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   layout. `Navbar` also provides the second context, `VoiceCatalogueCtx` (`ui/components/voices.rs`):
   the voice catalogue, loaded once with the free `voice_catalogue`. Both views assign voices from
   it in the browser with the domain's `assign_voices` / `assign_exam_voices`, writing the state
-  only when a voice changed; "Another voice" is `domain::next_voice`. Both views only display
+  only when a voice changed; "Another voice" is `domain::next_voice`. Components keep only
+  form-local signals (the speaker dialog's fields, a voice picker's sample). On the exam page
+  every speaker edit goes through `set_part_speakers` (reassign, revalidate, `note_edit`).
+  Out-of-date scripts and recordings are derived (`Passage::written_for`,
+  `ExamPart::recorded_for`, `HomeState.recorded_for`), never flagged on edit, so opening an
+  old exam or assigning voices marks nothing. Both views only display
   issues; rule checks belong to the domain. Browser-side orchestration
   (script first, then questions and recording side by side, `futures_util::future::join`) lives
   in the views and chains the application's server functions; a `run` counter drops late results
@@ -137,7 +142,8 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   designed voice (`voice_…`) reads alone, one turn per request. At most 3 speech requests run at
   once in the whole process. `tts/cache.rs` (`speech-cache-v2`) reuses a chunk synthesised
   before for the same model, voices, words and per-turn styles (`DATA_DIR/audio/cache`,
-  `SPEECH_CACHE_HOURS`). Raw 24 kHz mono 16-bit PCM is requested
+  `SPEECH_CACHE_HOURS`); a part requested `fresh` ("New take") is read with `Reuse::Refresh`
+  and overwrites those entries, while announcements always reuse. Raw 24 kHz mono 16-bit PCM is requested
   (`audio/l16`, WAV accepted too); WAV is encoded/decoded by hand in
   `infrastructure/audio/wav.rs` (no audio crate).
 - Usage: every server function that calls Gemini records its client's `usage()` in the `usage`

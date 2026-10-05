@@ -55,8 +55,10 @@ pub struct ExamAudioStarted {
 }
 
 /// Starts synthesising one part's passage. Speakers without a usable voice
-/// get one first (`voices::prepare_speakers`). `exam` names the saved exam
-/// the spend is booked to (none from the part page).
+/// get one first (`voices::prepare_speakers`). A `fresh` request is a new
+/// take: the job reads every chunk again instead of reusing earlier speech
+/// (`Reuse::Refresh`). `exam` names the saved exam the spend is booked to
+/// (none from the part page).
 #[server]
 pub async fn start_part_audio(
     request: AudioRequest,
@@ -89,8 +91,11 @@ pub async fn start_part_audio(
 
 /// Starts rendering the whole exam recording. Every part's speakers get
 /// voices first, part by part, each part preferring voices the others do not
-/// use (`voices::prepare_exam_speakers`). `exam` names the saved exam the
-/// spend is booked to.
+/// use (`voices::prepare_exam_speakers`). A part whose request is `fresh` is
+/// read again ("New take of this part"); the other parts and the
+/// announcements reuse earlier speech. The line-ups sent back are what each
+/// part is recorded with (`ExamPart::recorded_for`). `exam` names the saved
+/// exam the spend is booked to.
 #[server]
 pub async fn start_exam_audio(
     request: ExamAudioRequest,

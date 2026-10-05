@@ -95,7 +95,9 @@ impl TaskRequest {
 }
 
 /// Render the whole exam recording: every part's passage plus announcements,
-/// tones and pauses according to the format's `AudioProgram`.
+/// tones and pauses according to the format's `AudioProgram`. A part whose
+/// request is `fresh` gets a new take; the others and the announcements
+/// reuse what was read before.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExamAudioRequest {
     pub format: FormatId,
@@ -125,6 +127,11 @@ impl ExamAudioRequest {
 pub struct AudioRequest {
     pub passage: Passage,
     pub speakers: Vec<SpeakerConfig>,
+    /// A new take: read the passage again instead of reusing speech made
+    /// before for the same words and voices, and keep the new take in their
+    /// place. Pays for this part's speech again.
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 impl AudioRequest {
@@ -195,6 +202,7 @@ mod tests {
         AudioRequest {
             passage: Passage::parse(1, "topic", &script.join("\n"), &labels).unwrap(),
             speakers,
+            fresh: false,
         }
     }
 
@@ -267,6 +275,33 @@ mod tests {
         };
         let error = exam.validate().unwrap_err().to_string();
         assert!(error.starts_with("Part 1: "), "{error}");
+    }
+
+    #[test]
+    fn audio_requests_without_fresh_reuse_earlier_takes() {
+        let speakers = vec![speaker(
+            "Speaker A",
+            Gender::Female,
+            VoiceChoice::Assigned(voice("en-gb-a", Gender::Female)),
+        )];
+        let mut json = serde_json::to_value(request(speakers)).unwrap();
+        json.as_object_mut().unwrap().remove("fresh");
+        let loaded: AudioRequest = serde_json::from_value(json).unwrap();
+        assert!(!loaded.fresh);
+
+        // A new take of one part travels on that part's request only.
+        let fresh = AudioRequest {
+            fresh: true,
+            ..loaded.clone()
+        };
+        let exam = ExamAudioRequest {
+            format: FormatId::HsgNational,
+            parts: vec![loaded, fresh],
+        };
+        let json = serde_json::to_string(&exam).unwrap();
+        let back: ExamAudioRequest = serde_json::from_str(&json).unwrap();
+        let flags: Vec<bool> = back.parts.iter().map(|p| p.fresh).collect();
+        assert_eq!(flags, [false, true]);
     }
 
     #[test]

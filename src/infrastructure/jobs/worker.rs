@@ -184,10 +184,25 @@ fn client() -> Result<GeminiClient, AudioError> {
     GeminiClient::from_config().map_err(|e: LlmError| AudioError::Tts(TtsError::Llm(e)))
 }
 
+/// Whether a part's earlier speech may be reused: not when the teacher asked
+/// for a new take of it (`AudioRequest::fresh`). Announcements are not a part
+/// and always reuse.
+fn reuse_for(job_id: &str, part: &AudioRequest) -> Reuse {
+    if part.fresh {
+        tracing::info!(
+            job = %job_id,
+            part = part.passage.part,
+            "new take: the part's earlier speech is read again"
+        );
+    }
+    Reuse::new_take(part.fresh)
+}
+
 /// Synthesises one passage in the background and stores the WAV under the job id.
 pub fn spawn_part_audio(job_id: String, request: AudioRequest, exam: Option<String>) {
+    let reuse = reuse_for(&job_id, &request);
     run_job(job_id, "part audio", exam, move |client| async move {
-        Ok(synthesize_passage(&client, &request.passage, &request.speakers, Reuse::Allow).await?)
+        Ok(synthesize_passage(&client, &request.passage, &request.speakers, reuse).await?)
     });
 }
 
@@ -211,13 +226,13 @@ pub fn spawn_exam_audio(job_id: String, request: ExamAudioRequest, exam: Option<
             let limit = limit.clone();
             let done = done.clone();
             let id = id.clone();
+            let reuse = reuse_for(&id, part);
             async move {
                 let _permit = limit
                     .acquire()
                     .await
                     .map_err(|e| AudioError::Asset(e.to_string()))?;
-                let pcm = synthesize_passage(&client, &part.passage, &part.speakers, Reuse::Allow)
-                    .await?;
+                let pcm = synthesize_passage(&client, &part.passage, &part.speakers, reuse).await?;
                 let finished = done.fetch_add(1, Ordering::SeqCst) + 1;
                 let progress = 0.1 + 0.7 * finished as f32 / total as f32;
                 let _ = JobStore::global()
@@ -234,4 +249,26 @@ pub fn spawn_exam_audio(job_id: String, request: ExamAudioRequest, exam: Option<
         let program = AudioProgram::for_format(&request.format.format());
         render_program(&program, &passages, &client, &assets).await
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{FormatId, Passage};
+
+    #[test]
+    fn a_new_take_refreshes_only_its_part() {
+        let part = |number: u8, fresh: bool| AudioRequest {
+            passage: Passage::parse(number, "topic", "Speaker A: Hello.", &["Speaker A".into()])
+                .unwrap(),
+            speakers: Vec::new(),
+            fresh,
+        };
+        let request = ExamAudioRequest {
+            format: FormatId::HsgNational,
+            parts: vec![part(1, false), part(2, true), part(3, false)],
+        };
+        let reuse: Vec<Reuse> = request.parts.iter().map(|p| reuse_for("job", p)).collect();
+        assert_eq!(reuse, [Reuse::Allow, Reuse::Refresh, Reuse::Allow]);
+    }
 }

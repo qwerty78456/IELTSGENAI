@@ -19,7 +19,12 @@
 //!
 //! Speakers without a voice (a new exam, or one saved before 0.8) get one in
 //! the browser once the voice catalogue is loaded (`assign_exam_voices`, as
-//! the server does); `start_exam_audio` sends back the voices it recorded with.
+//! the server does); `start_exam_audio` sends back the voices it recorded with,
+//! kept as each part's `recorded_for`. Each part card edits its speakers
+//! (`set_part_speakers`, the one place an edit lands). What an edit makes out
+//! of date is derived, never flagged: a script whose `written_for` no longer
+//! matches offers "Rewrite" or "Keep", and the recording is stale for a part
+//! whose speakers sound different from its `recorded_for`.
 
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
@@ -37,8 +42,8 @@ use crate::application::topics::suggest_topic;
 use crate::application::usage::{UsageTotals, exam_usage, usage_totals};
 use crate::domain::{
     AudioRequest, AudioTrack, Exam, ExamAudioRequest, ExamUsage, FormatId, PassageRequest,
-    SpeakerConfig, TaskRequest, UsageStep, ValidationIssue, assign_exam_voices, has_errors,
-    validate_exam, validate_passage, validate_task,
+    SpeakerConfig, TaskRequest, UsageStep, ValidationIssue, VoiceChoice, assign_exam_voices,
+    assign_voices, has_errors, validate_exam, validate_passage, validate_task,
 };
 use crate::export::{docx, markdown};
 use crate::ui::clock::local_time;
@@ -46,7 +51,10 @@ use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, do
 use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
-use crate::ui::components::voices::VoiceCatalogueCtx;
+use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
+use crate::ui::components::voices::{
+    VoiceCatalogueCtx, speaker_warnings, voices_summary, with_choice,
+};
 use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, sleep_ms, wait_for_job};
 
 /// How long after the last keystroke an edit is saved.
@@ -86,7 +94,9 @@ pub struct AudioWork {
     pub job_id: Option<String>,
     pub progress: f32,
     pub track: Option<AudioTrack>,
-    /// A script was regenerated after this recording was made.
+    /// A script was regenerated after this recording was made. Speaker
+    /// changes are not flagged here: they are derived per part
+    /// (`ExamPart::recording_stale`).
     pub stale: bool,
 }
 
@@ -124,6 +134,8 @@ pub struct ExamState {
     /// Bumped on every new exam run or cancel; a running pipeline compares
     /// against it before every write, so late results of an old run are dropped.
     pub run: u32,
+    /// The speaker whose edit dialog is open: (part index, speaker index).
+    pub editing_speaker: Option<(usize, usize)>,
 }
 
 impl Default for ExamState {
@@ -150,6 +162,7 @@ impl ExamState {
             totals: None,
             key_source: None,
             run: 0,
+            editing_speaker: None,
         }
     }
 
@@ -265,7 +278,33 @@ impl ExamState {
             totals: self.totals,
             key_source: self.key_source,
             run: self.run + 1,
+            editing_speaker: None,
         }
+    }
+
+    /// Part `i`'s passage issues against its current speakers: after a
+    /// speaker edit, or a script kept for new speakers.
+    fn revalidate_passage(&mut self, i: usize) {
+        let part = &self.exam.parts[i];
+        self.work[i].passage_issues = part
+            .passage
+            .as_ref()
+            .map(|p| validate_passage(p, &part.spec, &part.speakers))
+            .unwrap_or_default();
+    }
+
+    /// The parts whose speakers sound different from the exam recording
+    /// (none while there is no recording), by title.
+    fn parts_recorded_differently(&self) -> Vec<String> {
+        if self.audio.track.is_none() {
+            return Vec::new();
+        }
+        self.exam
+            .parts
+            .iter()
+            .filter(|part| part.recording_stale())
+            .map(|part| part.spec.title.clone())
+            .collect()
     }
 
     /// One line under the setup panel about the draft on the server.
@@ -436,6 +475,8 @@ pub fn ExamView() -> Element {
     let id8: String = current.exam.id.to_string().chars().take(8).collect();
     let file_prefix = format!("{}_exam_{}", current.format.key().to_uppercase(), id8);
     let audio_pct = format!("{:.0}", (current.audio.progress * 100.0).clamp(0.0, 100.0));
+    let has_recording = current.audio.track.is_some();
+    let recorded_differently = current.parts_recorded_differently();
     let (save_text, save_failed) = current.save_status();
     let save_class = if save_failed {
         "save-status failed"
@@ -544,7 +585,7 @@ pub fn ExamView() -> Element {
             if ready.iter().all(|ok| *ok) {
                 let request = {
                     let s = state.peek();
-                    exam_audio_request(&s)
+                    exam_audio_request(&s, None)
                 };
                 match request {
                     Ok(request) => {
@@ -577,19 +618,7 @@ pub fn ExamView() -> Element {
         });
     };
 
-    let handle_render_audio = move |_| {
-        let request = {
-            let s = state.peek();
-            exam_audio_request(&s)
-        };
-        match request {
-            Ok(request) => {
-                let run = state.peek().run;
-                spawn_forever(run_exam_audio(state, run, request));
-            }
-            Err(message) => state.write().audio.step = Step::Failed(message),
-        }
-    };
+    let handle_render_audio = move |_| render_exam_audio(state, None);
 
     let handle_check_audio = move |_| {
         let Some(job_id) = state.peek().audio.job_id.clone() else {
@@ -730,6 +759,15 @@ pub fn ExamView() -> Element {
                         let paper = markdown::render_part_paper(&spec, &tasks);
                         let key = markdown::render_key(&tasks);
                         let has_passage = passage.is_some();
+                        let speakers = part.speakers.clone();
+                        let voices = voices_summary(&speakers);
+                        let warnings = speaker_warnings(&spec, &speakers);
+                        let drifted = passage
+                            .as_ref()
+                            .is_some_and(|p| p.speakers_changed(&speakers).script);
+                        let recording_stale = has_recording && part.recording_stale();
+                        let number = spec.number;
+                        let exam_uuid = current.exam.id;
                         rsx! {
                             div { class: "generator-panel part-card", key: "{spec.number}",
                                 h3 { class: "part-title", "{spec.title}: {spec.passage.label()}" }
@@ -748,6 +786,23 @@ pub fn ExamView() -> Element {
                                 if let Step::Failed(message) = work.topic_step.clone() {
                                     div { class: "error-message", "{message}" }
                                 }
+                                details { class: "preview part-voices",
+                                    summary { "Voices: {voices}" }
+                                    SpeakerCards {
+                                        speakers: speakers.clone(),
+                                        disabled: busy,
+                                        warnings,
+                                        exam: Some(exam_uuid),
+                                        onedit: move |k| state.write().editing_speaker = Some((i, k)),
+                                        onvoice: move |(k, choice): (usize, VoiceChoice)| {
+                                            let mut list = state.peek().exam.parts[i].speakers.clone();
+                                            if let Some(speaker) = list.get_mut(k) {
+                                                *speaker = with_choice(speaker.clone(), choice);
+                                            }
+                                            set_part_speakers(state, catalogue, i, list);
+                                        },
+                                    }
+                                }
                                 div { class: "download-buttons",
                                     button {
                                         class: "download-button info",
@@ -761,14 +816,7 @@ pub fn ExamView() -> Element {
                                     button {
                                         class: "download-button primary",
                                         disabled: busy,
-                                        onclick: move |_| {
-                                            let run = state.peek().run;
-                                            spawn_forever(async move {
-                                                if run_part_script(state, run, i).await {
-                                                    run_part_tasks(state, run, i).await;
-                                                }
-                                            });
-                                        },
+                                        onclick: move |_| rewrite_part(state, i),
                                         if has_passage { "Regenerate script + questions" } else { "Generate script + questions" }
                                     }
                                     if has_passage {
@@ -781,6 +829,43 @@ pub fn ExamView() -> Element {
                                             },
                                             "Regenerate questions"
                                         }
+                                    }
+                                    if has_recording {
+                                        button {
+                                            class: "download-button info",
+                                            disabled: busy || !all_scripts || !catalogue.is_ready(),
+                                            title: "Renders the exam recording again, reading this part afresh instead of reusing its earlier take. Pays for this part's speech again; the other parts and the announcements are reused.",
+                                            onclick: move |_| render_exam_audio(state, Some(number)),
+                                            "New take of this part"
+                                        }
+                                    }
+                                }
+                                if drifted {
+                                    div { class: "note-box",
+                                        span { class: "note-icon", "!" }
+                                        div { class: "note-body",
+                                            span { "The speakers changed after this script was written; names, pronouns and wording may no longer fit." }
+                                            div { class: "note-actions",
+                                                button {
+                                                    class: "voice-button",
+                                                    disabled: busy,
+                                                    onclick: move |_| rewrite_part(state, i),
+                                                    "Rewrite script and questions"
+                                                }
+                                                button {
+                                                    class: "voice-button",
+                                                    disabled: busy,
+                                                    onclick: move |_| keep_part_script(state, i),
+                                                    "Keep this script"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if recording_stale {
+                                    div { class: "note-box",
+                                        span { class: "note-icon", "!" }
+                                        span { "A voice changed after this recording was made; render it again." }
                                     }
                                 }
                                 StepLine { label: "Script".to_string(), step: work.script_step.clone() }
@@ -817,6 +902,14 @@ pub fn ExamView() -> Element {
                         div { class: "note-box",
                             span { class: "note-icon", "!" }
                             span { "A script changed after this recording was made; render it again." }
+                        }
+                    }
+                    if !recorded_differently.is_empty() {
+                        div { class: "note-box",
+                            span { class: "note-icon", "!" }
+                            span {
+                                "A voice changed in {recorded_differently.join(\", \")} after this recording was made; render it again."
+                            }
                         }
                     }
                     if let Some(error) = catalogue.error() {
@@ -884,6 +977,24 @@ pub fn ExamView() -> Element {
                     disabled: busy,
                     onclick: handle_generate_exam,
                     if busy { "Working..." } else { "Generate the whole exam" }
+                }
+            }
+
+            if let Some((i, k)) = current.editing_speaker {
+                if let Some(speaker) = current.exam.parts.get(i).and_then(|p| p.speakers.get(k)).cloned() {
+                    SpeakerEditModal {
+                        speaker,
+                        onclose: move |_| state.write().editing_speaker = None,
+                        onsave: move |updated: SpeakerConfig| {
+                            let Some(mut list) = state.peek().exam.parts.get(i).map(|p| p.speakers.clone()) else {
+                                return;
+                            };
+                            if k < list.len() {
+                                list[k] = updated;
+                            }
+                            set_part_speakers(state, catalogue, i, list);
+                        },
+                    }
                 }
             }
 
@@ -1129,8 +1240,12 @@ fn part_request(state: &ExamState, i: usize) -> Result<PassageRequest, String> {
 }
 
 /// Every part's passage as one `ExamAudioRequest`; the domain names the
-/// first part that has no script yet.
-fn exam_audio_request(state: &ExamState) -> Result<ExamAudioRequest, String> {
+/// first part that has no script yet. Part `fresh_part`, if any, is read
+/// afresh ("New take of this part").
+fn exam_audio_request(
+    state: &ExamState,
+    fresh_part: Option<u8>,
+) -> Result<ExamAudioRequest, String> {
     let parts = state
         .exam
         .parts
@@ -1139,6 +1254,7 @@ fn exam_audio_request(state: &ExamState) -> Result<ExamAudioRequest, String> {
             p.passage.clone().map(|passage| AudioRequest {
                 passage,
                 speakers: p.speakers.clone(),
+                fresh: fresh_part == Some(p.spec.number),
             })
         })
         .collect();
@@ -1148,6 +1264,96 @@ fn exam_audio_request(state: &ExamState) -> Result<ExamAudioRequest, String> {
     };
     request.validate().map_err(|e| e.to_string())?;
     Ok(request)
+}
+
+/// Renders the exam recording from the scripts as they are; with
+/// `fresh_part`, that part gets a new take instead of its earlier one.
+fn render_exam_audio(mut state: Signal<ExamState>, fresh_part: Option<u8>) {
+    let request = {
+        let s = state.peek();
+        exam_audio_request(&s, fresh_part)
+    };
+    match request {
+        Ok(request) => {
+            let run = state.peek().run;
+            spawn_forever(run_exam_audio(state, run, request));
+        }
+        Err(message) => state.write().audio.step = Step::Failed(message),
+    }
+}
+
+/// Writes part `i`'s script again, then its questions.
+fn rewrite_part(state: Signal<ExamState>, i: usize) {
+    let run = state.peek().run;
+    spawn_forever(async move {
+        if run_part_script(state, run, i).await {
+            run_part_tasks(state, run, i).await;
+        }
+    });
+}
+
+/// "Keep this script": the teacher accepts part `i`'s script for its
+/// current speakers, so it is noted as written for them.
+fn keep_part_script(mut state: Signal<ExamState>, i: usize) {
+    {
+        let mut s = state.write();
+        let Some(part) = s.exam.parts.get_mut(i) else {
+            return;
+        };
+        let Some(passage) = part.passage.take() else {
+            return;
+        };
+        part.passage = Some(passage.for_speakers(&part.speakers));
+        s.revalidate_passage(i);
+    }
+    note_edit(state);
+}
+
+/// The one place a teacher's speaker edit lands on the exam page (the edit
+/// dialog, "Another voice", "Automatic"). The part's speakers get voices
+/// again, preferring voices no other part uses; the passage issues follow
+/// the new line-up; the edit is saved. Nothing is flagged: a script or
+/// recording made for other speakers is told apart by `written_for` and
+/// `recorded_for`.
+fn set_part_speakers(
+    mut state: Signal<ExamState>,
+    catalogue: VoiceCatalogueCtx,
+    i: usize,
+    speakers: Vec<SpeakerConfig>,
+) {
+    let voices = catalogue.voices();
+    let changed = {
+        let mut s = state.write();
+        s.editing_speaker = None;
+        if i >= s.exam.parts.len() {
+            return;
+        }
+        let speakers = match voices {
+            Some(voices) => {
+                let elsewhere: Vec<String> = s
+                    .exam
+                    .parts
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .flat_map(|(_, p)| p.speakers.iter().filter_map(SpeakerConfig::voice_id))
+                    .map(str::to_string)
+                    .collect();
+                assign_voices(&speakers, &voices, &elsewhere).speakers
+            }
+            None => speakers,
+        };
+        if s.exam.parts[i].speakers == speakers {
+            false
+        } else {
+            s.exam.parts[i].speakers = speakers;
+            s.revalidate_passage(i);
+            true
+        }
+    };
+    if changed {
+        note_edit(state);
+    }
 }
 
 async fn suggest_part_topic(mut state: Signal<ExamState>, run: u32, i: usize) {
@@ -1309,13 +1515,15 @@ async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAud
     };
     {
         // Keep the voices the server records with (the same rule as here,
-        // so normally nothing changes); the save below stores them.
+        // so normally nothing changes) and note them as what each part is
+        // recorded with; the save below stores both.
         let mut s = state.write();
         for (number, speakers) in numbers.into_iter().zip(started.parts) {
-            if let Some(part) = s.exam.parts.iter_mut().find(|p| p.spec.number == number)
-                && part.speakers != speakers
-            {
-                part.speakers = speakers;
+            if let Some(part) = s.exam.parts.iter_mut().find(|p| p.spec.number == number) {
+                if part.speakers != speakers {
+                    part.speakers = speakers.clone();
+                }
+                part.recorded_for = speakers;
             }
         }
         s.audio.job_id = Some(started.job_id.clone());

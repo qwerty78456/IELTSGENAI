@@ -249,7 +249,9 @@ WAV, when the exam is deleted and no other exam refers to it.
 The whole-exam page keeps its draft on the server so the teacher can close
 the tab and come back. `application/exams.rs` defines `SavedExam` (the
 `Exam`, the topic typed for each part, the recording job id and the stale
-flag) and four server functions: `save_exam`, `list_exams`, `load_exam`,
+flag for a script regenerated since the recording; speaker changes are not
+flagged but derived from each part's `recorded_for` and each script's
+`written_for`) and four server functions: `save_exam`, `list_exams`, `load_exam`,
 `delete_exam`. `infrastructure/exams.rs` stores one row per `Exam::id` in
 the `exams` table of `jobs.db`: the `SavedExam` as JSON plus the columns the
 list needs (title, format key, part counts, `recording_job`, timestamps),

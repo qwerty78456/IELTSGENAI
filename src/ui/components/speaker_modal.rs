@@ -168,7 +168,7 @@ pub fn SpeakerEditModal(
                     }
                     p { class: "muted",
                         if (edited_gender(), edited_accent()) != (saved_gender, saved_accent) {
-                            "A {edited_accent().label()} {edited_gender().label().to_lowercase()} voice is picked when you save."
+                            "A new {edited_gender().label().to_lowercase()} {edited_accent().label()} voice is picked when you save."
                         } else if let Some(voice) = saved_voice_line.voice() {
                             "Voice: {voice.display_name()}"
                         } else {

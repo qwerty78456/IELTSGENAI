@@ -29,6 +29,10 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Answer key** | Every item's key in paper order, derived from the exam. | |
 | **Audio programme** (`AudioProgram`) | The ordered plan of the full recording: music, tone, announcement, pause, passage, replay, checking time. | |
 | **Recording** (`AudioTrack`) | Where a rendered WAV lives and how long it is. Never the bytes. | |
+| **Written for** (`Passage::written_for`) | The speakers a script was written for. When a speaker's gender, accent or role changes afterwards, the teacher rewrites the script or keeps it (which makes the current speakers its "written for"). | |
+| **Recorded for** (`ExamPart::recorded_for`) | The speakers, voices included, a part was last recorded with. | |
+| **Stale** | A script or recording made for other speakers than the current ones. Always worked out by comparing with "written for" / "recorded for", never set as a flag; scripts and recordings from before 0.8 are never stale for this reason. | "dirty", "invalid" |
+| **Take** / **New take** (`AudioRequest::fresh`) | One reading of a part's script by the speech model. A new take reads the part again instead of reusing the earlier take for the same words and voices, and pays for it again. | "re-record" is fine in UI text |
 | **Saved exam** (`SavedExam`) | An exam kept on the server with the teacher's topics and the recording it refers to, so the teacher can come back to it. Still a draft. | "final", "record" |
 | **Draft** | What generation returns: a passage or task plus validator **issues**. Everything is a draft until the teacher accepts it. | "final" |
 | **Issue** (`ValidationIssue`) | A validator finding with a severity: Error (unusable key) or Warning (look at it). | "bug" |

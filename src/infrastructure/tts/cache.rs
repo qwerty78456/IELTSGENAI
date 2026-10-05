@@ -31,8 +31,15 @@ pub enum Reuse {
     #[default]
     Allow,
     /// Synthesise again ("New take") and store the new take in place of the old.
-    #[allow(dead_code)] // "New take" (M2) asks for it
     Refresh,
+}
+
+impl Reuse {
+    /// `Refresh` for a part the teacher asked a new take of
+    /// (`AudioRequest::fresh`), `Allow` otherwise.
+    pub fn new_take(fresh: bool) -> Self {
+        if fresh { Reuse::Refresh } else { Reuse::Allow }
+    }
 }
 
 /// Synthesises `request`, or returns the audio made for an identical request
@@ -301,6 +308,8 @@ mod tests {
         );
         assert_eq!(cached_path(dir.path(), &key, Reuse::Refresh), None);
         assert_eq!(Reuse::default(), Reuse::Allow);
+        assert_eq!(Reuse::new_take(true), Reuse::Refresh);
+        assert_eq!(Reuse::new_take(false), Reuse::Allow);
     }
 
     #[test]

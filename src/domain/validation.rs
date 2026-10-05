@@ -155,6 +155,46 @@ pub fn validate_passage(
             "The script contains gaps; scripts must be complete",
         ));
     }
+    issues.extend(line_up_drift(passage, speakers));
+    issues
+}
+
+/// Warnings when the speakers are no longer the people the script was
+/// written for (`Passage::written_for`): gender, accent or role changed, so
+/// names, pronouns and wording may not fit. A new voice alone changes nothing
+/// in the script; a script from before 0.8 has nothing to compare with.
+fn line_up_drift(passage: &Passage, speakers: &[SpeakerConfig]) -> Vec<ValidationIssue> {
+    if !passage.speakers_changed(speakers).script {
+        return Vec::new();
+    }
+    let mut issues: Vec<ValidationIssue> = speakers
+        .iter()
+        .filter_map(|now| {
+            let then = passage
+                .written_for
+                .iter()
+                .find(|then| then.label == now.label)?;
+            let changed =
+                then.gender != now.gender || then.accent != now.accent || then.role != now.role;
+            changed.then(|| {
+                ValidationIssue::warning(
+                    None,
+                    format!(
+                        "{} was {} when the script was written and is now {}; rewrite the script or keep it",
+                        now.label,
+                        then.profile(),
+                        now.profile()
+                    ),
+                )
+            })
+        })
+        .collect();
+    if issues.is_empty() {
+        issues.push(ValidationIssue::warning(
+            None,
+            "The script was written for other speakers; rewrite the script or keep it",
+        ));
+    }
     issues
 }
 
@@ -601,6 +641,74 @@ mod tests {
         assert!(!has_errors(&issues), "{issues:?}");
         assert_eq!(issues.len(), 2, "{issues:?}");
         assert!(issues[0].message.contains("share the voice Zephyr"));
+    }
+
+    #[test]
+    fn script_written_for_other_speakers_warns() {
+        use crate::domain::speaker::{Gender, SpeakerRole};
+        use crate::domain::voice::{Voice, VoiceSource};
+        let hsg = ExamFormat::hsg_national();
+        let part1 = hsg.part(1).unwrap();
+        let line_up = part1.default_speakers.clone();
+        let labels: Vec<String> = line_up.iter().map(|s| s.label.clone()).collect();
+        let script: Vec<String> = labels
+            .iter()
+            .map(|l| format!("{l}: {}", "word ".repeat(150)))
+            .collect();
+        let parsed = Passage::parse(1, "topic", &script.join("\n"), &labels).unwrap();
+        let passage = parsed.clone().for_speakers(&line_up);
+        let baseline = validate_passage(&passage, part1, &line_up);
+        assert!(
+            baseline.iter().all(|i| !i.message.contains("rewrite")),
+            "{baseline:?}"
+        );
+
+        // A new voice alone: the script still fits.
+        let mut voiced = line_up.clone();
+        voiced[1] = voiced[1].clone().with_voice(Voice {
+            id: "en-gb-b".into(),
+            name: "B".into(),
+            gender: voiced[1].gender,
+            accent: voiced[1].accent,
+            source: VoiceSource::Library,
+            description: String::new(),
+        });
+        assert_eq!(validate_passage(&passage, part1, &voiced), baseline);
+
+        // Another role and gender for Speaker B: one warning naming both line-ups.
+        let mut edited = line_up.clone();
+        edited[1].role = SpeakerRole::Professor;
+        edited[1].gender = match edited[1].gender {
+            Gender::Male => Gender::Female,
+            Gender::Female => Gender::Male,
+        };
+        let issues = validate_passage(&passage, part1, &edited);
+        assert!(!has_errors(&issues), "{issues:?}");
+        let drift: Vec<&ValidationIssue> = issues
+            .iter()
+            .filter(|i| i.message.contains("when the script was written"))
+            .collect();
+        assert_eq!(drift.len(), 1, "{issues:?}");
+        assert_eq!(drift[0].severity, Severity::Warning);
+        assert_eq!(
+            drift[0].message,
+            format!(
+                "Speaker B was {} when the script was written and is now {}; rewrite the script or keep it",
+                line_up[1].profile(),
+                edited[1].profile()
+            )
+        );
+
+        // Kept for the new line-up, or written before 0.8: no warning.
+        let kept = passage.clone().for_speakers(&edited);
+        assert_eq!(
+            validate_passage(&kept, part1, &edited).len(),
+            baseline.len()
+        );
+        assert_eq!(
+            validate_passage(&parsed, part1, &edited).len(),
+            baseline.len()
+        );
     }
 
     #[test]

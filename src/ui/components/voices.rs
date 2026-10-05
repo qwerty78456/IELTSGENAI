@@ -3,7 +3,8 @@
 //!
 //! Assignment and "Another voice" are the pure domain rules run here, over
 //! the catalogue `Navbar` loads once; only a sample that was never recorded
-//! costs a server round trip with a Gemini request.
+//! costs a server round trip with a Gemini request. Both pages show speakers
+//! with `speaker_modal::SpeakerCards`, which uses `VoicePicker`.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -53,6 +54,24 @@ pub fn with_choice(speaker: SpeakerConfig, choice: VoiceChoice) -> SpeakerConfig
         VoiceChoice::Chosen(voice) => speaker.with_voice(voice),
         voice => SpeakerConfig { voice, ..speaker },
     }
+}
+
+/// Who reads each speaker, for a collapsed list: "A: Oliver, B: Grace".
+pub fn voices_summary(speakers: &[SpeakerConfig]) -> String {
+    speakers
+        .iter()
+        .map(|speaker| {
+            let short = speaker
+                .label
+                .strip_prefix("Speaker ")
+                .unwrap_or(&speaker.label);
+            match speaker.voice.voice() {
+                Some(voice) => format!("{short}: {}", voice.display_name()),
+                None => format!("{short}: no voice yet"),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// What a teacher should look at in a line-up (two speakers on one voice, a

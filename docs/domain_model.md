@@ -81,13 +81,35 @@ Pure rules over a catalogue slice, run in the browser and again on the server:
 - `voice_conflicts(speakers)` — a shared voice, or a voice of the other gender.
 - `speaker_change(before, after) -> SpeakerChange { script, recording }` — what
   an edit makes out of date (labels, gender, accent, role: both; voice only:
-  the recording). Nothing when `before` is empty.
+  the recording). Nothing when `before` is empty. A voice counts only when
+  both sides have one: the app assigning a voice to a speaker on `Auto` (the
+  catalogue loading, or after "Automatic") is no change.
+
+### Out of date is derived, never flagged
+A script and a recording each remember the line-up they were made for:
+`Passage.written_for` and `ExamPart.recorded_for` (the part page keeps its
+recording's line-up beside the track). The current speakers are compared with
+them whenever the page renders:
+- the script no longer fits when `passage.speakers_changed(&speakers).script`:
+  `validate_passage` warns and the page offers **Rewrite** or **Keep this
+  script** (`for_speakers(current)`);
+- the recording is stale when it exists and
+  `speaker_change(&recorded_for, &speakers).recording` (`ExamPart::recording_stale`);
+  the exam recording is stale when any part's is.
+
+Empty line-ups (scripts and recordings from before 0.8) compare as unchanged,
+so opening an old exam, or assigning voices once the catalogue is loaded,
+marks nothing. A regenerated script still flags the exam recording
+(`SavedExam.recording_stale`), as before.
 
 ## Content
 
 ### `Passage`
-`part`, `topic`, `lines: Vec<Line { speaker, text }>`.
-`Passage::parse` reads "Speaker A: ..." text; `script_text()` is the canonical
+`part`, `topic`, `lines: Vec<Line { speaker, text }>`, `written_for:
+Vec<SpeakerConfig>` (the line-up the script was written for; `#[serde(default)]`,
+empty before 0.8). `generate_passage` returns `parse(..).for_speakers(&request.speakers)`;
+`speakers_changed(&current) -> SpeakerChange` compares with it (all false when
+empty). `Passage::parse` reads "Speaker A: ..." text; `script_text()` is the canonical
 labelled form (question prompts, the teacher's view); `plain_text()` is used for
 grounding; `estimated_minutes()` assumes 150 words per minute. Text-to-speech
 receives the lines without labels, the speaker travelling beside each line.
@@ -116,7 +138,11 @@ part has a passage and every `TaskSpec` has a `Task`.
 
 ### `ExamPart`
 `spec`, `speakers`, `passage: Option<Passage>`, `tasks: Vec<Task>`,
-`audio: Option<AudioTrack>`.
+`audio: Option<AudioTrack>`, `recorded_for: Vec<SpeakerConfig>` (the line-up,
+voices included, the part was last recorded with: what `start_exam_audio`
+sent back; `#[serde(default)]`, empty before 0.8). `recording_stale()` is
+`speaker_change(&recorded_for, &speakers).recording`; whether a recording
+exists is the caller's to check.
 
 ## Audio
 
@@ -163,7 +189,11 @@ from the ledger; it includes failed and superseded runs.
 | `ExamAudioRequest` | one valid `AudioRequest` per part of the format (errors name the part) |
 
 Voices are assigned before an `AudioRequest` is validated: the browser and the
-server both run `assign_voices` first.
+server both run `assign_voices` first. `AudioRequest.fresh` (`#[serde(default)]`)
+asks for a **new take**: the job reads that passage again instead of reusing
+speech made before for the same words and voices (`Reuse::Refresh`) and keeps
+the new take in their place. In an `ExamAudioRequest` it is per part; the
+other parts and the announcements reuse what they can.
 
 ## Validation
 
@@ -171,9 +201,16 @@ server both run `assign_voices` first.
 `Vec<ValidationIssue { severity, item, message }>`. `Severity::Error` means
 the key is unusable; `Warning` means look at it. `first_error` picks the
 issue that blocks. `validate_speakers` adds a Warning per `voice_conflicts`
-entry: the script does not depend on the voice, the recording does. The
+entry: the script does not depend on the voice, the recording does.
+`validate_passage` adds a Warning per speaker whose gender, accent or role
+differs from `written_for` ("Speaker B was … when the script was written and
+is now …; rewrite the script or keep it"); a new voice alone gives none. The
 grounding rule: text keys and evidence must occur in the normalised passage
 text.
+
+A saved exam (`application::exams::check`) must have each part's speaker count
+and distinct labels and valid voice ids, but two speakers sharing a voice are
+saved as they are: the recording refuses them, an autosave never loses work.
 
 `validate_exam(&Exam)` checks structural completeness before export or the
 full recording: every part has a passage, every `TaskSpec` has a task and,

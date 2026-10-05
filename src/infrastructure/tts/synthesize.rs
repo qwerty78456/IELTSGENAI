@@ -432,6 +432,7 @@ mod tests {
                     text: text.to_string(),
                 })
                 .collect(),
+            written_for: Vec::new(),
         }
     }
 

@@ -3,6 +3,245 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.8.0] – 2026-10-05 — 🎙️ "Mỗi người một giọng, đúng giọng vùng miền."
+
+Ở 0.7.1, giáo viên đặt ba người nói của Part 1 HSG là *Female, British
+English* và nhận về một bản ghi mà cả ba vai do **một giọng nữ Mỹ** đọc; vài
+lượt giữa hội thoại còn bật thành giọng đàn ông trầm. Ba nguyên nhân, đã đo
+lại trên chính file đó: giọng vùng miền chưa bao giờ tới model (30 giọng cổ
+điển mà app dùng đều là General American), mỗi cặp giới + giọng vùng chỉ có
+đúng một giọng (`Zephyr` cho cả A, B, C), và hai người nói chung một giọng
+trong một request khiến Gemini tự "ứng biến" người thứ hai. **Từ 0.8.0, mỗi
+người nói có một giọng riêng, đúng giới, đúng vùng, lấy từ thư viện giọng
+vùng miền của Google; hai người trong một part không bao giờ chung giọng; và
+giáo viên nghe thử, đổi, hay tự thiết kế giọng ngay trên cả hai trang.** Đọc
+lại đúng đoạn HSG đó: 3 giọng thay vì 1, "tai AI" nghe ra giọng Anh thay vì
+Mỹ, 0 lượt bị đổi thành giọng nam (0.7.1: 2/10). Script giờ có thể thở dài,
+bật cười, ho đúng chỗ mà không một ký hiệu nào lọt vào đề hay transcript.
+
+### Thay đổi
+
+- **Mỗi người nói một giọng vùng miền của riêng mình.** Giọng vùng giờ nằm
+  trong chính giọng đọc: app dùng giọng của Extended Voice Library
+  (`en-gb-advisor-1`, `en-au-tutor-3`, `en-ie-concierge-5`…), mỗi ô giới ×
+  giọng vùng có vài giọng (tiếng Anh–Anh 4–5 giọng mỗi giới, vì Part 1 HSG có
+  ba người cùng giới). App tự gán: người nói trong một part không bao giờ
+  chung giọng, các part của một đề ưu tiên giọng khác nhau, giọng giáo viên đã
+  chọn thì giữ nguyên. Thẻ người nói hiện *Voice: Digital Assistant 1 ·
+  automatic* cùng ba nút: **Listen** (nghe thử; lần đầu mỗi giọng ghi một mẫu
+  ngắn, khoảng 0,005 USD, các lần sau miễn phí), **Another voice** (giọng khác
+  cùng giới, cùng vùng mà chưa ai trong part dùng) và **Automatic** (để app
+  chọn lại). Còn người nói chưa có giọng, hai người chung giọng hay giọng sai
+  giới thì app không cho bắt đầu ghi âm.
+- **Chín giọng vùng thay vì năm: thêm Irish, Scottish, South African và Indian
+  English.** Bộ giọng được tuyển bằng cách cho từng giọng đọc một câu nặng
+  giọng vùng, rồi đo cao độ (F0) và cho Gemini nghe lại ("tai AI"). Tai AI xác
+  nhận giọng Anh, Mỹ, Scotland, Ấn Độ, Úc (nữ) và New Zealand (nam). Một số
+  giọng **chỉ dựa trên danh mục của Google**, vì tai AI nghe hầu hết giọng
+  không uốn "r" thành "England": toàn bộ giọng Canada và Nam Phi, một giọng
+  nam Úc, hai giọng nữ New Zealand và một giọng Ireland mỗi giới. Các giọng
+  này ở lại cho tới khi PO nghe mù và quyết định.
+- **Sửa giọng ngay trên trang Whole exam.** Mỗi part có mục *Voices: A: …, B:
+  …* với đúng thẻ người nói và hộp thoại của trang từng phần. Sửa một part thì
+  app gán lại để các part vẫn khác giọng: đề IELTS thử nghiệm dùng 7 giọng
+  khác nhau cho 4 part và người đọc lời dẫn.
+- **Biết khi nào script hay bản ghi đã cũ.** Đổi giới, giọng vùng hay vai của
+  một người nói sau khi đã có script thì trang báo tên, đại từ và cách nói có
+  thể không còn khớp, và hỏi *Rewrite script and questions* hay *Keep this
+  script*. Đổi giọng sau khi đã ghi âm thì trang báo *A voice changed after
+  this recording was made; render it again.* App không lưu cờ nào: nó so
+  người nói hiện tại với người nói lúc viết script và lúc ghi âm, nên mở một
+  đề 0.7 hay để app tự gán giọng không đánh dấu gì là cũ.
+- **New take: đọc lại một part, bỏ qua cache.** Gemini bỏ qua `seed`, nên
+  trước đây một lượt đọc hỏng sẽ quay lại suốt 72 giờ cache. *New take of this
+  part* (trang đề) và *New take (skip cache)* (trang từng phần) đọc lại đúng
+  part đó và chỉ trả tiền part đó; các part khác và lời dẫn vẫn dùng lại.
+- **Script biểu cảm: thở dài, bật cười, ho.** Ô *Expressive delivery (sighs,
+  laughs)*, bật sẵn và lưu cùng đề, cho phép script dùng thưa thớt `<sigh>`,
+  `<cough>`, `<laugh>`, `<chuckle>` giữa câu; giọng đọc diễn chúng chứ không
+  đọc thành chữ. Đề, transcript, DOCX, Markdown, câu hỏi và nút *Download
+  script* không bao giờ chứa các thẻ này; chỉ ô script trên màn hình giữ
+  chúng cho giáo viên xem. Dù bật hay tắt, script nào cũng được yêu cầu tên,
+  đại từ, chính tả và từ vựng khớp với giới và vùng của từng người nói.
+- **Voice Design: tạo giọng từ một câu mô tả.** Trong hộp thoại người nói, mục
+  *Designed voices* liệt kê các giọng thiết kế trong project Google của API
+  key (nghe thử miễn phí, nút *Use*) và tạo giọng mới từ tên cùng một mô tả
+  20–500 ký tự, ví dụ *"A warm woman in her forties with a clear Irish
+  accent"*: mất khoảng 20 giây và khoảng 0,01 USD, xong thì phát mẫu và gán
+  luôn cho người nói. App chỉ xoá được giọng do chính nó tạo, và chỉ tạo hay
+  xoá khi chạy trên 127.0.0.1 hoặc ::1. Mỗi lượt của giọng thiết kế được đọc
+  trong một request riêng.
+- **Chi phí giọng nằm trong dòng chi phí của đề.** Mẫu nghe thử và giọng thiết
+  kế được ghi sổ thành mục *voices* (ví dụ *voices $0.011*) và dòng chi phí
+  cập nhật ngay khi mẫu hay giọng mới về.
+- **Ô chọn hiện đúng giá trị đã lưu.** Trước đây hộp thoại người nói luôn hiện
+  *British English* và *Student* dù đã lưu gì, không chọn lại được mục đầu
+  tiên, và ô Format quay về IELTS sau khi tải lại trang.
+
+### 🧰 Bên trong
+
+- `domain/voice.rs`: `Voice`, `VoiceSource` (Library | Designed),
+  `VoiceChoice` (Auto | Assigned | Chosen), `assign_voices` /
+  `assign_exam_voices` (giữ giọng giáo viên chọn, giữ giọng đã gán nếu còn
+  hợp, người còn lại lấy giọng trống đầu tiên của pool, ưu tiên giọng part
+  khác chưa dùng; tất định, không bao giờ trùng), `next_voice`,
+  `voice_conflicts`, `speaker_change`, `VoiceDesignRequest`. Cùng một luật
+  chạy trên trình duyệt và trên server (`prepare_speakers`, gán lại lúc bắt
+  đầu job rồi trả danh sách người nói đã dùng về cho trang). `describe()`
+  không bao giờ nêu tên giọng, vì tên đó sẽ lọt vào script.
+  `Passage.written_for` và `ExamPart.recorded_for` là cơ sở để suy ra "cũ".
+- Danh mục giọng: `tts/default_voices.json` biên dịch vào app (pool theo giọng
+  vùng × giới, sắp theo độ khác nhau, announcer `en-gb-tutor-9`);
+  `voices.json` version 2 chỉ ghi đè (một danh sách không rỗng thay một pool);
+  pool dưới ngưỡng (Anh 4, các giọng lõi 3, giọng mới 2) là một dòng thông báo
+  khi khởi động.
+- `plan_passage`: một bảng giọng cho cả passage; đoạn tối đa 200 từ và 2 giọng,
+  chỉ gộp lượt cùng người nói và cùng style; giọng thiết kế đọc riêng từng
+  lượt; nối 250 ms khi đổi người, 350 ms khi cùng người. Style của mỗi lượt là
+  một câu ngắn cố định theo vai (`SpeakerRole::delivery_style`, ví dụ *polite
+  and helpful*) cộng `EXAM_PACE`; không bao giờ có giọng vùng, giới, tuổi hay
+  tên trong style.
+- Cache giọng đọc v2 (`speech-cache-v2`): khoá gồm model, (nhãn, id giọng) và
+  (người nói, style, lời) của từng lượt. `Reuse::Refresh` cho *New take*: đọc
+  lại và ghi đè đoạn cũ.
+- `domain/speech.rs` là ngữ pháp duy nhất của thẻ giọng: `SPEECH_TAGS` (theo
+  tài liệu Google), `EXAM_SPEECH_TAGS` (4 thẻ đã đo), `READ_ALOUD_TAGS`,
+  `display_text` cho transcript, đếm từ và kiểm grounding, `speech_text` cho
+  TTS (bỏ thẻ lạ, `[ghi chú]`, dấu `|` lạc vì sẽ bị đọc ra),
+  `markup_problems` thành cảnh báo nêu đúng lượt.
+- `GeminiClient`: mọi request đi qua một đường `send` (retry, header, theo dõi
+  key bị từ chối). Thêm Voices API: `list_voices`, `get_voice`,
+  `delete_voice`, `create_voice` (`POST /v1beta/voices`, `"store": true`,
+  request lưu trữ duy nhất của app, không bao giờ thử lại sau timeout, tính
+  phí ước tính theo giá TTS vì Google chưa công bố giá). Tối đa **3** request
+  TTS cùng lúc trong cả process; 429 đọc `retryDelay` của Google (tối đa 60
+  s). Lỗi về giọng (`UnknownVoice`, `VoiceLimit`) không bao giờ bị coi là key
+  hỏng.
+- `tts/samples.rs` và route thường `GET /voice-sample/{voice_id}`: mẫu giọng
+  nằm ở `DATA_DIR/audio/voices`, dọn sau 30 ngày không dùng.
+  `Bucket::VoiceSample` 30 lần/phút, `Bucket::VoiceDesign` 5 lần/phút.
+- Bảng `designed_voices` trong `jobs.db`: những giọng app đã tạo, giữ đúng
+  giọng vùng (Google chỉ giữ mã ngôn ngữ, Scotland và Anh đều là `en-GB`).
+  Danh sách giọng của project được nhớ 60 giây.
+- `UsageStep::Voices` và `ExamUsage.voices`; request không tốn tiền thì không
+  ghi hàng nào.
+- `tools/voice_lab.py` (stdlib + numpy, không đóng gói): `catalog`, `probe`,
+  `audition`, `score`, `report`, có trần chi tiêu, đọc key giống app và chỉ
+  gửi trong header. F0 đo bằng YIN; "tai AI" là `gemini-3.8-flash` nghe audio
+  và trả JSON giới, giọng vùng, số người nói, chữ bị đọc ra. `docs/voices.md`
+  ghi nguyên nhân, 9 cổng quyết định (G1–G9) và cách chọn pool. Test chạy tay
+  mới: `voice_live_probe`.
+- Một đề 0.7.1 thật (`fixtures/saved_exam_0_7_1.json`) nằm trong unit test:
+  vẫn mở được, không part nào bị đánh dấu cũ.
+
+### 🕵️ Hậu trường: những điều chỉ đo mới biết
+
+- **Giọng nam "ứng biến" là do trùng giọng.** Với đúng request của 0.7.1,
+  `Zephyr` + `Zephyr` biến người thứ hai thành giọng nam trong 3/5 lần đọc;
+  hai giọng `en-gb` khác nhau: 0/5. Vì thế "không bao giờ trùng giọng" là luật
+  của domain, không phải tuỳ chọn.
+- **`<long pause>` và `<whispers>` bị đọc thành chữ** ("Long pause.",
+  "Whispers, don't tell anyone.") dù Google liệt kê chúng. Chỉ 4 thẻ không
+  bao giờ bị đọc ra và được diễn trong đa số lần thử mới được dùng.
+- **Style đổi theo từng dòng làm giọng trôi**: một dòng "calm" hạ cao độ 18 %,
+  một lượt "worried" nâng 20 %. Cảm xúc từng dòng vì thế chỉ đi qua lời, dấu
+  câu và 4 thẻ trên; style cố định theo người nói.
+- **Google nhận giọng thiết kế trong request hai giọng**, trái với tài liệu.
+  App vẫn cho giọng thiết kế đọc riêng như tài liệu nói; một hằng số đổi được
+  khi Google xác nhận.
+- **Mỗi giọng trong request tính thêm audio tham chiếu của nó** thành token
+  đầu vào: giọng cổ điển 200–260, giọng thư viện 740–1.970, giọng thiết kế
+  490–1.220.
+- **Tai AI không phân biệt được các giọng không uốn "r"**: nó nghe giọng Nam
+  Phi 6/6, Ireland 4/6, New Zealand 3/8 và Úc 2/8 thành "England", và từng
+  gọi một giọng nữ Anh 188 Hz với một giọng nữ Úc 149 Hz là cùng một người.
+  Nó chỉ được dùng để lọc, còn quyết định là của người nghe.
+- **Kiểm thử đầu-cuối tóm một lỗi nhỏ**: sau khi bấm *Listen* (tốn tiền) hay
+  tạo giọng, dòng chi phí của đề đứng yên tới bước kế tiếp. Đã sửa trước khi
+  phát hành.
+
+### ⚠️ Cần biết khi nâng cấp
+
+- **Lần render lại đầu tiên của đề cũ phải trả tiền một lần.** Khoá cache đổi
+  sang v2 (giọng và style mới), nên không đoạn nào của 0.7 được dùng lại:
+  khoảng 0,32 USD cho bản ghi của một đề IELTS. Từ lần sau, render lại không
+  đổi gì vẫn là 0 đồng.
+- **`voices.json` của 0.7 không còn được dùng.** Nếu file vẫn đúng mặc định
+  của 0.7, app đổi tên nó thành `voices.0.7.json` và ghi template version 2.
+  Nếu đã sửa tay, app giữ nguyên từng byte nhưng bỏ qua, và console báo
+  *0.7 format*: muốn ghi đè giọng thì viết lại theo version 2, hoặc xoá file
+  để lấy template. File 0.7 hỏng vẫn chặn khởi động như trước.
+- **Đề 0.7 nhận giọng tự động mới khi mở.** Không gì bị đánh dấu cũ và bản ghi
+  cũ vẫn phát được, nhưng render lại sẽ dùng giọng vùng miền mới.
+- **Giọng thiết kế gắn với project Google của API key.** Đổi sang key của
+  project khác thì giọng đó không dùng được (app báo rõ khi bắt đầu ghi âm).
+  Chỉ tạo và xoá được khi app nghe trên 127.0.0.1 hoặc ::1, nên không làm được
+  trong Docker hay trên server mở cho máy khác. Tối đa 200 giọng mỗi project;
+  Google giữ một giọng một năm kể từ lần dùng cuối.
+- **Đề lưu ở 0.8 đừng mở lại bằng 0.7.** Đề có người nói Irish, Scottish,
+  South African hay Indian không mở được ở 0.7. Đề khác mở được, nhưng 0.7 bỏ
+  mất giọng đã chọn và dấu "viết cho / ghi cho", in thẻ `<sigh>` ra
+  transcript, và lần tự lưu kế tiếp ghi đè những thứ đó.
+- **Expressive bật sẵn.** Muốn script như 0.7, không thẻ nào, thì bỏ chọn
+  *Expressive delivery* trước khi sinh script.
+
+### 📊 Con số biết nói
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `cargo fmt --check` app và launcher | sạch |
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba |
+| `cargo test --features server --no-default-features` | **181/181**, 3 test chạy tay (0.7.1: 86; thêm 95 test: gán giọng, danh mục và `voices.json` v2, chia đoạn theo giọng, cache v2, thẻ giọng, transcript không thẻ, Voices API và Voice Design, đề 0.7.1 vẫn mở, suy ra "cũ") |
+| Bản Windows 0.8.0 | (điền sau khi build) |
+| `smoke.py` trên chính file `.exe` phát hành | (điền sau khi build) |
+| Bản Linux 0.8.0 | (điền sau khi build) |
+| `smoke.py` trên AppImage thật, Ubuntu 22.04 và 24.04 sạch | (điền sau khi build) |
+| WASM release (chưa qua wasm-opt) | (điền sau khi build) |
+| HSG Part 1, cùng đoạn 701 từ, ba người *Female, British*: số giọng gửi đi | 0.7.1: 1 (`Zephyr` cho A, B, C) → 0.8.0: **3** giọng `en-gb` khác nhau |
+| Cùng đoạn đó, tai AI nghe | nữ, **Mỹ** → nữ, **Anh** |
+| Cùng đoạn đó, lượt bị đổi thành giọng nam (F0 dưới 120 Hz) | **2/10 → 0** |
+| Cùng đoạn đó, request / tiền ghi âm | 6 / 0,093 USD → 6 / 0,106 USD |
+| Part 1 HSG mới sinh trong app (666 từ, Expressive bật, ba người *Female, British*) | 3 giọng khác nhau, 6 request TTS không cái nào chung giọng, F0 0 cờ, tai AI: 3 nữ, Anh (0,95); 9 request, **0,097 USD** (giá 2027: 0,194), 62 giây từ lúc bấm tới WAV 4:39 |
+| Đề IELTS đầy đủ, Part 3 giọng nữ Ireland + nam Scotland | **0,364 USD** (giá 2027: **0,728**, vượt ngân sách 0,70), 33 request, bản ghi 30:18, cả quy trình 3 phút 6 giây; 7 giọng khác nhau cho 4 part và lời dẫn |
+| Trong đó bản ghi âm | 0,322 USD, 19 request (13 đoạn của các part, 6 lời dẫn; 1 lần thử lại vì Google báo bận) |
+| Part 3 qua tai AI | nữ Ireland và nam Scotland (0,95); `<sigh>`, `<chuckle>` được diễn, không bị đọc ra |
+| DOCX của đề | không có `&lt;`, `\|` hay `[` nào |
+| Render lại đề không đổi gì | 0 request, 19/19 đoạn dùng lại, **0 USD**, 8 giây |
+| *New take of this part* cho Part 1 | 3 request, 16 đoạn dùng lại, 0,052 USD (giá 2027: 0,104) |
+| *Listen* lần đầu / lần sau | khoảng 0,005 USD, 8 giây / **0 USD**, 0,7 giây |
+| Voice Design: tạo một giọng | khoảng 0,009 USD (ước tính theo giá TTS), 18 giây; 80 giây khi Google báo bận |
+| Tiền Gemini tốn cho 0.8.0 | khoảng 1,3 USD thăm dò và tuyển giọng (`docs/voices.md`), 0,025 USD thử trong app, 0,546 USD kiểm thử đầu-cuối: **khoảng 1,9 USD** |
+
+### Thêm
+
+- `src/domain/voice.rs`, `src/domain/speech.rs`, `src/application/voices.rs`,
+  `src/infrastructure/tts/default_voices.json`,
+  `src/infrastructure/tts/samples.rs`, `src/infrastructure/tts/designed.rs`,
+  `src/ui/components/voices.rs`, `tools/voice_lab.py`, `docs/voices.md`.
+- Route `GET /voice-sample/{voice_id}`; bảng `designed_voices` trong `jobs.db`.
+- Phiên bản app và launcher portable: 0.8.0. Không thêm dependency nào.
+
+### Biết rồi, để bản sau
+
+- **Theo giá 2027, một đề IELTS vượt ngân sách**: 0,728 USD so với 0,70 (mức
+  chất lượng trong `docs/project_scope.md`). Một phần vì mỗi giọng thư viện
+  tính thêm audio tham chiếu trong mọi request, một phần vì bản ghi dài hơn.
+  Hôm nay vẫn là 0,364 USD.
+- Các giọng chỉ dựa trên danh mục (Canada, Nam Phi, một giọng nam Úc, hai giọng
+  nữ New Zealand, một giọng Ireland mỗi giới) chờ PO nghe mù bảng tuyển giọng.
+- Giọng nữ Ireland `en-ie-concierge-5` khá trầm (138–147 Hz): báo cáo F0 gắn
+  cờ "giáp ranh", không phải cờ giọng nam; tai AI vẫn nghe là nữ.
+- Một part có giọng thiết kế tốn nhiều request hơn (mỗi lượt một request) và
+  Google chưa công bố giá Voice Design, nên chi phí tạo giọng là ước tính.
+- Part 1 của đề IELTS kiểm thử còn 3 issue của validator, đều về câu hỏi chứ
+  không về giọng: mã bưu chính *BR6 9TY* và số điện thoại *07700 900352* bị
+  tính là 2 từ so với *ONE WORD AND/OR A NUMBER* (có lẽ nên coi là một số),
+  và đáp án *30.50* không có nguyên văn trong script (script nói *thirty
+  pounds and fifty pence*).
+- `gemini-3.8-flash-lite-tts` nhận giọng thư viện, nhưng cùng một giọng nữ cao
+  hơn 20–24 % so với Flash TTS; chưa ai nghe trọn một đề trên lite.
+- Voice Replication (giọng làm từ bản ghi người thật) không làm trong bản này.
+
 ## [0.7.1] – 2026-10-05 — 🔑 "Key hỏng thì nói thẳng, và cho thay ngay trên trang."
 
 Ở 0.7.0, một key đã thu hồi hay gõ sai trong biến môi trường Windows là đủ để

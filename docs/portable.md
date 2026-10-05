@@ -11,9 +11,10 @@ and AppRun derives it from APPIMAGE, not the read-only mount or current director
 An explicit --config-dir PATH overrides that location.
 
 Missing templates are created exclusively, with mode 0600 on Unix. Existing
-files are preserved. Permission failures, malformed dotenv/JSON, empty voice
-defaults, invalid IP/port/model/log settings, invalid optional music, and
-unwritable logs/database cause startup failure. Error messages omit dotenv
+files are preserved. Permission failures, malformed dotenv/JSON, a voices.json
+with another version, an unknown accent or an invalid voice id, invalid
+IP/port/model/log settings, invalid optional music, and unwritable
+logs/database cause startup failure. Error messages omit dotenv
 contents and API-key values. Environment variables override file values
 (on Windows the user and machine environment is read from the registry too, so
 a variable set after the console opened counts); syntax errors are still
@@ -21,6 +22,21 @@ rejected. A missing or placeholder key no longer stops startup: the server
 starts, logs "GEMINI_API_KEY): missing" and the page asks for a key, which it
 accepts only when bound to a loopback address. Startup makes no paid or
 credential-validation API requests.
+
+Since 0.8.0 voices.json is version 2 and holds overrides only: the voice pools
+per accent and gender (British, American, Australian, Canadian, New Zealand,
+Irish, Scottish, South African, Indian English) and the announcer are compiled
+in, a non-empty list in the file replaces one pool, and the first launch writes
+an empty template. A 0.7 file (no "version") is still parsed strictly, so a
+broken one stops startup, and is then ignored: left at the 0.7 defaults it is
+renamed voices.0.7.json and the version 2 template is written; customised, it
+is kept byte for byte and the console prints a "0.7 format" notice. A pool
+below its minimum (4 British voices per gender, 3 for the other core accents,
+2 for the accents added in 0.8) is a notice, not a failure. Voice samples
+("Listen") are kept under data/audio/voices and purged after 30 days unused.
+Designed voices belong to the Google project of the API key; creating or
+deleting one is refused unless the server listens on 127.0.0.1 or ::1, which
+portable mode does by default.
 
 Development and Docker retain their current-working-directory configuration
 and data conventions; no parent-directory dotenv search is performed. Docker
@@ -40,7 +56,7 @@ Use Rust 1.92.0, wasm32-unknown-unknown, Dioxus CLI 0.7.9, and Python 3.
 Windows (MSVC build tools installed):
 
     pwsh -NoProfile -File packaging/build-windows.ps1
-    python packaging/smoke.py dist/listening-exam-generator-0.7.1-windows-x64.exe
+    python packaging/smoke.py dist/listening-exam-generator-0.8.0-windows-x64.exe
 
 The Windows server and packaging launcher statically link the C runtime.
 The launcher embeds only the server, public assets, and dependency notices,
@@ -95,7 +111,11 @@ Record FUSE/graphical-browser tests separately from headless container tests.
 Code signing, ARM64 and updates are outside this release. Paid live checks are
 separate from packaging: `cargo test --features server --no-default-features
 live_probe -- --ignored --nocapture` (about $0.01) confirms the Gemini request
-shapes and measures audio tokens per second.
+shapes and measures audio tokens per second; `voice_live_probe` (same flags)
+checks for free that every pooled voice still exists with its gender and
+language, then spends about $0.003. The smoke script also checks that the
+first launch writes a version 2 voices.json, that a 0.7 file at its defaults
+is renamed and that a customised one is kept with the "0.7 format" notice.
 
 Run `pwsh -NoProfile -File packaging/test-linux.ps1` to verify the built AppImage
 on clean Ubuntu 22.04 and 24.04 containers. Each first tests startup before

@@ -104,6 +104,19 @@ Same passage (701 words, three speakers set to Female, British English), read ag
 | Turns that flipped to a male voice (F0 < 120 Hz) | 2 of 10 | 0 |
 | Requests / cost | 6 / $0.093 | 6 / $0.106 |
 
+## End-to-end check of 0.8.0 (2026-10-05)
+
+Through the app itself (a scratch `--config-dir` server and the browser), $0.530 of app spend
+plus $0.016 of ear checks. WAVs, DOCX and logs are under `TESTING_DUMP/e2e-0.8.0/`, F0 and ear
+results under `TESTING_DUMP/voice-lab/e2e/report/`.
+
+| Run | What was checked | Result |
+|---|---|---|
+| Part page, HSG Part 1, three speakers Female + British, Expressive on | Voices sent per chunk, F0, ear | `en-gb-assistant-1`, `en-gb-advisor-1`, `en-gb-tutor-10`; 6 chunks, no request shared a voice; F0 median 174 Hz, 41 islands, 0 flags (lowest 152 Hz); ear: 3 female speakers, England (0.95). 9 requests, $0.097 |
+| Exam page, IELTS, Part 3 set to Irish (female) + Scottish (male) | Voices across parts, tags, ear on Part 3 | 7 distinct voices for 4 parts and the announcer; `<sigh>` and `<chuckle>` performed, never read; ear: female Ireland, male Scotland (0.95); the Irish female voice sits at 138-147 Hz, so F0 shows borderline flags only, no deep ones. $0.364 for the exam |
+| Same exam | Re-render, New take, transcripts | re-render: 0 requests, 19 chunks reused, $0; New take of Part 1: 3 requests, $0.052, a different WAV; no `&lt;`, `\|` or `[` in the DOCX |
+| Listen | First and second listen | first $0.005-0.006 (8 s), second free (0.7 s), shown as "voices" in the exam's spend |
+
 ## Re-running
 
 ```bash

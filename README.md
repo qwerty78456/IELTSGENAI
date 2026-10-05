@@ -17,8 +17,8 @@ Read `docs/architecture.md` first. `docs/domain_model.md` and
 
 ## Portable Windows and Linux applications
 
-The app ships as a single Windows x64 EXE (0.7.1) and a Linux x86-64
-AppImage (0.7.1, Ubuntu 22.04 baseline). Put the package in a writable folder and run it.
+The app ships as a single Windows x64 EXE (0.8.0) and a Linux x86-64
+AppImage (0.8.0, Ubuntu 22.04 baseline). Put the package in a writable folder and run it.
 First launch creates .env and voices.json beside the package and opens your
 browser at http://127.0.0.1:8080. The Gemini API key comes from the
 GEMINI_API_KEY environment variable (on Windows also one set after the console
@@ -43,6 +43,10 @@ lets you paste a working one that replaces it until the next restart.
 Exams built on the Whole exam page are saved on the server and reopen after a
 restart, recording included. Their recordings are kept until the exam is deleted;
 other recordings expire after AUDIO_RETENTION_HOURS (24 by default).
+Since 0.8.0 voices.json holds version 2 overrides: a 0.7 file left at its
+defaults is renamed voices.0.7.json and a new template is written; a customised
+0.7 file is kept but ignored, and the console says so. Designing or deleting a
+voice works only when the app listens on 127.0.0.1.
 
 Build instructions and verification are in [docs/portable.md](docs/portable.md).
 Builds go to ignored dist/, with SHA-256 checksums and startup instructions.
@@ -69,7 +73,11 @@ cargo test  --features server --no-default-features  # unit tests (domain, expor
 
 `cargo test --features server --no-default-features live_probe -- --ignored --nocapture`
 calls the real API (about $0.01) and prints tokens, latency and audio tokens
-per second; nothing else in the test suite spends money.
+per second. `voice_live_probe` (same flags) checks for free that every pooled
+voice still exists with its gender and language, then spends about $0.003 on
+a three-speaker passage. Nothing else in the test suite spends money;
+`tools/voice_lab.py` (see `docs/voices.md`) runs the voice probes and auditions
+with a spending cap.
 
 ## Run in Docker
 
@@ -94,9 +102,9 @@ volume; recordings no saved exam refers to are purged after
 | `GEMINI_TTS_MODEL` | `gemini-3.8-flash-tts` | speech; any 3.8-generation TTS model, e.g. `gemini-3.8-flash-lite-tts` (a third cheaper) |
 | `GEMINI_THINKING_LEVEL` | `low` | `low`, `medium` or `high` for text requests; thinking tokens are billed as output |
 | `EXAM_BUDGET_USD` | `0.70` | the exam page warns once an exam's Gemini spend passes it; `0` = no budget; nothing is blocked |
-| `SPEECH_CACHE_HOURS` | `72` | synthesised speech is reused for identical words, voices and model this long after its last use; `0` = off |
+| `SPEECH_CACHE_HOURS` | `72` | synthesised speech is reused for identical words, styles, voices and model this long after its last use; `0` = off |
 | `DATA_DIR` | `./data` | jobs.db, audio/, logs/ |
-| `VOICES_PATH` | `$DATA_DIR/voices.json` | gender + accent → voice name; written with defaults if missing |
+| `VOICES_PATH` | `$DATA_DIR/voices.json` | version 2 voice overrides: a list replaces the built-in voices of one accent and gender, `announcer` the announcer; written as an empty template if missing; a 0.7 file is renamed (defaults) or ignored (customised) |
 | `MUSIC_PATH` | unset | 24 kHz mono 16-bit WAV for the start/end of a full exam recording |
 | `AUDIO_RETENTION_HOURS` | `24` | hours an unsaved recording is kept; `0` keeps every recording; recordings of saved exams are never purged |
 | `IP`, `PORT` | `0.0.0.0`, `8080` | bind address |
@@ -108,7 +116,31 @@ kept 55 days). 3.8 Flash TTS reads its input word for word, takes at most two
 voices and 8,192 input tokens per request, and bills **32 audio tokens per
 second** (measured; the pricing page says 25). The app reads a script in
 chunks of at most 200 words and two voices, and asks for raw 24 kHz mono
-16-bit PCM.
+16-bit PCM. Google's 30 classic voices are all General American, so speakers
+are read by regional voices of the Extended Voice Library instead; each voice
+in a request also bills its reference audio (740-1,970 input tokens).
+Measurements and decisions are in `docs/voices.md`.
+
+### Voices
+
+Every speaker of a part gets a voice of its own that fits its gender and
+accent: British, American, Australian, Canadian, New Zealand, Irish,
+Scottish, South African or Indian English, from pools built into the app
+(`src/infrastructure/tts/default_voices.json`). Parts of one exam prefer
+different voices. The speaker cards on both pages show each voice with
+**Listen** (the first listen of a voice records a short sample for about
+$0.005; later listens are free), **Another voice** and **Automatic**. In the
+speaker dialog, **Designed voices** lists the voices of the API key's Google
+project and creates one from a description with Gemini Voice Design (about
+20 s and $0.01; at most 200 per project, kept a year after last use; only on
+a server bound to 127.0.0.1 / ::1). A designed voice reads each of its turns
+in a request of its own. With **Expressive delivery** (on by default) a script
+may carry a few `<sigh>`, `<cough>`, `<laugh>` or `<chuckle>` tags that the
+voice performs; they never appear in transcripts, the paper or the DOCX. When
+a speaker's gender, accent or role changes after the script was written, the
+page offers to rewrite the script or keep it; a changed voice marks the
+recording to render again, and **New take** reads a part again without the
+speech cache.
 
 ### API key
 
@@ -128,28 +160,35 @@ Every Gemini request is metered from its `usage` and priced at the rate in
 force (3.8 introductory prices until 2026-12-31, list prices after). The exam
 page shows the exam's spend per step against `EXAM_BUDGET_USD`; the saved
 exams panel shows the server's last 24 hours and 30 days; each request is also
-logged. Measured on 2026-09-28, one full IELTS exam (4 topics, 4 scripts,
-6 question blocks, one 29-minute recording) at `GEMINI_THINKING_LEVEL=low`:
+logged. Measured on 2026-10-05 with 0.8.0, one full IELTS exam (4 topics,
+4 expressive scripts, 6 question blocks, one 30-minute recording with regional
+voices, Part 3 on Irish and Scottish voices) at `GEMINI_THINKING_LEVEL=low`:
 
 | | now | from 2027-01-01 |
 |---|---|---|
-| topics, scripts, questions (gemini-3.8-flash) | $0.039 | $0.078 |
-| recording (gemini-3.8-flash-tts, 29,728 audio tokens) | $0.269 | $0.538 |
-| **whole exam** | **$0.308** | **$0.616** |
+| topics, scripts, questions (gemini-3.8-flash) | $0.042 | $0.084 |
+| recording (gemini-3.8-flash-tts, 19 requests, 30:18) | $0.322 | $0.644 |
+| **whole exam** | **$0.364** | **$0.728** |
 
-The same exam at `medium` cost $0.48 ($0.96 from 2027). Rendering the
-recording again without changes cost $0: every chunk was reused.
+From 2027 that is over the default $0.70 budget (0.7.0 measured $0.308 and
+$0.616; part of the rise is the reference audio each regional voice bills on
+every request, part a longer recording). Rendering the recording again
+without changes cost $0: every chunk was reused. A new take of one part cost
+$0.052; the first listen of a voice about $0.005, later listens nothing. The
+0.7.0 exam at `medium` cost $0.48 ($0.96 from 2027).
 
 ## Layout
 
 ```
 src/domain/          pure types and rules (formats, passage, tasks, exam, validation, audio programme)
 src/application/     #[server] use cases the UI calls
-src/infrastructure/  server only: Gemini client (Interactions API) and prices, prompts, TTS chunks and
-                     speech cache, WAV, SQLite jobs, saved exams and usage ledger, config and key
+src/infrastructure/  server only: Gemini client (Interactions and Voices API) and prices, prompts, voice
+                     catalogue, samples and designed voices, TTS chunks and speech cache, WAV, SQLite
+                     jobs, saved exams and usage ledger, config and key
 src/export/          Markdown and DOCX paper / key / transcript
 src/ui/              Dioxus components and views
-docs/                architecture, domain model, ubiquitous language, scope
+docs/                architecture, domain model, ubiquitous language, scope, voices
+tools/voice_lab.py   voice catalogue, probes, auditions and F0 / AI-ear reports (not packaged)
 ```
 
 ## Status
@@ -163,6 +202,7 @@ transcript and one exam recording with announcements, pauses and replays,
 streamed from `/audio/{job_id}`. Exams on that page are saved on the server
 automatically and can be reopened later, recording included; both pages export
 Markdown and Word (DOCX, laid out like the paper with answer boxes). Every
-Gemini request is metered: the exam page shows what the exam has cost against
-its budget. See the roadmap at the end of `docs/architecture.md` for what comes
-next: MP3, authentication.
+speaker is read by a regional voice of its own that the teacher can listen to,
+change or design on either page. Every Gemini request is metered: the exam
+page shows what the exam has cost against its budget. See the roadmap at the
+end of `docs/architecture.md` for what comes next: MP3, authentication.

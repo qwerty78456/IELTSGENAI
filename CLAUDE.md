@@ -114,6 +114,12 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   to `EXAM_SPEECH_TAGS` only if it is performed and never read aloud; a tag read aloud even once
   goes in `READ_ALOUD_TAGS`. Record the result under G3 in `docs/voices.md`. `SPEECH_TAGS`
   follows Google's documentation only.
+- Adding an accent: one `Accent` variant appended to the enum and `Accent::ALL` (never remove or
+  rename a variant: saved exams name them), its `label`, `key` and `language_code`, then the
+  compiler's exhaustive matches (`minimum_pool` in `tts/voices.rs`, `spelling` in
+  `prompts/passage.rs`), a `CELLS` entry in `tools/voice_lab.py`, a pool in
+  `tts/default_voices.json` chosen with `voice_lab.py audition` that meets `minimum_pool`
+  (`builtin_pools_meet_minimums` checks it) and a row in `docs/voices.md`.
 - Every speaker of a part has a voice of its own (`SpeakerConfig.voice: VoiceChoice`: `Auto`,
   `Assigned` by the app, `Chosen` by the teacher and never replaced). The browser assigns as soon
   as the catalogue is there; `start_part_audio` / `start_exam_audio` assign again on the server
@@ -215,3 +221,6 @@ removed and must not appear. Components are `#[component] fn Name(...) -> Elemen
 `use_signal` / `use_memo`; props are owned `PartialEq + Clone` values (`ReadOnlySignal<T>` for
 reactive props); assets go through `asset!` and stylesheets through `document::Link` /
 `document::Stylesheet`; in `rsx!` prefer `for` loops and inline `if` over iterator helpers.
+A `select` whose options come from a `for` loop must mark the saved option with `selected:` on
+each `option`, not `value:` on the `select`: Dioxus writes the value before the looped options
+exist, and the browser then shows the first option.

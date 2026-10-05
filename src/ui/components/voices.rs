@@ -116,6 +116,10 @@ pub fn VoicePicker(
     #[props(default)]
     exam: Option<Uuid>,
     onchange: EventHandler<VoiceChoice>,
+    /// A sample came back from the server (the first one of a voice is
+    /// billed), so a page showing the spend can refresh it.
+    #[props(default)]
+    onspend: EventHandler<()>,
 ) -> Element {
     let catalogue = use_context::<VoiceCatalogueCtx>();
     let mut sample = use_signal(|| None::<VoiceSample>);
@@ -180,6 +184,9 @@ pub fn VoicePicker(
         spawn(async move {
             let outcome = voice_preview(voice_id.clone(), exam).await;
             making.set(false);
+            if outcome.is_ok() {
+                onspend.call(());
+            }
             // A sample of a voice the speaker no longer has is dropped.
             if speaker.peek().voice_id() != Some(voice_id.as_str()) {
                 return;
@@ -286,6 +293,9 @@ pub fn DesignedVoicesPanel(
     exam: Option<Uuid>,
     onchoose: EventHandler<Voice>,
     ondelete: EventHandler<String>,
+    /// A voice was designed (billed), so a page showing the spend can refresh it.
+    #[props(default)]
+    onspend: EventHandler<()>,
 ) -> Element {
     let mut open = use_signal(|| false);
     let mut list = use_signal(|| None::<DesignedVoices>);
@@ -355,6 +365,7 @@ pub fn DesignedVoicesPanel(
             busy.set(None);
             match outcome {
                 Ok(made) => {
+                    onspend.call(());
                     if let Some(found) = list.write().as_mut() {
                         found.voices.insert(
                             0,

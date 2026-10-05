@@ -19,6 +19,11 @@ and edits; the tool never claims to produce an official exam.
 - Saved exams on the server, reopened with their recording.
 - Audio: per-part recordings and the full exam recording with announcements,
   tones, pauses and replays, as background jobs.
+- Voices: every speaker is read by a regional voice of its own (nine English
+  accents), assigned automatically and changed by the teacher on both pages:
+  listen, another voice, or a voice designed from a description. Scripts may
+  carry a few performed sounds (sighs, laughs) that never reach the paper,
+  and a script or recording made for other speakers is flagged as stale.
 - Knowing and bounding the cost: every Gemini request is metered and priced,
   an exam's spend is shown against a budget (warning only), and synthesised
   speech is reused instead of paid for twice.
@@ -46,4 +51,7 @@ and edits; the tool never claims to produce an official exam.
 - No secret in URLs or logs; the Gemini key travels in a header and is never
   sent back to the browser.
 - A full IELTS exam costs at most $0.70 of Gemini usage at the prices Google
-  announced for 2027 (measured $0.616 on 2026-09-28).
+  announced for 2027 (measured $0.616 on 2026-09-28; **$0.728 with 0.8.0 on
+  2026-10-05, over the bar**, mostly the recording).
+- The speakers of a part never share a voice, and each voice has the
+  speaker's gender; a recording is refused otherwise.

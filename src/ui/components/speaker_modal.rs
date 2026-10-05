@@ -20,6 +20,9 @@ pub fn SpeakerCards(
     exam: Option<Uuid>,
     onedit: EventHandler<usize>,
     onvoice: EventHandler<(usize, VoiceChoice)>,
+    /// A voice sample came back (the first of a voice is billed).
+    #[props(default)]
+    onspend: EventHandler<()>,
 ) -> Element {
     rsx! {
         div { class: "speakers-list",
@@ -46,6 +49,7 @@ pub fn SpeakerCards(
                         disabled,
                         exam,
                         onchange: move |choice| onvoice.call((idx, choice)),
+                        onspend,
                     }
                 }
             }
@@ -69,6 +73,9 @@ pub fn SpeakerEditModal(
     exam: Option<Uuid>,
     onclose: EventHandler<()>,
     onsave: EventHandler<SpeakerConfig>,
+    /// A voice was designed (billed).
+    #[props(default)]
+    onspend: EventHandler<()>,
 ) -> Element {
     let label = speaker.label.clone();
     let mut edited_gender = use_signal(|| speaker.gender);
@@ -236,6 +243,7 @@ pub fn SpeakerEditModal(
                                 chosen.set(None);
                             }
                         },
+                        onspend,
                     }
                 }
 

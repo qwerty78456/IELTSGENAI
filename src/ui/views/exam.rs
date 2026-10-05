@@ -821,6 +821,9 @@ pub fn ExamView() -> Element {
                                             }
                                             set_part_speakers(state, catalogue, i, list);
                                         },
+                                        onspend: move |_| {
+                                            spawn_forever(refresh_spend(state));
+                                        },
                                     }
                                 }
                                 div { class: "download-buttons",
@@ -1020,6 +1023,9 @@ pub fn ExamView() -> Element {
                                 list[k] = updated;
                             }
                             set_part_speakers(state, catalogue, i, list);
+                        },
+                        onspend: move |_| {
+                            spawn_forever(refresh_spend(state));
                         },
                     }
                 }

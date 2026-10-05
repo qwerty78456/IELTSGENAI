@@ -2,11 +2,11 @@
 
 ## Project Structure & Module Organization
 
-This is one Rust 2024/Dioxus 0.7 crate (`vmq_mvp`). `src/main.rs` wires the app. `src/domain/` holds exam types and validation; `src/application/` exposes server use cases; `src/infrastructure/` contains the Gemini client (Interactions API) and price table, prompts, TTS chunking and the speech cache, audio, jobs, saved exams, the usage ledger, and configuration. `src/export/` renders Markdown and DOCX, while `src/ui/` contains views and components. CSS and images live in `assets/`; architecture and domain terminology live in `docs/`. Tests are inline with the Rust modules they cover, rather than in a separate `tests/` directory.
+This is one Rust 2024/Dioxus 0.7 crate (`vmq_mvp`). `src/main.rs` wires the app. `src/domain/` holds exam types and validation; `src/application/` exposes server use cases; `src/infrastructure/` contains the Gemini client (Interactions and Voices API) and price table, prompts, the voice catalogue (built-in pools in `tts/default_voices.json`), voice samples and designed voices, TTS chunking and the speech cache, audio, jobs, saved exams, the usage ledger, and configuration. `src/export/` renders Markdown and DOCX, while `src/ui/` contains views and components. CSS and images live in `assets/`; architecture, domain terminology and the voice measurements (`docs/voices.md`) live in `docs/`; `tools/voice_lab.py` probes and auditions voices against the paid API. Tests are inline with the Rust modules they cover, rather than in a separate `tests/` directory.
 
 ## Build, Test, and Development Commands
 
-Use Rust 1.88+ (the code uses let-chains; releases are built with 1.92), the `wasm32-unknown-unknown` target, and Dioxus CLI 0.7.x. Generation needs a Gemini key: set `GEMINI_API_KEY` in the environment or in `.env` (copy `.env.example`); without one the app starts and asks for it in the browser. Every generation spends real money, so ask before running `live_probe` or generating exams.
+Use Rust 1.88+ (the code uses let-chains; releases are built with 1.92), the `wasm32-unknown-unknown` target, and Dioxus CLI 0.7.x. Generation needs a Gemini key: set `GEMINI_API_KEY` in the environment or in `.env` (copy `.env.example`); without one the app starts and asks for it in the browser. Every generation spends real money, so ask before running `live_probe`, `voice_live_probe`, `tools/voice_lab.py` (only `catalog` and `report` without `--ear` are free) or generating exams.
 
 - `dx serve` starts the hot-reloading app at `http://localhost:8080`.
 - `dx build --release` builds the server and browser assets under `target/dx/vmq_mvp/release/web/`.

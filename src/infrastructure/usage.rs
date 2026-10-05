@@ -184,6 +184,7 @@ mod tests {
             (UsageStep::Script, exam, text, spent(1, 700, 3_500)),
             (UsageStep::Questions, exam, text, spent(2, 900, 5_000)),
             (UsageStep::Recording, exam, tts, spent(9, 24_000, 216_000)),
+            (UsageStep::Voices, exam, tts, spent(1, 2_000, 18_000)),
             (UsageStep::Script, None, text, spent(1, 600, 3_000)),
             // A run with no request (validation failed first) leaves no row.
             (UsageStep::Topic, exam, text, Usage::default()),
@@ -198,13 +199,17 @@ mod tests {
         assert_eq!(usage.scripts.thinking_tokens, 400);
         assert_eq!(usage.questions.micro_usd, 5_000);
         assert_eq!(usage.recordings.output_tokens, 24_000);
+        assert_eq!(usage.voices.micro_usd, 18_000);
         assert!(usage.topics.is_empty());
-        assert_eq!(usage.total().micro_usd, 4_000 + 3_500 + 5_000 + 216_000);
+        assert_eq!(
+            usage.total().micro_usd,
+            4_000 + 3_500 + 5_000 + 216_000 + 18_000
+        );
         assert_eq!(store.for_exam("other").await.unwrap(), ExamUsage::default());
 
         let everything = store.since(0).await.unwrap();
-        assert_eq!(everything.requests, 14);
-        assert_eq!(everything.micro_usd, 231_500);
+        assert_eq!(everything.requests, 15);
+        assert_eq!(everything.micro_usd, 249_500);
         assert!(store.since(now_secs() + 60).await.unwrap().is_empty());
     }
 }

@@ -42,9 +42,46 @@ Types of the **Listening Assessment Generation** context, as implemented in
 ### `SpeakerConfig`
 - `label` — "Speaker A"; the only thing that appears as a turn marker
 - `gender: Gender` — Male | Female
-- `accent: Accent` — British | American | Australian | Canadian | NewZealand
+- `accent: Accent` — British | American | Australian | Canadian | NewZealand |
+  Irish | Scottish | SouthAfrican | Indian (`ALL` in UI order). Saved exams name
+  the variants, so one is never removed. `language_code()` ("en-GB"; Scottish
+  shares en-GB) and `from_language_code()` (the first match in `ALL`).
 - `role: SpeakerRole` — Student, Professor, Clerk, Receptionist, Guide, Host,
-  Expert, Guest, Reporter, Narrator, Other(String)
+  Expert, Guest, Reporter, Narrator, Other(String). `delivery_style()` gives a
+  few constant words for the speech style ("polite and helpful"), never age,
+  gender, accent or a name.
+- `voice: VoiceChoice` — `Auto` (default; speakers saved before 0.8 load so),
+  `Assigned(Voice)` (picked by the app, replaceable) or `Chosen(Voice)` (picked
+  by the teacher, kept). `with_voice(voice)` chooses a voice and adopts its
+  gender and accent.
+
+`describe()` ("Speaker A: Female, British English, Host") feeds prompts and
+never names the voice; `describe_with_voice()` adds "; voice Oliver" and is for
+transcripts and the answer key only, never the student paper.
+
+### `Voice` (`voice.rs`)
+`id` (what the speech request names, compared alone for identity), `name`,
+`gender`, `accent`, `source: VoiceSource` (`Library` | `Designed`),
+`description`. `Voice::check_id` allows 1–100 ASCII letters, digits, `-`, `_`;
+`Voice::is_designed_id` is the one place the Voice Design prefixes
+(`voice_`, `voicekey_`) are known.
+
+Pure rules over a catalogue slice, run in the browser and again on the server:
+- `assign_voices(speakers, catalogue, elsewhere) -> AssignedVoices { speakers, unvoiced }`:
+  keeps `Chosen`; keeps `Assigned` while the catalogue lists it, it fits and no
+  one else holds it; gives every other speaker the first fitting free voice in
+  catalogue order, preferring ids not in `elsewhere` (the other parts'). Never
+  gives two speakers one voice, deterministic, idempotent; `unvoiced` lists the
+  labels left on `Auto`.
+- `assign_exam_voices(parts, catalogue)` — `assign_voices` part by part, in
+  order, each part's `elsewhere` being the other parts' voices; the browser and
+  `start_exam_audio` both assign an exam this way.
+- `next_voice(speakers, index, catalogue)` — "Another voice": the next fitting
+  voice after the current one that no other speaker uses, wrapping.
+- `voice_conflicts(speakers)` — a shared voice, or a voice of the other gender.
+- `speaker_change(before, after) -> SpeakerChange { script, recording }` — what
+  an edit makes out of date (labels, gender, accent, role: both; voice only:
+  the recording). Nothing when `before` is empty.
 
 ## Content
 
@@ -107,10 +144,12 @@ answered from the cache, free), `input_tokens` (cached included),
 `cost_text()` ("$0.412", "+?" when something is unpriced).
 
 ### `UsageStep`
-`Topic` | `Script` | `Questions` | `Recording`, stored by `key()`.
+`Topic` | `Script` | `Questions` | `Recording` | `Voices` (samples and designed
+voices), stored by `key()`; `label()` names it in the spend breakdown.
 
 ### `ExamUsage`
-One `Usage` per step plus `budget_micro_usd` (0 = none); `total()`,
+One `Usage` per step (`voices` defaults to empty for older data) plus
+`budget_micro_usd` (0 = none); `step()`, `step_mut()`, `total()`,
 `over_budget()`, `budget_text()`. Built by `application::usage::exam_usage`
 from the ledger; it includes failed and superseded runs.
 
@@ -118,17 +157,23 @@ from the ledger; it includes failed and superseded runs.
 
 | Command            | Validates                                              |
 |--------------------|--------------------------------------------------------|
-| `PassageRequest`   | topic length/content, part exists, speaker count/labels |
+| `PassageRequest`   | topic length/content, part exists, speaker count/labels (first Error; warnings never block) |
 | `TaskRequest`      | part and task index exist, passage not empty            |
-| `AudioRequest`     | passage not empty, every used label has a voice         |
-| `ExamAudioRequest` | one valid `AudioRequest` per part of the format         |
+| `AudioRequest`     | passage not empty, every used label configured, every speaker has a voice (none on `Auto`) with a valid id, no shared voice, no voice of the other gender |
+| `ExamAudioRequest` | one valid `AudioRequest` per part of the format (errors name the part) |
+
+Voices are assigned before an `AudioRequest` is validated: the browser and the
+server both run `assign_voices` first.
 
 ## Validation
 
 `validate_speakers`, `validate_passage`, `validate_task` return
 `Vec<ValidationIssue { severity, item, message }>`. `Severity::Error` means
-the key is unusable; `Warning` means look at it. The grounding rule: text
-keys and evidence must occur in the normalised passage text.
+the key is unusable; `Warning` means look at it. `first_error` picks the
+issue that blocks. `validate_speakers` adds a Warning per `voice_conflicts`
+entry: the script does not depend on the voice, the recording does. The
+grounding rule: text keys and evidence must occur in the normalised passage
+text.
 
 `validate_exam(&Exam)` checks structural completeness before export or the
 full recording: every part has a passage, every `TaskSpec` has a task and,

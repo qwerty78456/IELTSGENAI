@@ -7,7 +7,7 @@ use std::{
     sync::OnceLock,
 };
 
-use super::{audio::Pcm16, tts::voices::VoiceMappings};
+use super::{audio::Pcm16, tts::voices::VoiceCatalog};
 
 pub const DEFAULT_TEXT_MODEL: &str = "gemini-3.8-flash";
 pub const DEFAULT_TTS_MODEL: &str = "gemini-3.8-flash-tts";
@@ -180,7 +180,13 @@ pub struct AppConfig {
     pub exam_budget_micro_usd: u64,
     /// How long a synthesised chunk is kept for reuse; 0 disables the speech cache.
     pub speech_cache_hours: u32,
-    pub voices: VoiceMappings,
+    /// The voices speakers and the announcer are read with: built-in pools
+    /// plus the overrides in `voices.json`.
+    pub voices: VoiceCatalog,
+    /// Things the operator should know that do not stop startup (an ignored
+    /// 0.7 `voices.json`, a voice pool too small). Printed and logged once
+    /// logging is up.
+    pub notices: Vec<String>,
     pub music_path: Option<PathBuf>,
     /// How long a recording no saved exam refers to is kept; 0 keeps every recording.
     pub audio_retention_hours: u32,
@@ -363,7 +369,7 @@ impl AppConfig {
         if portable {
             create_missing(&env_path, PORTABLE_ENV.as_bytes())?;
             // Create both first-run templates even when .env is malformed or the key is unset.
-            VoiceMappings::create_missing(&base.join("voices.json"))?;
+            VoiceCatalog::create_missing(&base.join("voices.json"))?;
         }
         let dotenv = read_dotenv(&env_path, portable)?;
         let mut values = dotenv.clone();
@@ -395,8 +401,8 @@ impl AppConfig {
         {
             return Err(setting_error("VOICES_PATH", "must not be empty"));
         }
-        VoiceMappings::create_missing(&voices_path)?;
-        let voices = VoiceMappings::load(&voices_path)?;
+        VoiceCatalog::create_missing(&voices_path)?;
+        let (voices, notices) = VoiceCatalog::load(&voices_path)?;
         let key = [
             (environment, KeyOrigin::Process),
             (windows, KeyOrigin::Windows),
@@ -527,6 +533,7 @@ impl AppConfig {
             exam_budget_micro_usd,
             speech_cache_hours,
             voices,
+            notices,
             music_path,
             audio_retention_hours,
             address: SocketAddr::new(ip, port),
@@ -540,6 +547,10 @@ impl AppConfig {
     /// Where reusable synthesised chunks live (`tts::cache`).
     pub fn speech_cache_dir(&self) -> PathBuf {
         self.audio_dir().join("cache")
+    }
+    /// Where voice samples ("Preview") live, one WAV per voice id (`tts::samples`).
+    pub fn voice_sample_dir(&self) -> PathBuf {
+        self.audio_dir().join("voices")
     }
     /// The age after which a cached chunk is deleted; `None` when the cache is off.
     pub fn speech_cache_secs(&self) -> Option<i64> {
@@ -771,6 +782,36 @@ mod tests {
         std::fs::create_dir(&path).unwrap();
         assert!(AppConfig::load(dir.path(), true, &environment()).is_err());
     }
+    #[test]
+    fn first_run_writes_the_v2_template() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = AppConfig::load(dir.path(), true, &environment()).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.path().join("voices.json")).unwrap())
+                .unwrap();
+        assert_eq!(written["version"], 2);
+        assert_eq!(written["pools"], serde_json::json!({}));
+        assert!(cfg.notices.is_empty(), "{:?}", cfg.notices);
+        assert!(!cfg.voices.voices().is_empty());
+        assert_eq!(cfg.voice_sample_dir(), cfg.audio_dir().join("voices"));
+    }
+
+    #[test]
+    fn notices_report_a_0_7_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("voices.json");
+        let custom = r#"{"male": {"default": "Puck", "british": "Orus"}, "female": {"default": "Kore"}, "announcer": "Charon"}"#;
+        std::fs::write(&path, custom).unwrap();
+        let cfg = AppConfig::load(dir.path(), true, &environment()).unwrap();
+        assert_eq!(cfg.notices.len(), 1);
+        assert!(cfg.notices[0].contains("0.7 format"), "{:?}", cfg.notices);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), custom);
+        assert_eq!(
+            cfg.voices.voices(),
+            crate::infrastructure::tts::voices::VoiceCatalog::builtin().voices()
+        );
+    }
+
     #[test]
     fn command_line_errors_are_clear() {
         assert!(StartupOptions::parse(["--config-dir".into()]).is_err());

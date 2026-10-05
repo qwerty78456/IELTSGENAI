@@ -1,0 +1,502 @@
+{
+  "exam": {
+    "id": "5d0b8a52-6f0e-4f43-9a8e-2b1f3c4d5e6f",
+    "format": {
+      "id": "HsgNational",
+      "name": "HSG Quoc gia - Listening",
+      "total_points": 5.0,
+      "listening_minutes": 30,
+      "check_minutes": 2,
+      "parts": [
+        {
+          "number": 1,
+          "title": "Part 1",
+          "passage": {
+            "Interview": {
+              "guests": 2
+            }
+          },
+          "brief": "A radio or podcast conversation: a host interviews two guests with different perspectives on a current-affairs topic. Both guests must contribute distinct claims, and some points must be raised by both.",
+          "playback": "Once",
+          "min_minutes": 4.0,
+          "max_minutes": 5.0,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Female",
+              "accent": "British",
+              "role": "Host"
+            },
+            {
+              "label": "Speaker B",
+              "gender": "Female",
+              "accent": "American",
+              "role": "Guest"
+            },
+            {
+              "label": "Speaker C",
+              "gender": "Male",
+              "accent": "British",
+              "role": "Expert"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": "TrueFalseNotGiven",
+              "first": 1,
+              "last": 5
+            },
+            {
+              "kind": {
+                "WhoMentioned": {
+                  "guests": 2
+                }
+              },
+              "first": 6,
+              "last": 10
+            }
+          ]
+        },
+        {
+          "number": 2,
+          "title": "Part 2",
+          "passage": "Monologue",
+          "brief": "A news feature or documentary-style talk by one presenter, dense with facts, figures, comparisons and named examples.",
+          "playback": "Once",
+          "min_minutes": 5.0,
+          "max_minutes": 6.0,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Male",
+              "accent": "British",
+              "role": "Reporter"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": {
+                "MultipleSelect": {
+                  "choose": 2,
+                  "options": 5
+                }
+              },
+              "first": 11,
+              "last": 12
+            },
+            {
+              "kind": {
+                "MultipleSelect": {
+                  "choose": 3,
+                  "options": 7
+                }
+              },
+              "first": 13,
+              "last": 15
+            },
+            {
+              "kind": {
+                "MultipleChoice": {
+                  "options": 4
+                }
+              },
+              "first": 16,
+              "last": 20
+            }
+          ]
+        },
+        {
+          "number": 3,
+          "title": "Part 3",
+          "passage": "Excerpt",
+          "brief": "Part of a talk by one speaker on a science, health or lifestyle topic, with precise terms a listener can write down.",
+          "playback": "Twice",
+          "min_minutes": 2.5,
+          "max_minutes": 3.5,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Female",
+              "accent": "American",
+              "role": "Expert"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": {
+                "ShortAnswer": {
+                  "max_words": 2,
+                  "allow_number": false
+                }
+              },
+              "first": 21,
+              "last": 25
+            }
+          ]
+        },
+        {
+          "number": 4,
+          "title": "Part 4",
+          "passage": "Excerpt",
+          "brief": "Part of a talk by one speaker on a history, culture or technology topic, structured in clear sub-sections so a summary can follow it.",
+          "playback": "Twice",
+          "min_minutes": 3.5,
+          "max_minutes": 4.5,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Male",
+              "accent": "British",
+              "role": "Narrator"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": {
+                "SummaryCompletion": {
+                  "max_words": 1,
+                  "allow_number": true
+                }
+              },
+              "first": 26,
+              "last": 35
+            }
+          ]
+        }
+      ]
+    },
+    "title": "HSG mock (0.7.1)",
+    "theme": "news and current affairs",
+    "parts": [
+      {
+        "spec": {
+          "number": 1,
+          "title": "Part 1",
+          "passage": {
+            "Interview": {
+              "guests": 2
+            }
+          },
+          "brief": "A radio or podcast conversation: a host interviews two guests with different perspectives on a current-affairs topic. Both guests must contribute distinct claims, and some points must be raised by both.",
+          "playback": "Once",
+          "min_minutes": 4.0,
+          "max_minutes": 5.0,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Female",
+              "accent": "British",
+              "role": "Host"
+            },
+            {
+              "label": "Speaker B",
+              "gender": "Female",
+              "accent": "American",
+              "role": "Guest"
+            },
+            {
+              "label": "Speaker C",
+              "gender": "Male",
+              "accent": "British",
+              "role": "Expert"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": "TrueFalseNotGiven",
+              "first": 1,
+              "last": 5
+            },
+            {
+              "kind": {
+                "WhoMentioned": {
+                  "guests": 2
+                }
+              },
+              "first": 6,
+              "last": 10
+            }
+          ]
+        },
+        "speakers": [
+          {
+            "label": "Speaker A",
+            "gender": "Female",
+            "accent": "British",
+            "role": "Host"
+          },
+          {
+            "label": "Speaker B",
+            "gender": "Female",
+            "accent": "British",
+            "role": "Guest"
+          },
+          {
+            "label": "Speaker C",
+            "gender": "Female",
+            "accent": "British",
+            "role": {
+              "Other": "Councillor"
+            }
+          }
+        ],
+        "passage": {
+          "part": 1,
+          "topic": "Car-free Saturdays in the town centre",
+          "lines": [
+            {
+              "speaker": "Speaker A",
+              "text": "Good evening and welcome to City Talk. Tonight we ask whether the town centre should ban cars on Saturdays."
+            },
+            {
+              "speaker": "Speaker B",
+              "text": "Thanks for having me. Footfall on the high street rose by twelve per cent during the trial in May."
+            },
+            {
+              "speaker": "Speaker C",
+              "text": "That is true, but deliveries were late and two bakeries closed early on every Saturday of the trial."
+            },
+            {
+              "speaker": "Speaker A",
+              "text": "So the shops gained visitors but lost time?"
+            },
+            {
+              "speaker": "Speaker B",
+              "text": "Mostly, yes. The cafes did best."
+            },
+            {
+              "speaker": "Speaker C",
+              "text": "And the bus routes need changing before anything is permanent."
+            }
+          ]
+        },
+        "tasks": [
+          {
+            "spec": {
+              "kind": "TrueFalseNotGiven",
+              "first": 1,
+              "last": 5
+            },
+            "instruction": "For questions 1 - 5, decide whether each of the following statements is True (T), False (F), or Not Given (NG) according to what you hear. Write T, F, or NG in the corresponding numbered boxes provided.",
+            "shared_options": [],
+            "summary": null,
+            "items": [
+              {
+                "number": 1,
+                "stem": "Footfall rose during the trial.",
+                "options": [],
+                "answer": {
+                  "kind": "tfng",
+                  "value": "T"
+                },
+                "evidence": "Footfall on the high street rose by twelve per cent"
+              },
+              {
+                "number": 2,
+                "stem": "The trial took place in June.",
+                "options": [],
+                "answer": {
+                  "kind": "tfng",
+                  "value": "F"
+                },
+                "evidence": "during the trial in May"
+              },
+              {
+                "number": 3,
+                "stem": "Three bakeries closed early.",
+                "options": [],
+                "answer": {
+                  "kind": "tfng",
+                  "value": "F"
+                },
+                "evidence": "two bakeries closed early"
+              },
+              {
+                "number": 4,
+                "stem": "Cafes did best.",
+                "options": [],
+                "answer": {
+                  "kind": "tfng",
+                  "value": "T"
+                },
+                "evidence": "The cafes did best"
+              },
+              {
+                "number": 5,
+                "stem": "Parking fees will rise.",
+                "options": [],
+                "answer": {
+                  "kind": "tfng",
+                  "value": "NG"
+                },
+                "evidence": ""
+              }
+            ]
+          }
+        ],
+        "audio": {
+          "container": "wav",
+          "sample_rate": 24000,
+          "duration_ms": 41250,
+          "location": "8a1f0c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5b"
+        }
+      },
+      {
+        "spec": {
+          "number": 2,
+          "title": "Part 2",
+          "passage": "Monologue",
+          "brief": "A news feature or documentary-style talk by one presenter, dense with facts, figures, comparisons and named examples.",
+          "playback": "Once",
+          "min_minutes": 5.0,
+          "max_minutes": 6.0,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Male",
+              "accent": "British",
+              "role": "Reporter"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": {
+                "MultipleSelect": {
+                  "choose": 2,
+                  "options": 5
+                }
+              },
+              "first": 11,
+              "last": 12
+            },
+            {
+              "kind": {
+                "MultipleSelect": {
+                  "choose": 3,
+                  "options": 7
+                }
+              },
+              "first": 13,
+              "last": 15
+            },
+            {
+              "kind": {
+                "MultipleChoice": {
+                  "options": 4
+                }
+              },
+              "first": 16,
+              "last": 20
+            }
+          ]
+        },
+        "speakers": [
+          {
+            "label": "Speaker A",
+            "gender": "Male",
+            "accent": "British",
+            "role": "Reporter"
+          }
+        ],
+        "passage": null,
+        "tasks": [],
+        "audio": null
+      },
+      {
+        "spec": {
+          "number": 3,
+          "title": "Part 3",
+          "passage": "Excerpt",
+          "brief": "Part of a talk by one speaker on a science, health or lifestyle topic, with precise terms a listener can write down.",
+          "playback": "Twice",
+          "min_minutes": 2.5,
+          "max_minutes": 3.5,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Female",
+              "accent": "American",
+              "role": "Expert"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": {
+                "ShortAnswer": {
+                  "max_words": 2,
+                  "allow_number": false
+                }
+              },
+              "first": 21,
+              "last": 25
+            }
+          ]
+        },
+        "speakers": [
+          {
+            "label": "Speaker A",
+            "gender": "Female",
+            "accent": "American",
+            "role": "Expert"
+          }
+        ],
+        "passage": null,
+        "tasks": [],
+        "audio": null
+      },
+      {
+        "spec": {
+          "number": 4,
+          "title": "Part 4",
+          "passage": "Excerpt",
+          "brief": "Part of a talk by one speaker on a history, culture or technology topic, structured in clear sub-sections so a summary can follow it.",
+          "playback": "Twice",
+          "min_minutes": 3.5,
+          "max_minutes": 4.5,
+          "default_speakers": [
+            {
+              "label": "Speaker A",
+              "gender": "Male",
+              "accent": "British",
+              "role": "Narrator"
+            }
+          ],
+          "tasks": [
+            {
+              "kind": {
+                "SummaryCompletion": {
+                  "max_words": 1,
+                  "allow_number": true
+                }
+              },
+              "first": 26,
+              "last": 35
+            }
+          ]
+        },
+        "speakers": [
+          {
+            "label": "Speaker A",
+            "gender": "Male",
+            "accent": "British",
+            "role": "Narrator"
+          }
+        ],
+        "passage": null,
+        "tasks": [],
+        "audio": null
+      }
+    ]
+  },
+  "topics": [
+    "Car-free Saturdays in the town centre",
+    "",
+    "",
+    ""
+  ],
+  "recording_job": "8a1f0c2e-3b4d-4e5f-8a9b-0c1d2e3f4a5c",
+  "recording": null,
+  "recording_stale": true,
+  "created_at_secs": 1759651200,
+  "updated_at_secs": 1759654800
+}

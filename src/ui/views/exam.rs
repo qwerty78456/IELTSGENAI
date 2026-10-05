@@ -16,6 +16,10 @@
 //! requested meanwhile runs right after. Opening a saved exam replaces the
 //! state the way switching formats does, recomputing issues with the pure
 //! validators and resuming a recording job that was still running.
+//!
+//! Speakers without a voice (a new exam, or one saved before 0.8) get one in
+//! the browser once the voice catalogue is loaded (`assign_exam_voices`, as
+//! the server does); `start_exam_audio` sends back the voices it recorded with.
 
 use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
@@ -33,7 +37,8 @@ use crate::application::topics::suggest_topic;
 use crate::application::usage::{UsageTotals, exam_usage, usage_totals};
 use crate::domain::{
     AudioRequest, AudioTrack, Exam, ExamAudioRequest, ExamUsage, FormatId, PassageRequest,
-    TaskRequest, ValidationIssue, has_errors, validate_exam, validate_passage, validate_task,
+    SpeakerConfig, TaskRequest, UsageStep, ValidationIssue, assign_exam_voices, has_errors,
+    validate_exam, validate_passage, validate_task,
 };
 use crate::export::{docx, markdown};
 use crate::ui::clock::local_time;
@@ -41,6 +46,7 @@ use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, do
 use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
+use crate::ui::components::voices::VoiceCatalogueCtx;
 use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, sleep_ms, wait_for_job};
 
 /// How long after the last keystroke an edit is saved.
@@ -388,6 +394,38 @@ fn audio_stage(progress: f32, parts: usize) -> String {
 #[component]
 pub fn ExamView() -> Element {
     let mut state = use_context::<Signal<ExamState>>();
+    let catalogue = use_context::<VoiceCatalogueCtx>();
+    let exam_id = use_memo(move || state.read().exam.id);
+
+    // Speakers on Auto get voices once the catalogue is here and whenever
+    // another exam is opened or started. This is not an edit: nothing is
+    // marked stale or saved for it; the next save keeps the voices.
+    use_effect(move || {
+        let _ = exam_id();
+        let Some(voices) = catalogue.voices() else {
+            return;
+        };
+        let line_ups: Vec<Vec<SpeakerConfig>> = state
+            .peek()
+            .exam
+            .parts
+            .iter()
+            .map(|p| p.speakers.clone())
+            .collect();
+        if !line_ups.iter().flatten().any(|s| s.voice.is_auto()) {
+            return;
+        }
+        let assigned: Vec<Vec<SpeakerConfig>> = assign_exam_voices(&line_ups, &voices)
+            .into_iter()
+            .map(|part| part.speakers)
+            .collect();
+        if assigned != line_ups {
+            let mut s = state.write();
+            for (part, speakers) in s.exam.parts.iter_mut().zip(assigned) {
+                part.speakers = speakers;
+            }
+        }
+    });
 
     let current = state();
     let busy = current.is_busy();
@@ -638,7 +676,7 @@ pub fn ExamView() -> Element {
                     }
                     button {
                         class: "download-button secondary",
-                        disabled: busy || !all_scripts,
+                        disabled: busy || !all_scripts || !catalogue.is_ready(),
                         onclick: handle_render_audio,
                         "Render exam audio"
                     }
@@ -779,6 +817,14 @@ pub fn ExamView() -> Element {
                         div { class: "note-box",
                             span { class: "note-icon", "!" }
                             span { "A script changed after this recording was made; render it again." }
+                        }
+                    }
+                    if let Some(error) = catalogue.error() {
+                        div { class: "error-message", "Could not load the voices: {error}" }
+                        button {
+                            class: "voice-button",
+                            onclick: move |_| catalogue.retry(),
+                            "Try again"
                         }
                     }
                     {audio_body}
@@ -926,11 +972,18 @@ fn spend_view(spend: Option<ExamUsage>) -> Element {
         total.output_tokens,
         total.thinking_tokens
     );
+    // Voices appear only once something was spent on them.
+    let steps = UsageStep::ALL
+        .into_iter()
+        .filter(|step| *step != UsageStep::Voices || !spend.voices.is_empty())
+        .map(|step| format!("{} {}", step.label(), spend.step(step).cost_text()))
+        .collect::<Vec<_>>()
+        .join(", ");
     rsx! {
         p { class: "spend-status", title: "{detail}",
             "Gemini spend for this exam: "
             strong { "{total.cost_text()}" }
-            "{budget} (topics {spend.topics.cost_text()}, scripts {spend.scripts.cost_text()}, questions {spend.questions.cost_text()}, recording {spend.recordings.cost_text()})"
+            "{budget} ({steps})"
         }
         if spend.over_budget() {
             div { class: "note-box",
@@ -1242,20 +1295,33 @@ async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAud
         ..AudioWork::default()
     };
     let exam_id = state.peek().exam.id;
+    let numbers: Vec<u8> = request.parts.iter().map(|p| p.passage.part).collect();
     let started = start_exam_audio(request, Some(exam_id)).await;
     if !still_current(state, run) {
         return;
     }
-    let job_id = match started {
-        Ok(job_id) => job_id,
+    let started = match started {
+        Ok(started) => started,
         Err(e) => {
             state.write().audio.step = Step::Failed(format!("Could not start the recording: {e}"));
             return;
         }
     };
-    state.write().audio.job_id = Some(job_id.clone());
+    {
+        // Keep the voices the server records with (the same rule as here,
+        // so normally nothing changes); the save below stores them.
+        let mut s = state.write();
+        for (number, speakers) in numbers.into_iter().zip(started.parts) {
+            if let Some(part) = s.exam.parts.iter_mut().find(|p| p.spec.number == number)
+                && part.speakers != speakers
+            {
+                part.speakers = speakers;
+            }
+        }
+        s.audio.job_id = Some(started.job_id.clone());
+    }
     auto_save(state);
-    fetch_exam_audio(state, run, job_id).await;
+    fetch_exam_audio(state, run, started.job_id).await;
 }
 
 /// Waits for a started exam job, reporting progress; also behind "Check again".

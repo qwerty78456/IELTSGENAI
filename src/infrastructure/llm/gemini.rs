@@ -1,10 +1,12 @@
-//! Google Gemini client on the Interactions API, for text, JSON and speech.
+//! Google Gemini client on the Interactions API, for text, JSON and speech,
+//! plus the free voice catalogue.
 //!
-//! Every request is `POST /v1beta/interactions` with `"store": false`: the app
-//! keeps no conversation on Google's side, and Google would otherwise store
-//! each interaction (55 days on the paid tier). The API key travels in the
-//! `x-goog-api-key` header, never in the URL, so it cannot leak through logs
-//! or proxies.
+//! Every generation request is `POST /v1beta/interactions` with
+//! `"store": false`: the app keeps no conversation on Google's side, and
+//! Google would otherwise store each interaction (55 days on the paid tier).
+//! The voice catalogue is `GET /v1beta/voices`. Both go through `send`, one
+//! retry policy. The API key travels in the `x-goog-api-key` header, never in
+//! the URL, so it cannot leak through logs or proxies.
 //!
 //! Every billed response is added to the client's usage meter before it is
 //! parsed, so a reply that is cut off or malformed is still counted.
@@ -13,10 +15,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use reqwest::Method;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+use tokio::sync::Semaphore;
 
-use crate::domain::Usage;
+use crate::domain::{Usage, Voice};
 
 use super::super::audio::{Pcm16, SAMPLE_RATE};
 use super::super::config::config;
@@ -27,8 +31,20 @@ const API_ROOT: &str = "https://generativelanguage.googleapis.com/v1beta";
 const KEY_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const TEXT_TIMEOUT: Duration = Duration::from_secs(90);
 const TTS_TIMEOUT: Duration = Duration::from_secs(300);
+const VOICES_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RETRIES: u32 = 3;
 const FIRST_BACKOFF_MS: u64 = 1_000;
+/// Longest wait honoured from a 429's `retryDelay`.
+const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
+/// Speech requests in flight at once, for the whole process: the parts of an
+/// exam job and the chunks of each part all queue here, so a render never
+/// fires more requests than the key's per-minute limit tolerates.
+const TTS_PARALLEL_REQUESTS: usize = 3;
+static TTS_SLOTS: Semaphore = Semaphore::const_new(TTS_PARALLEL_REQUESTS);
+/// Voices per catalogue page (the API's maximum) and a stop for a list that
+/// never ends.
+const VOICE_PAGE_SIZE: u32 = 1_000;
+const MAX_VOICE_PAGES: usize = 20;
 /// Cap on one text answer, thinking included. Every real answer fits in a
 /// fraction of it; it only stops a runaway reply from running up the bill.
 const MAX_OUTPUT_TOKENS: u32 = 8_192;
@@ -71,9 +87,15 @@ pub enum LlmError {
     Network(String),
     #[error("The AI service returned something unexpected: {0}")]
     Malformed(String),
+    /// A voice id Google refused: unknown, retired, or a designed voice of
+    /// another Google project.
+    #[error(
+        "Google could not use the voice \"{0}\": it does not exist, or it was designed with another API key (Google project). Choose another voice."
+    )]
+    UnknownVoice(String),
 }
 
-/// A passage label bound to a prebuilt Gemini voice name.
+/// A passage label bound to a Gemini voice id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VoiceAssignment {
     pub label: String,
@@ -81,20 +103,78 @@ pub struct VoiceAssignment {
 }
 
 /// One stretch of speech, read word for word. `speaker` is a passage label
-/// ("Speaker A") and is required when the request has two voices.
+/// ("Speaker A") and is required when the request has two voices. Gemini TTS
+/// reads text verbatim, so delivery directions go in `style`, never in the
+/// text; an empty style sends none.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeechTurn {
     pub speaker: Option<String>,
     pub text: String,
+    pub style: String,
 }
 
-/// One speech request: its turns, one or two voices, and how to deliver them.
-/// Gemini TTS reads text verbatim, so directions go in `style`, never in the text.
+/// One speech request: its turns and one or two voices.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeechRequest {
     pub turns: Vec<SpeechTurn>,
     pub voices: Vec<VoiceAssignment>,
-    pub style: String,
+}
+
+/// Filters for `GeminiClient::list_voices`; `None` leaves one out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VoiceQuery {
+    /// "en-GB".
+    pub language_code: Option<String>,
+    /// "male" or "female".
+    pub gender: Option<String>,
+    /// "prebuilt" (the library) or "prompted" (this project's designed voices).
+    pub voice_type: Option<String>,
+    /// The catalogue's exact accent, such as "Winchester English".
+    pub accent: Option<String>,
+    /// Voices per page; the API's maximum when unset.
+    pub page_size: Option<u32>,
+}
+
+impl VoiceQuery {
+    /// The query string of one page.
+    fn pairs(&self, page_token: Option<&str>) -> Vec<(&'static str, String)> {
+        let mut pairs = vec![(
+            "page_size",
+            self.page_size.unwrap_or(VOICE_PAGE_SIZE).to_string(),
+        )];
+        for (name, value) in [
+            ("language_code", &self.language_code),
+            ("gender", &self.gender),
+            ("type", &self.voice_type),
+            ("accent", &self.accent),
+        ] {
+            if let Some(value) = value.as_deref().filter(|v| !v.trim().is_empty()) {
+                pairs.push((name, value.to_string()));
+            }
+        }
+        if let Some(token) = page_token {
+            pairs.push(("page_token", token.to_string()));
+        }
+        pairs
+    }
+}
+
+/// One voice of Google's catalogue, as listed. Fields Google leaves out are
+/// empty strings.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CatalogVoice {
+    pub id: String,
+    pub display_name: String,
+    pub description: String,
+    pub gender: String,
+    pub accent: String,
+    pub language_code: String,
+    pub region_code: String,
+    pub pitch: String,
+    pub persona: String,
+    pub context: String,
+    /// "prebuilt" or "prompted".
+    pub voice_type: String,
 }
 
 #[derive(Clone)]
@@ -210,9 +290,11 @@ impl GeminiClient {
         })
     }
 
-    /// Speech synthesis: 24 kHz mono PCM. At most two voices per request.
+    /// Speech synthesis: 24 kHz mono PCM. At most two voices per request, and
+    /// at most `TTS_PARALLEL_REQUESTS` requests in flight in the process.
     pub async fn synthesize(&self, request: &SpeechRequest) -> Result<Pcm16, LlmError> {
         let body = speech_body(&self.tts_model, request)?;
+        let _slot = TTS_SLOTS.acquire().await.map_err(|_| LlmError::Busy)?;
         let response = self.billed(&self.tts_model, body, TTS_TIMEOUT).await?;
         let pcm = output_audio(&response)?;
         if tokens_of(&response).output == 0 {
@@ -230,10 +312,44 @@ impl GeminiClient {
         Ok(pcm)
     }
 
+    /// Google's voice catalogue, every page: free, nothing is billed.
+    #[allow(dead_code)] // `voice_live_probe` now; designed voices (M4) next
+    pub async fn list_voices(&self, query: &VoiceQuery) -> Result<Vec<CatalogVoice>, LlmError> {
+        let mut voices = Vec::new();
+        let mut token: Option<String> = None;
+        for _ in 0..MAX_VOICE_PAGES {
+            let page = self
+                .send(
+                    Method::GET,
+                    "voices",
+                    &query.pairs(token.as_deref()),
+                    None,
+                    VOICES_TIMEOUT,
+                )
+                .await?;
+            voices.extend(
+                page.get("voices")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(catalog_voice),
+            );
+            token = page
+                .get("next_page_token")
+                .and_then(Value::as_str)
+                .filter(|token| !token.is_empty())
+                .map(str::to_string);
+            if token.is_none() {
+                return Ok(voices);
+            }
+        }
+        Err(LlmError::Malformed("the voice list did not end".into()))
+    }
+
     /// Sends a request, meters the response, then checks that it finished.
     async fn billed(&self, model: &str, body: Value, timeout: Duration) -> Result<Value, LlmError> {
         let started = Instant::now();
-        let response = self.call(model, body, timeout).await?;
+        let response = self.call(&body, timeout).await?;
         let usage = priced_usage(model, &response, now_secs());
         let served_by = response.get("model").and_then(Value::as_str).unwrap_or("");
         tracing::info!(
@@ -252,52 +368,85 @@ impl GeminiClient {
         Ok(response)
     }
 
-    async fn call(&self, model: &str, body: Value, timeout: Duration) -> Result<Value, LlmError> {
-        let url = format!("{API_ROOT}/interactions");
+    /// One interaction (`POST /interactions`).
+    async fn call(&self, body: &Value, timeout: Duration) -> Result<Value, LlmError> {
+        self.send(Method::POST, "interactions", &[], Some(body), timeout)
+            .await
+    }
+
+    /// Any request under `API_ROOT`: `path` is relative ("interactions",
+    /// "voices"). Retries 429, 503, 504 and timeouts with exponential backoff
+    /// (a 429's `retryDelay` when Google gives one); a refused key is marked
+    /// in `secrets`. An empty success body is `Value::Null`.
+    async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(&str, String)],
+        body: Option<&Value>,
+        timeout: Duration,
+    ) -> Result<Value, LlmError> {
+        let url = format!("{API_ROOT}/{path}");
         let mut backoff_ms = FIRST_BACKOFF_MS;
         for attempt in 0..=MAX_RETRIES {
-            let sent = self
+            let mut request = self
                 .http
-                .post(&url)
+                .request(method.clone(), &url)
                 .header("x-goog-api-key", &self.api_key)
-                .timeout(timeout)
-                .json(&body)
-                .send()
-                .await;
-            let retry_reason = match sent {
+                .timeout(timeout);
+            if !query.is_empty() {
+                request = request.query(query);
+            }
+            if let Some(body) = body {
+                request = request.json(body);
+            }
+            let (retry_reason, asked_wait) = match request.send().await {
                 Ok(response) if response.status().is_success() => {
                     super::super::secrets::mark_accepted(&self.api_key);
-                    return response
-                        .json::<Value>()
+                    let text = response
+                        .text()
                         .await
+                        .map_err(|e| LlmError::Malformed(e.to_string()))?;
+                    if text.trim().is_empty() {
+                        return Ok(Value::Null);
+                    }
+                    return serde_json::from_str(&text)
                         .map_err(|e| LlmError::Malformed(e.to_string()));
                 }
                 Ok(response) if matches!(response.status().as_u16(), 429 | 503 | 504) => {
-                    LlmError::Busy
+                    let status = response.status().as_u16();
+                    let text = response.text().await.unwrap_or_default();
+                    let asked = if status == 429 {
+                        retry_delay(&text)
+                    } else {
+                        None
+                    };
+                    (LlmError::Busy, asked)
                 }
                 Ok(response) => {
                     let status = response.status().as_u16();
-                    let body = response.text().await.unwrap_or_default();
-                    return Err(match error_of(status, &body) {
+                    let text = response.text().await.unwrap_or_default();
+                    return Err(match refusal(status, &text, path, body) {
                         LlmError::KeyRejected => LlmError::ActiveKeyRejected(
                             super::super::secrets::mark_rejected(&self.api_key),
                         ),
                         other => other,
                     });
                 }
-                Err(e) if e.is_timeout() => LlmError::Timeout,
+                Err(e) if e.is_timeout() => (LlmError::Timeout, None),
                 Err(e) => return Err(LlmError::Network(e.to_string())),
             };
             if attempt == MAX_RETRIES {
                 return Err(retry_reason);
             }
+            let wait = asked_wait.unwrap_or(Duration::from_millis(backoff_ms));
             tracing::warn!(
-                model,
+                path,
                 attempt,
-                backoff_ms,
+                wait_ms = wait.as_millis() as u64,
                 "Gemini call will be retried: {retry_reason}"
             );
-            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            tokio::time::sleep(wait).await;
             backoff_ms *= 2;
         }
         Err(LlmError::Busy)
@@ -328,9 +477,11 @@ fn wire_speaker(label: &str) -> String {
     label.chars().filter(|c| !c.is_whitespace()).collect()
 }
 
-/// A speech request: one `text` item per turn, each carrying the delivery
-/// style (and, with two voices, its speaker) as `speech_metadata`, and raw
-/// 24 kHz PCM requested instead of the default WAV.
+/// A speech request: one `text` item per turn, each carrying its delivery
+/// style (when it has one) and, with two voices, its speaker as
+/// `speech_metadata`; an item with neither has no annotation. Raw 24 kHz PCM
+/// is requested instead of the default WAV. Designed voices only read alone,
+/// so a two-voice request naming one is refused before it is sent.
 fn speech_body(model: &str, request: &SpeechRequest) -> Result<Value, LlmError> {
     if request.turns.is_empty() {
         return Err(LlmError::Malformed("nothing to read aloud".into()));
@@ -339,6 +490,15 @@ fn speech_body(model: &str, request: &SpeechRequest) -> Result<Value, LlmError> 
         [] => return Err(LlmError::Malformed("no voice assigned".into())),
         [single] => json!([{ "voice": single.voice }]),
         [first, second] => {
+            if [first, second]
+                .iter()
+                .any(|v| Voice::is_designed_id(&v.voice))
+            {
+                return Err(LlmError::Malformed(
+                    "a designed voice is read one speaker at a time, never in a two-voice request"
+                        .into(),
+                ));
+            }
             let speakers: Vec<Value> = [first, second]
                 .iter()
                 .map(|v| json!({ "speaker": wire_speaker(&v.label), "voice": v.voice }))
@@ -354,7 +514,10 @@ fn speech_body(model: &str, request: &SpeechRequest) -> Result<Value, LlmError> 
     let two_voices = request.voices.len() == 2;
     let mut content = Vec::with_capacity(request.turns.len());
     for turn in &request.turns {
-        let mut metadata = json!({ "type": "speech_metadata", "style": request.style });
+        let mut metadata = serde_json::Map::new();
+        if !turn.style.trim().is_empty() {
+            metadata.insert("style".into(), json!(turn.style));
+        }
         if two_voices {
             let speaker = turn
                 .speaker
@@ -366,9 +529,14 @@ fn speech_body(model: &str, request: &SpeechRequest) -> Result<Value, LlmError> 
                         turn.speaker
                     ))
                 })?;
-            metadata["speaker"] = json!(wire_speaker(speaker));
+            metadata.insert("speaker".into(), json!(wire_speaker(speaker)));
         }
-        content.push(json!({ "type": "text", "text": turn.text, "annotations": [metadata] }));
+        let mut item = json!({ "type": "text", "text": turn.text });
+        if !metadata.is_empty() {
+            metadata.insert("type".into(), json!("speech_metadata"));
+            item["annotations"] = json!([metadata]);
+        }
+        content.push(item);
     }
     Ok(json!({
         "model": model,
@@ -538,14 +706,17 @@ fn blocked(code: &str) -> Option<String> {
         .map(|block| block.to_string())
 }
 
-/// A non-2xx response: `{"error": {"code": "...", "message": "..."}}`, which
-/// Google sometimes wraps in a one-element array.
+/// The `error` object of a non-2xx body, `{"error": {"code": "...",
+/// "message": "..."}}`, which Google sometimes wraps in a one-element array.
+fn error_object(body: &str) -> Option<Value> {
+    let parsed: Value = serde_json::from_str(body).ok()?;
+    parsed.get(0).unwrap_or(&parsed).get("error").cloned()
+}
+
+/// A non-2xx response as a readable error.
 fn error_of(status: u16, body: &str) -> LlmError {
-    let parsed: Option<Value> = serde_json::from_str(body).ok();
-    let error = parsed
-        .as_ref()
-        .map(|v| v.get(0).unwrap_or(v))
-        .and_then(|v| v.get("error"));
+    let error = error_object(body);
+    let error = error.as_ref();
     let code = error
         .and_then(|e| e.get("code"))
         .and_then(Value::as_str)
@@ -564,6 +735,112 @@ fn error_of(status: u16, body: &str) -> LlmError {
         status,
         body: message.chars().take(500).collect(),
     }
+}
+
+/// A refusal of a request to `path` with `request` as its body. A refusal
+/// about a voice is told apart first: Google's voice errors can mention the
+/// "API key's project", and taking one for a rejected key would send the
+/// teacher to replace a key that works.
+fn refusal(status: u16, body: &str, path: &str, request: Option<&Value>) -> LlmError {
+    let error = error_of(status, body);
+    if matches!(error, LlmError::Blocked(_)) {
+        return error;
+    }
+    voice_refusal(status, body, path, request).unwrap_or(error)
+}
+
+/// `UnknownVoice` for a 400, 403 or 404 to a request that names voices (a
+/// speech request, or `voices/{id}`) when the error is about a voice, or is a
+/// 404 for `voices/{id}`. It names the voices the message names, else all of
+/// the request's. 401 is always the key.
+fn voice_refusal(status: u16, body: &str, path: &str, request: Option<&Value>) -> Option<LlmError> {
+    if !matches!(status, 400 | 403 | 404) {
+        return None;
+    }
+    let voice_path = path.strip_prefix("voices/").filter(|id| !id.is_empty());
+    let mut ids = request.map(speech_voices).unwrap_or_default();
+    ids.extend(voice_path.map(str::to_string));
+    if ids.is_empty() {
+        return None;
+    }
+    let message = error_object(body)
+        .and_then(|e| e.get("message").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or_else(|| body.to_string())
+        .to_ascii_lowercase();
+    if !message.contains("voice") && !(status == 404 && voice_path.is_some()) {
+        return None;
+    }
+    let named: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| message.contains(&id.to_ascii_lowercase()))
+        .collect();
+    let shown = if named.is_empty() {
+        ids.join(", ")
+    } else {
+        named.join(", ")
+    };
+    Some(LlmError::UnknownVoice(shown))
+}
+
+/// The voice ids a speech request body names, in `speech_config` order.
+fn speech_voices(request: &Value) -> Vec<String> {
+    let Some(config) = request.pointer("/generation_config/speech_config") else {
+        return Vec::new();
+    };
+    let entries = config
+        .as_array()
+        .or_else(|| config.get("speakers").and_then(Value::as_array));
+    entries
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("voice").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The wait a 429 asks for (`google.rpc.RetryInfo`, `"retryDelay": "30s"`),
+/// capped at `MAX_RETRY_DELAY`.
+fn retry_delay(body: &str) -> Option<Duration> {
+    let error = error_object(body)?;
+    let delay = error
+        .get("details")?
+        .as_array()?
+        .iter()
+        .find_map(|detail| detail.get("retryDelay").and_then(Value::as_str))?;
+    let seconds: f64 = delay.trim().strip_suffix('s')?.trim().parse().ok()?;
+    (seconds.is_finite() && seconds >= 0.0)
+        .then(|| Duration::from_secs_f64(seconds.min(MAX_RETRY_DELAY.as_secs_f64())))
+}
+
+/// One catalogue entry. Google's fields come and go, so each is read on its
+/// own (a number becomes its text, anything missing is empty); an entry
+/// without an id (`id`, or `name` as "voices/{id}") is skipped.
+fn catalog_voice(value: &Value) -> Option<CatalogVoice> {
+    let field = |name: &str| match value.get(name) {
+        Some(Value::String(text)) => text.trim().to_string(),
+        Some(Value::Number(number)) => number.to_string(),
+        Some(Value::Bool(flag)) => flag.to_string(),
+        _ => String::new(),
+    };
+    let id = Some(field("id")).filter(|id| !id.is_empty()).or_else(|| {
+        let name = field("name");
+        let id = name.strip_prefix("voices/").unwrap_or(&name);
+        (!id.is_empty()).then(|| id.to_string())
+    })?;
+    Some(CatalogVoice {
+        id,
+        display_name: field("display_name"),
+        description: field("description"),
+        gender: field("gender"),
+        accent: field("accent"),
+        language_code: field("language_code"),
+        region_code: field("region_code"),
+        pitch: field("pitch"),
+        persona: field("persona"),
+        context: field("context"),
+        voice_type: field("type"),
+    })
 }
 
 /// Whether a refusal is about the API key: always for 401; for 400 and 403
@@ -605,9 +882,14 @@ mod tests {
     }
 
     fn turn(speaker: Option<&str>, text: &str) -> SpeechTurn {
+        styled(speaker, text, "calm")
+    }
+
+    fn styled(speaker: Option<&str>, text: &str, style: &str) -> SpeechTurn {
         SpeechTurn {
             speaker: speaker.map(Into::into),
             text: text.into(),
+            style: style.into(),
         }
     }
 
@@ -646,7 +928,6 @@ mod tests {
                 turn(Some("Speaker B"), "Hello."),
             ],
             voices: vec![voice("Speaker A", "Kore"), voice("Speaker B", "Puck")],
-            style: "calm".into(),
         };
         let body = speech_body("gemini-3.8-flash-tts", &request).unwrap();
         assert_eq!(body["store"], json!(false));
@@ -674,9 +955,8 @@ mod tests {
     #[test]
     fn single_voice_speech_names_no_speaker() {
         let request = SpeechRequest {
-            turns: vec![turn(None, "Part one.")],
+            turns: vec![styled(None, "Part one.", "slow")],
             voices: vec![voice("Announcer", "Charon")],
-            style: "slow".into(),
         };
         let body = speech_body("m", &request).unwrap();
         assert_eq!(
@@ -694,13 +974,235 @@ mod tests {
         let mut request = SpeechRequest {
             turns: vec![turn(Some("Speaker C"), "Who am I?")],
             voices: vec![voice("Speaker A", "Kore"), voice("Speaker B", "Puck")],
-            style: "calm".into(),
         };
         assert!(speech_body("m", &request).is_err(), "unknown speaker");
         request.voices.push(voice("Speaker C", "Fenrir"));
         assert!(speech_body("m", &request).is_err(), "three voices");
         request.voices.clear();
         assert!(speech_body("m", &request).is_err(), "no voice");
+    }
+
+    #[test]
+    fn each_turn_carries_its_own_style() {
+        let request = SpeechRequest {
+            turns: vec![
+                styled(Some("Speaker A"), "Welcome.", "polite and helpful"),
+                styled(Some("Speaker B"), "Thanks.", "relaxed and conversational"),
+                styled(Some("Speaker A"), "Sit down.", "polite and helpful"),
+            ],
+            voices: vec![
+                voice("Speaker A", "en-gb-advisor-1"),
+                voice("Speaker B", "en-gb-assistant-2"),
+            ],
+        };
+        let body = speech_body("m", &request).unwrap();
+        let content = &body["input"][0]["content"];
+        assert_eq!(
+            content[1]["annotations"],
+            json!([{ "type": "speech_metadata", "style": "relaxed and conversational", "speaker": "SpeakerB" }])
+        );
+        assert_eq!(
+            content[2]["annotations"][0]["style"],
+            json!("polite and helpful")
+        );
+        assert!(body.get("style").is_none());
+    }
+
+    #[test]
+    fn an_empty_style_sends_no_annotation() {
+        let solo = SpeechRequest {
+            turns: vec![styled(None, "Part one.", " ")],
+            voices: vec![voice("Announcer", "en-gb-tutor-9")],
+        };
+        let body = speech_body("m", &solo).unwrap();
+        assert_eq!(
+            body["input"][0]["content"][0],
+            json!({ "type": "text", "text": "Part one." })
+        );
+        // With two voices the item still names its speaker, without a style.
+        let pair = SpeechRequest {
+            turns: vec![
+                styled(Some("Speaker A"), "Hi.", ""),
+                styled(Some("Speaker B"), "Hello.", "warm"),
+            ],
+            voices: vec![voice("Speaker A", "a"), voice("Speaker B", "b")],
+        };
+        let content = &speech_body("m", &pair).unwrap()["input"][0]["content"];
+        assert_eq!(
+            content[0]["annotations"],
+            json!([{ "type": "speech_metadata", "speaker": "SpeakerA" }])
+        );
+    }
+
+    #[test]
+    fn custom_voices_refused_in_two_voice_requests() {
+        for designed in ["voice_kpd3e297369r", "voicekey_abc123"] {
+            let request = SpeechRequest {
+                turns: vec![
+                    turn(Some("Speaker A"), "Hi."),
+                    turn(Some("Speaker B"), "Hey."),
+                ],
+                voices: vec![
+                    voice("Speaker A", designed),
+                    voice("Speaker B", "en-gb-advisor-1"),
+                ],
+            };
+            assert!(matches!(
+                speech_body("m", &request),
+                Err(LlmError::Malformed(message)) if message.contains("designed voice")
+            ));
+        }
+        // Alone, a designed voice is fine.
+        let alone = SpeechRequest {
+            turns: vec![turn(None, "Hi.")],
+            voices: vec![voice("Speaker A", "voice_kpd3e297369r")],
+        };
+        assert!(speech_body("m", &alone).is_ok());
+    }
+
+    #[test]
+    fn voice_list_query_pages_and_filters() {
+        let query = VoiceQuery {
+            language_code: Some("en-GB".into()),
+            gender: Some("female".into()),
+            voice_type: Some("prebuilt".into()),
+            accent: Some(" ".into()),
+            page_size: None,
+        };
+        assert_eq!(
+            query.pairs(None),
+            vec![
+                ("page_size", "1000".to_string()),
+                ("language_code", "en-GB".to_string()),
+                ("gender", "female".to_string()),
+                ("type", "prebuilt".to_string()),
+            ]
+        );
+        let next = VoiceQuery {
+            page_size: Some(50),
+            ..VoiceQuery::default()
+        }
+        .pairs(Some("ERh6R-3lB44"));
+        assert_eq!(
+            next,
+            vec![
+                ("page_size", "50".to_string()),
+                ("page_token", "ERh6R-3lB44".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn catalog_voice_tolerates_missing_fields() {
+        // As listed by GET /v1beta/voices on 2026-10-05.
+        let library = json!({
+            "id": "en-gb-advisor-1", "type": "prebuilt", "display_name": "Authoritative Advisor 1",
+            "language_code": "en-GB", "region_code": "GB", "accent": "Winchester English",
+            "persona": "High-Trust Advisor / Authoritative Advisor (Lawyer)", "context": "Enterprise Agent",
+            "gender": "female", "pitch": "medium", "description": "Speaks with a Winchester English accent.",
+        });
+        let voice = catalog_voice(&library).unwrap();
+        assert_eq!(voice.id, "en-gb-advisor-1");
+        assert_eq!(
+            (
+                voice.gender.as_str(),
+                voice.accent.as_str(),
+                voice.voice_type.as_str()
+            ),
+            ("female", "Winchester English", "prebuilt")
+        );
+        // A designed voice has no accent, pitch or persona.
+        let designed = json!({
+            "id": "voice_60zf03beui2x", "model": "models/gemini-3.8-flash-tts", "type": "prompted",
+            "display_name": "IELTS S3 Announcer", "prompted": { "input": "A woman in her forties." },
+            "language_code": "en-GB", "gender": "female",
+        });
+        let voice = catalog_voice(&designed).unwrap();
+        assert_eq!((voice.accent.as_str(), voice.pitch.as_str()), ("", ""));
+        let named =
+            catalog_voice(&json!({ "name": "voices/en-ie-advisor-2", "pitch": 3 })).unwrap();
+        assert_eq!(
+            (named.id.as_str(), named.pitch.as_str()),
+            ("en-ie-advisor-2", "3")
+        );
+        assert_eq!(catalog_voice(&json!({ "display_name": "No id" })), None);
+    }
+
+    #[test]
+    fn voice_errors_are_not_key_rejections() {
+        let speech = speech_body(
+            "m",
+            &SpeechRequest {
+                turns: vec![turn(None, "Hello.")],
+                voices: vec![voice("Speaker A", "voice_doesnotexist0000")],
+            },
+        )
+        .unwrap();
+        // As returned on 2026-10-05 by POST /v1beta/interactions for an unknown designed voice.
+        let unknown = r#"{"error":{"message":"The voice was not found or the caller does not have permission to access it.","code":"not_found"}}"#;
+        assert!(matches!(
+            refusal(404, unknown, "interactions", Some(&speech)),
+            LlmError::UnknownVoice(id) if id == "voice_doesnotexist0000"
+        ));
+        // A voice error that mentions the key's project is still about the voice.
+        let foreign = r#"{"error":{"code":403,"message":"Voice voice_doesnotexist0000 is not found in this API key's project.","status":"PERMISSION_DENIED"}}"#;
+        assert!(matches!(error_of(403, foreign), LlmError::KeyRejected));
+        assert!(matches!(
+            refusal(403, foreign, "interactions", Some(&speech)),
+            LlmError::UnknownVoice(id) if id == "voice_doesnotexist0000"
+        ));
+        // GET voices/{id} of a voice this key cannot see.
+        let missing = r#"{"error":{"code":404,"message":"The voice was not found or the caller does not have permission to access it.","status":"NOT_FOUND"}}"#;
+        assert!(matches!(
+            refusal(404, missing, "voices/en-gb-advisor-1", None),
+            LlmError::UnknownVoice(id) if id == "en-gb-advisor-1"
+        ));
+        // Leaked, expired and missing keys stay key rejections, in speech
+        // requests and on the voice catalogue alike.
+        let leaked = r#"{"error":{"code":403,"message":"Your API key was reported as leaked. Please use another API key.","status":"PERMISSION_DENIED"}}"#;
+        let expired = r#"[{"error":{"code":400,"message":"API key expired. Please renew the API key.","status":"INVALID_ARGUMENT","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"API_KEY_INVALID","domain":"googleapis.com"}]}}]"#;
+        for (status, body) in [(403, leaked), (400, expired)] {
+            for path in ["interactions", "voices", "voices/en-gb-advisor-1"] {
+                assert!(
+                    matches!(
+                        refusal(status, body, path, Some(&speech)),
+                        LlmError::KeyRejected
+                    ),
+                    "{path}: {body}"
+                );
+            }
+        }
+        assert!(matches!(
+            refusal(401, unknown, "interactions", Some(&speech)),
+            LlmError::KeyRejected
+        ));
+        // A text request that mentions a voice is an ordinary refusal.
+        assert!(matches!(
+            refusal(
+                400,
+                r#"{"error":{"message":"bad voice field"}}"#,
+                "interactions",
+                Some(&json!({ "input": "x" }))
+            ),
+            LlmError::Rejected { status: 400, .. }
+        ));
+    }
+
+    #[test]
+    fn retry_delay_is_read_from_429_details() {
+        let busy = r#"{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_requests_per_model"}]},{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"12s"}]}}"#;
+        assert_eq!(retry_delay(busy), Some(Duration::from_secs(12)));
+        let wrapped = r#"[{"error":{"details":[{"retryDelay":"1.5s"}]}}]"#;
+        assert_eq!(retry_delay(wrapped), Some(Duration::from_millis(1_500)));
+        let long = r#"{"error":{"details":[{"retryDelay":"3600s"}]}}"#;
+        assert_eq!(retry_delay(long), Some(MAX_RETRY_DELAY));
+        for none in [
+            r#"{"error":{"message":"busy"}}"#,
+            r#"{"error":{"details":[{"retryDelay":"soon"}]}}"#,
+            "not json",
+        ] {
+            assert_eq!(retry_delay(none), None, "{none}");
+        }
     }
 
     #[test]
@@ -813,7 +1315,8 @@ mod tests {
     }
 
     /// Calls the real API with the key from the environment (process, then
-    /// Windows). Costs about $0.03. Run on demand:
+    /// Windows): text, JSON, the built-in announcer and a British dialogue on
+    /// two library voices. Costs about $0.02. Run on demand:
     /// `cargo test --features server --no-default-features live_probe -- --ignored --nocapture`
     #[tokio::test]
     #[ignore]
@@ -886,21 +1389,25 @@ mod tests {
         report(&format!("json -> {parsed:?}"), before, started, None);
 
         let dir = std::env::temp_dir();
+        let announcer = super::super::super::tts::voices::VoiceCatalog::builtin()
+            .announcer()
+            .id
+            .clone();
         let (before, started) = (client.usage(), Instant::now());
         let single = client
             .synthesize(&SpeechRequest {
-                turns: vec![turn(
+                turns: vec![styled(
                     None,
                     "Part one. You will hear a conversation between a receptionist and a caller.",
+                    "slow and clear, like an exam announcer",
                 )],
-                voices: vec![voice("Announcer", "Charon")],
-                style: "slow and clear, like an exam announcer".into(),
+                voices: vec![voice("Announcer", &announcer)],
             })
             .await
             .unwrap();
         std::fs::write(dir.join("ielts-probe-single.wav"), single.to_wav()).unwrap();
         report(
-            &format!("tts one voice ({tts_model})"),
+            &format!("tts announcer {announcer} ({tts_model})"),
             before,
             started,
             Some(single.duration_ms()),
@@ -929,28 +1436,41 @@ mod tests {
             ),
         ];
         let (before, started) = (client.usage(), Instant::now());
+        let style = |speaker: &str| match speaker {
+            "Speaker A" => "polite and helpful, clear, at a steady exam pace",
+            _ => "relaxed and conversational, clear, at a steady exam pace",
+        };
         let pair = client
             .synthesize(&SpeechRequest {
-                turns: dialogue.iter().map(|(s, t)| turn(Some(s), t)).collect(),
-                voices: vec![voice("Speaker A", "Kore"), voice("Speaker B", "Puck")],
-                style: "natural, clear pronunciation at a steady exam pace".into(),
+                turns: dialogue
+                    .iter()
+                    .map(|(s, t)| styled(Some(s), t, style(s)))
+                    .collect(),
+                voices: vec![
+                    voice("Speaker A", "en-gb-advisor-1"),
+                    voice("Speaker B", "en-gb-assistant-2"),
+                ],
             })
             .await
             .unwrap();
         std::fs::write(dir.join("ielts-probe-dialogue.wav"), pair.to_wav()).unwrap();
-        report("tts two voices", before, started, Some(pair.duration_ms()));
+        report(
+            "tts two library voices (en-gb-advisor-1 F, en-gb-assistant-2 M)",
+            before,
+            started,
+            Some(pair.duration_ms()),
+        );
 
         // The raw usage object of one speech response, audio data left out.
         let body = speech_body(
             &tts_model,
             &SpeechRequest {
                 turns: vec![turn(None, "Thank you.")],
-                voices: vec![voice("Announcer", "Charon")],
-                style: "calm".into(),
+                voices: vec![voice("Announcer", &announcer)],
             },
         )
         .unwrap();
-        let raw = client.call(&tts_model, body, TTS_TIMEOUT).await.unwrap();
+        let raw = client.call(&body, TTS_TIMEOUT).await.unwrap();
         client.add_usage(&priced_usage(&tts_model, &raw, now_secs()));
         println!(
             "raw speech usage: {}",

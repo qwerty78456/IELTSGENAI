@@ -12,6 +12,7 @@ pub mod settings;
 pub mod tasks;
 pub mod topics;
 pub mod usage;
+pub mod voices;
 
 use dioxus::prelude::ServerFnError;
 

@@ -11,6 +11,7 @@ use super::format::{PartSpec, TaskKind};
 use super::passage::{Passage, count_words};
 use super::speaker::SpeakerConfig;
 use super::task::{Answer, Choice, Item, Task};
+use super::voice::voice_conflicts;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Severity {
@@ -59,7 +60,14 @@ pub fn has_errors(issues: &[ValidationIssue]) -> bool {
     issues.iter().any(|i| i.severity == Severity::Error)
 }
 
-/// The speaker line-up must match the part's passage kind and use unique labels.
+/// The issue that makes a draft unusable, skipping warnings listed before it.
+pub fn first_error(issues: &[ValidationIssue]) -> Option<&ValidationIssue> {
+    issues.iter().find(|i| i.severity == Severity::Error)
+}
+
+/// The speaker line-up must match the part's passage kind and use unique
+/// labels. Voice conflicts are only warnings here, since the script does not
+/// depend on the voice; the recording refuses them (`AudioRequest::validate`).
 pub fn validate_speakers(spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
     let expected = spec.speaker_count() as usize;
@@ -84,6 +92,9 @@ pub fn validate_speakers(spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<Val
                 format!("Duplicate speaker label \"{}\"", speaker.label),
             ));
         }
+    }
+    for conflict in voice_conflicts(speakers) {
+        issues.push(ValidationIssue::warning(None, conflict));
     }
     issues
 }
@@ -567,6 +578,39 @@ mod tests {
             part1,
             &part1.default_speakers[..2]
         )));
+    }
+
+    #[test]
+    fn shared_voice_warns() {
+        use crate::domain::voice::{Voice, VoiceSource};
+        let hsg = ExamFormat::hsg_national();
+        let part1 = hsg.part(1).unwrap();
+        let zephyr = Voice {
+            id: "Zephyr".into(),
+            name: "Zephyr".into(),
+            gender: crate::domain::Gender::Female,
+            accent: crate::domain::Accent::British,
+            source: VoiceSource::Library,
+            description: String::new(),
+        };
+        let mut speakers = part1.default_speakers.clone();
+        for speaker in &mut speakers {
+            *speaker = speaker.clone().with_voice(zephyr.clone());
+        }
+        let issues = validate_speakers(part1, &speakers);
+        assert!(!has_errors(&issues), "{issues:?}");
+        assert_eq!(issues.len(), 2, "{issues:?}");
+        assert!(issues[0].message.contains("share the voice Zephyr"));
+    }
+
+    #[test]
+    fn first_error_skips_warnings() {
+        let issues = [
+            ValidationIssue::warning(None, "look at this"),
+            ValidationIssue::error(None, "unusable"),
+        ];
+        assert_eq!(first_error(&issues).unwrap().message, "unusable");
+        assert_eq!(first_error(&issues[..1]), None);
     }
 
     #[test]

@@ -6,7 +6,8 @@ use super::error::DomainError;
 use super::format::{FormatId, PartSpec, TaskSpec};
 use super::passage::Passage;
 use super::speaker::SpeakerConfig;
-use super::validation::{has_errors, validate_speakers};
+use super::validation::{first_error, validate_speakers};
+use super::voice::{Voice, voice_conflicts};
 
 pub const MIN_TOPIC_CHARS: usize = 10;
 pub const MAX_TOPIC_CHARS: usize = 500;
@@ -56,8 +57,8 @@ impl PassageRequest {
         validate_topic(&self.topic)?;
         let spec = find_part(self.format, self.part)?;
         let issues = validate_speakers(&spec, &self.speakers);
-        if has_errors(&issues) {
-            return Err(DomainError::InvalidRequest(issues[0].message.clone()));
+        if let Some(error) = first_error(&issues) {
+            return Err(DomainError::InvalidRequest(error.message.clone()));
         }
         Ok(spec)
     }
@@ -112,7 +113,8 @@ impl ExamAudioRequest {
                 .ok_or_else(|| {
                     DomainError::InvalidRequest(format!("{} has no script yet", spec.title))
                 })?;
-            part.validate()?;
+            part.validate()
+                .map_err(|e| DomainError::InvalidRequest(format!("{}: {e}", spec.title)))?;
         }
         Ok(())
     }
@@ -126,6 +128,12 @@ pub struct AudioRequest {
 }
 
 impl AudioRequest {
+    /// Every speaker must have a voice of its own that matches its gender.
+    ///
+    /// Callers assign voices first and validate after: the browser runs
+    /// `assign_voices` over the catalogue before it sends the request, and the
+    /// server assigns again (same rule) before it calls this. A speaker still
+    /// on `Auto` here means no fitting voice was free for it.
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.passage.lines.is_empty() {
             return Err(DomainError::InvalidRequest(
@@ -140,6 +148,141 @@ impl AudioRequest {
                 )));
             }
         }
+        if let Some(speaker) = self.speakers.iter().find(|s| s.voice.is_auto()) {
+            return Err(DomainError::InvalidRequest(format!(
+                "{} has no voice yet",
+                speaker.label
+            )));
+        }
+        // The ids come from the browser and go into requests, cache keys and logs.
+        if let Some(speaker) = self
+            .speakers
+            .iter()
+            .find(|s| s.voice_id().is_some_and(|id| Voice::check_id(id).is_err()))
+        {
+            return Err(DomainError::InvalidRequest(format!(
+                "{} has a voice id that is not valid; choose another voice",
+                speaker.label
+            )));
+        }
+        if let Some(conflict) = voice_conflicts(&self.speakers).into_iter().next() {
+            return Err(DomainError::InvalidRequest(conflict));
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::speaker::{Accent, Gender, SpeakerRole};
+    use crate::domain::voice::{Voice, VoiceChoice, VoiceSource};
+
+    fn voice(id: &str, gender: Gender) -> Voice {
+        Voice {
+            id: id.into(),
+            name: id.into(),
+            gender,
+            accent: Accent::British,
+            source: VoiceSource::Library,
+            description: String::new(),
+        }
+    }
+
+    fn request(speakers: Vec<SpeakerConfig>) -> AudioRequest {
+        let labels: Vec<String> = speakers.iter().map(|s| s.label.clone()).collect();
+        let script: Vec<String> = labels.iter().map(|l| format!("{l}: Hello.")).collect();
+        AudioRequest {
+            passage: Passage::parse(1, "topic", &script.join("\n"), &labels).unwrap(),
+            speakers,
+        }
+    }
+
+    fn speaker(label: &str, gender: Gender, voice: VoiceChoice) -> SpeakerConfig {
+        SpeakerConfig {
+            voice,
+            ..SpeakerConfig::new(label, gender, Accent::British, SpeakerRole::Guest)
+        }
+    }
+
+    #[test]
+    fn recording_refuses_auto_shared_or_wrong_gender() {
+        let a = voice("en-gb-a", Gender::Female);
+        let b = voice("en-gb-b", Gender::Female);
+        let fine = request(vec![
+            speaker(
+                "Speaker A",
+                Gender::Female,
+                VoiceChoice::Assigned(a.clone()),
+            ),
+            speaker("Speaker B", Gender::Female, VoiceChoice::Chosen(b)),
+        ]);
+        assert_eq!(fine.validate(), Ok(()));
+
+        let auto = request(vec![
+            speaker(
+                "Speaker A",
+                Gender::Female,
+                VoiceChoice::Assigned(a.clone()),
+            ),
+            speaker("Speaker B", Gender::Female, VoiceChoice::Auto),
+        ]);
+        assert_eq!(
+            auto.validate(),
+            Err(DomainError::InvalidRequest(
+                "Speaker B has no voice yet".into()
+            ))
+        );
+
+        let shared = request(vec![
+            speaker(
+                "Speaker A",
+                Gender::Female,
+                VoiceChoice::Assigned(a.clone()),
+            ),
+            speaker("Speaker B", Gender::Female, VoiceChoice::Chosen(a.clone())),
+        ]);
+        let error = shared.validate().unwrap_err().to_string();
+        assert!(error.contains("share the voice en-gb-a"), "{error}");
+
+        let forged = request(vec![speaker(
+            "Speaker A",
+            Gender::Female,
+            VoiceChoice::Chosen(voice("en-gb-a\nforged log line", Gender::Female)),
+        )]);
+        let error = forged.validate().unwrap_err().to_string();
+        assert!(error.contains("voice id that is not valid"), "{error}");
+
+        let wrong = request(vec![speaker(
+            "Speaker A",
+            Gender::Male,
+            VoiceChoice::Assigned(a),
+        )]);
+        let error = wrong.validate().unwrap_err().to_string();
+        assert!(error.contains("choose a male voice"), "{error}");
+
+        let exam = ExamAudioRequest {
+            format: FormatId::HsgNational,
+            parts: vec![shared],
+        };
+        let error = exam.validate().unwrap_err().to_string();
+        assert!(error.starts_with("Part 1: "), "{error}");
+    }
+
+    #[test]
+    fn script_requests_ignore_voice_warnings() {
+        let shared = voice("en-gb-a", Gender::Female);
+        let speakers = FormatId::IeltsListening.format().parts[0]
+            .default_speakers
+            .iter()
+            .map(|s| s.clone().with_voice(shared.clone()))
+            .collect();
+        let request = PassageRequest {
+            format: FormatId::IeltsListening,
+            part: 1,
+            topic: "Booking a room at a sports centre".into(),
+            speakers,
+        };
+        assert!(request.validate().is_ok());
     }
 }

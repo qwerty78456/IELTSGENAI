@@ -60,14 +60,17 @@ pub enum UsageStep {
     Script,
     Questions,
     Recording,
+    /// Voice samples ("Preview") and designed voices.
+    Voices,
 }
 
 impl UsageStep {
-    pub const ALL: [UsageStep; 4] = [
+    pub const ALL: [UsageStep; 5] = [
         UsageStep::Topic,
         UsageStep::Script,
         UsageStep::Questions,
         UsageStep::Recording,
+        UsageStep::Voices,
     ];
 
     /// Stable key for storage.
@@ -77,11 +80,23 @@ impl UsageStep {
             UsageStep::Script => "script",
             UsageStep::Questions => "questions",
             UsageStep::Recording => "recording",
+            UsageStep::Voices => "voices",
         }
     }
 
     pub fn from_key(key: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|step| step.key() == key)
+    }
+
+    /// Name in the spend breakdown: "scripts $0.012".
+    pub fn label(self) -> &'static str {
+        match self {
+            UsageStep::Topic => "topics",
+            UsageStep::Script => "scripts",
+            UsageStep::Questions => "questions",
+            UsageStep::Recording => "recording",
+            UsageStep::Voices => "voices",
+        }
     }
 }
 
@@ -93,6 +108,8 @@ pub struct ExamUsage {
     pub scripts: Usage,
     pub questions: Usage,
     pub recordings: Usage,
+    #[serde(default)]
+    pub voices: Usage,
     /// 0 means no budget.
     pub budget_micro_usd: u64,
 }
@@ -104,13 +121,24 @@ impl ExamUsage {
             UsageStep::Script => &mut self.scripts,
             UsageStep::Questions => &mut self.questions,
             UsageStep::Recording => &mut self.recordings,
+            UsageStep::Voices => &mut self.voices,
+        }
+    }
+
+    pub fn step(&self, step: UsageStep) -> Usage {
+        match step {
+            UsageStep::Topic => self.topics,
+            UsageStep::Script => self.scripts,
+            UsageStep::Questions => self.questions,
+            UsageStep::Recording => self.recordings,
+            UsageStep::Voices => self.voices,
         }
     }
 
     pub fn total(&self) -> Usage {
         let mut total = Usage::default();
-        for step in [self.topics, self.scripts, self.questions, self.recordings] {
-            total.add(&step);
+        for step in UsageStep::ALL {
+            total.add(&self.step(step));
         }
         total
     }
@@ -153,6 +181,9 @@ mod tests {
         assert!(!exam.over_budget(), "exactly at the budget is within it");
         exam.step_mut(UsageStep::Questions).add(&spent(1));
         assert!(exam.over_budget());
+        exam.step_mut(UsageStep::Voices).add(&spent(2));
+        assert_eq!(exam.voices.micro_usd, 2);
+        assert_eq!(exam.total().micro_usd, 700_003);
         assert_eq!(exam.budget_text().as_deref(), Some("$0.700"));
         assert!(!ExamUsage::default().over_budget());
     }
@@ -173,5 +204,17 @@ mod tests {
             assert_eq!(UsageStep::from_key(step.key()), Some(step));
         }
         assert_eq!(UsageStep::from_key("nope"), None);
+        assert_eq!(UsageStep::from_key("voices"), Some(UsageStep::Voices));
+    }
+
+    #[test]
+    fn usage_saved_without_voices_still_loads() {
+        let empty = r#"{"requests":0,"reused":0,"input_tokens":0,"cached_tokens":0,"output_tokens":0,"thinking_tokens":0,"micro_usd":0,"unpriced":0}"#;
+        let json = format!(
+            r#"{{"topics":{empty},"scripts":{empty},"questions":{empty},"recordings":{empty},"budget_micro_usd":700000}}"#
+        );
+        let usage: ExamUsage = serde_json::from_str(&json).unwrap();
+        assert!(usage.voices.is_empty());
+        assert_eq!(usage.budget_micro_usd, 700_000);
     }
 }

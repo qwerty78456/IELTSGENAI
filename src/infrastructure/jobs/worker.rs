@@ -11,17 +11,20 @@ use crate::domain::{AudioProgram, AudioRequest, ExamAudioRequest, UsageStep};
 use super::super::audio::{AudioError, Pcm16, ProgramAssets, render_program};
 use super::super::config::config;
 use super::super::llm::{GeminiClient, LlmError};
-use super::super::tts::{TtsError, purge_speech_cache, synthesize_passage};
+use super::super::tts::{
+    Reuse, SAMPLE_KEEP_HOURS, TtsError, purge_speech_cache, synthesize_passage,
+};
 use super::store::{JobStore, now_secs, output_file_in};
 
 const CLEANUP_INTERVAL_SECS: u64 = 3_600;
 
 static CLEANUP_STARTED: OnceLock<()> = OnceLock::new();
 
-/// Starts the periodic clean-up once per process, unless both
-/// `AUDIO_RETENTION_HOURS` and `SPEECH_CACHE_HOURS` are 0. Safe to call on
-/// every request. Recordings a saved exam refers to are never purged;
-/// deleting the exam removes them.
+/// Starts the periodic clean-up once per process. Safe to call on every
+/// request. Recordings a saved exam refers to are never purged; deleting the
+/// exam removes them. Voice samples go after `SAMPLE_KEEP_HOURS` unused, so
+/// the loop runs even when `AUDIO_RETENTION_HOURS` and `SPEECH_CACHE_HOURS`
+/// are both 0: a sample made later still needs it.
 pub fn ensure_cleanup_running() {
     CLEANUP_STARTED.get_or_init(|| {
         let recordings = config().audio_retention_secs();
@@ -42,9 +45,6 @@ pub fn ensure_cleanup_running() {
             ),
             None => tracing::info!("SPEECH_CACHE_HOURS=0: synthesised speech is not reused"),
         }
-        if recordings.is_none() && speech_cache.is_none() {
-            return;
-        }
         tokio::spawn(async move {
             let mut interval =
                 tokio::time::interval(std::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
@@ -56,6 +56,7 @@ pub fn ensure_cleanup_running() {
                 if let Some(max_age_secs) = speech_cache {
                     cleanup_speech_cache(max_age_secs).await;
                 }
+                cleanup_voice_samples().await;
             }
         });
     });
@@ -68,6 +69,16 @@ async fn cleanup_speech_cache(max_age_secs: i64) {
         tokio::task::spawn_blocking(move || purge_speech_cache(&directory, max_age)).await;
     if let Ok(removed @ 1..) = removed {
         tracing::info!("cleanup removed {removed} unused speech chunk(s)");
+    }
+}
+
+async fn cleanup_voice_samples() {
+    let directory = config().voice_sample_dir();
+    let max_age = std::time::Duration::from_secs(SAMPLE_KEEP_HOURS * 3_600);
+    let removed =
+        tokio::task::spawn_blocking(move || purge_speech_cache(&directory, max_age)).await;
+    if let Ok(removed @ 1..) = removed {
+        tracing::info!("cleanup removed {removed} unused voice sample(s)");
     }
 }
 
@@ -176,13 +187,13 @@ fn client() -> Result<GeminiClient, AudioError> {
 /// Synthesises one passage in the background and stores the WAV under the job id.
 pub fn spawn_part_audio(job_id: String, request: AudioRequest, exam: Option<String>) {
     run_job(job_id, "part audio", exam, move |client| async move {
-        Ok(synthesize_passage(&client, &request.passage, &request.speakers).await?)
+        Ok(synthesize_passage(&client, &request.passage, &request.speakers, Reuse::Allow).await?)
     });
 }
 
 /// How many parts one exam job synthesises at the same time. Two: each part
-/// is several chunk requests in a row, and the client only retries three
-/// times with a short backoff.
+/// is several chunk requests, and `GeminiClient` lets only a few speech
+/// requests run at once anyway.
 const PARALLEL_PARTS: usize = 2;
 
 /// Synthesises every part (a few at a time), then renders the format's
@@ -205,7 +216,8 @@ pub fn spawn_exam_audio(job_id: String, request: ExamAudioRequest, exam: Option<
                     .acquire()
                     .await
                     .map_err(|e| AudioError::Asset(e.to_string()))?;
-                let pcm = synthesize_passage(&client, &part.passage, &part.speakers).await?;
+                let pcm = synthesize_passage(&client, &part.passage, &part.speakers, Reuse::Allow)
+                    .await?;
                 let finished = done.fetch_add(1, Ordering::SeqCst) + 1;
                 let progress = 0.1 + 0.7 * finished as f32 / total as f32;
                 let _ = JobStore::global()

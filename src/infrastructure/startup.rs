@@ -6,10 +6,16 @@ use super::{
 use dioxus::prelude::*;
 
 fn router(app: fn() -> Element) -> dioxus::server::axum::Router {
-    dioxus::server::router(app).route(
-        crate::application::audio::AUDIO_ROUTE,
-        dioxus::server::axum::routing::get(jobs::serve_audio),
-    )
+    use dioxus::server::axum::routing::get;
+    dioxus::server::router(app)
+        .route(
+            crate::application::audio::AUDIO_ROUTE,
+            get(jobs::serve_audio),
+        )
+        .route(
+            crate::application::voices::VOICE_SAMPLE_ROUTE,
+            get(jobs::serve_voice_sample),
+        )
 }
 
 pub fn run(app: fn() -> Element) -> Result<(), String> {

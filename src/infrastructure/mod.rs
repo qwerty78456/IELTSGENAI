@@ -68,9 +68,15 @@ pub fn bootstrap(
         }
         None => "missing; set GEMINI_API_KEY and restart".into(),
     };
+    // Notices were collected while loading, before logging existed.
+    let notices = cfg.notices.clone();
     config::initialize(cfg)?;
     println!("Configuration: {}", base.display());
     println!("Gemini API key (GEMINI_API_KEY): {key_note}");
     tracing::info!("Gemini API key {key_note}");
+    for notice in &notices {
+        println!("Note: {notice}");
+        tracing::warn!("{notice}");
+    }
     Ok(guard)
 }

@@ -215,3 +215,50 @@ pub async fn delete_exam(id: String) -> Result<(), ServerFnError> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::{Accent, Gender, VoiceChoice};
+
+    /// A body as 0.7.1 saved it: HSG with Part 1 recorded by three Female
+    /// British speakers, written before speakers had voices.
+    const SAVED_BY_0_7_1: &str = include_str!("fixtures/saved_exam_0_7_1.json");
+
+    #[test]
+    fn a_0_7_1_saved_exam_still_loads() {
+        assert!(!SAVED_BY_0_7_1.contains("voice"));
+        let saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        check(&saved).unwrap();
+
+        let exam = &saved.exam;
+        assert_eq!(exam.format.id, FormatId::HsgNational);
+        let part1 = &exam.parts[0];
+        assert_eq!(part1.speakers.len(), 3);
+        assert!(
+            part1
+                .speakers
+                .iter()
+                .all(|s| (s.gender, s.accent) == (Gender::Female, Accent::British))
+        );
+        assert_eq!(part1.passage.as_ref().unwrap().lines.len(), 6);
+        assert_eq!(part1.tasks[0].items.len(), 5);
+        assert!(part1.audio.is_some());
+        assert!(saved.recording_stale);
+
+        let every_speaker = exam.parts.iter().flat_map(|p| p.speakers.iter()).chain(
+            exam.format
+                .parts
+                .iter()
+                .flat_map(|p| p.default_speakers.iter()),
+        );
+        for speaker in every_speaker {
+            assert_eq!(speaker.voice, VoiceChoice::Auto, "{}", speaker.label);
+        }
+
+        // Saved again by this version, it reads back the same.
+        let again: SavedExam =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(again, saved);
+    }
+}

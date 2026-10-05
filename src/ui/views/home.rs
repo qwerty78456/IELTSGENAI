@@ -6,6 +6,10 @@
 //! view only displays issues. The one-click pipeline runs in the browser by
 //! chaining the same server functions the individual buttons use: the script
 //! first, then the questions and the recording side by side.
+//!
+//! Speakers get their voices here, from the catalogue `Navbar` loads: the
+//! domain's `assign_voices` runs whenever the line-up changes, and the server
+//! assigns the same way when a recording starts and sends the line-up back.
 
 use dioxus::prelude::*;
 
@@ -15,13 +19,14 @@ use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::domain::{
     AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
-    ValidationIssue, has_errors,
+    ValidationIssue, VoiceChoice, assign_voices, has_errors,
 };
 use crate::export::{docx, markdown};
 use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, download_text};
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
-use crate::ui::components::speaker_modal::SpeakerEditModal;
+use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
+use crate::ui::components::voices::{VoiceCatalogueCtx, speaker_warnings, with_choice};
 use crate::ui::jobs::{PART_AUDIO_DEADLINE_MS, PART_AUDIO_POLL_MS, wait_for_job};
 
 #[derive(Clone)]
@@ -32,6 +37,8 @@ pub struct HomeState {
     pub topic_error: Option<String>,
     pub is_generating_topic: bool,
 
+    /// The line-up once it differs from the part's defaults (an edit, or
+    /// voices assigned); empty means the defaults. See `effective_speakers`.
     pub custom_speakers: Vec<SpeakerConfig>,
     pub show_speakers: bool,
     pub editing_speaker_idx: Option<usize>,
@@ -206,21 +213,47 @@ impl HomeState {
     }
 }
 
+/// The speakers of the chosen part: the edited line-up, or the defaults.
+fn effective_speakers(state: &HomeState) -> Vec<SpeakerConfig> {
+    if !state.custom_speakers.is_empty() {
+        return state.custom_speakers.clone();
+    }
+    state
+        .format
+        .format()
+        .part(state.part)
+        .map(|p| p.default_speakers.clone())
+        .unwrap_or_default()
+}
+
+/// Replaces the line-up after an edit; a speaker left on `Auto` gets its
+/// voice from the assignment effect in `Home`.
+fn set_speakers(mut state: Signal<HomeState>, speakers: Vec<SpeakerConfig>) {
+    let mut s = state.write();
+    s.custom_speakers = speakers;
+    s.editing_speaker_idx = None;
+}
+
 #[component]
 pub fn Home() -> Element {
     let mut state = use_signal(HomeState::default);
+    let catalogue = use_context::<VoiceCatalogueCtx>();
 
-    let speakers = use_memo(move || {
-        let current = state();
-        if !current.custom_speakers.is_empty() {
-            return current.custom_speakers.clone();
+    let speakers = use_memo(move || effective_speakers(&state()));
+
+    // Every speaker gets a voice as soon as the catalogue is here, and again
+    // whenever the line-up changes (format, part, an edit). Assigning twice
+    // changes nothing, so the state is written only when a voice changed;
+    // results are never touched.
+    use_effect(move || {
+        let Some(voices) = catalogue.voices() else {
+            return;
+        };
+        let current = speakers();
+        let assigned = assign_voices(&current, &voices, &[]).speakers;
+        if assigned != current {
+            state.write().custom_speakers = assigned;
         }
-        current
-            .format
-            .format()
-            .part(current.part)
-            .map(|p| p.default_speakers.clone())
-            .unwrap_or_default()
     });
 
     let exam_format = state().format.format();
@@ -276,6 +309,9 @@ pub fn Home() -> Element {
         let Some(passage) = state().passage.clone() else {
             return;
         };
+        if !catalogue.is_ready() {
+            return;
+        }
         let request = AudioRequest {
             passage,
             speakers: speakers(),
@@ -320,9 +356,11 @@ pub fn Home() -> Element {
                     Some("The script has errors; fix or regenerate it before the questions and the audio.".into());
                 return;
             }
+            // The voices as they are now: the catalogue may have arrived
+            // while the script was being written.
             let audio_request = AudioRequest {
                 passage: passage.clone(),
-                speakers: current_speakers.clone(),
+                speakers: effective_speakers(&state.peek()),
             };
             let audio_request = match audio_request.validate() {
                 Ok(()) => Some(audio_request),
@@ -450,24 +488,30 @@ pub fn Home() -> Element {
                         }
 
                         if state().show_speakers {
-                            div { class: "speakers-list",
-                                for (idx, speaker) in speakers().iter().enumerate() {
-                                    div { class: "speaker-card", key: "{idx}",
-                                        div { class: "speaker-card-header",
-                                            div { class: "speaker-name", "{speaker.label}" }
-                                            button {
-                                                class: "edit-button",
-                                                onclick: move |_| state.write().editing_speaker_idx = Some(idx),
-                                                "Edit"
-                                            }
-                                        }
-                                        div { class: "speaker-details",
-                                            span { class: "speaker-badge", "{speaker.gender.label()}" }
-                                            span { class: "speaker-badge", "{speaker.accent.label()}" }
-                                            span { class: "speaker-badge role", "{speaker.role.label()}" }
-                                        }
+                            SpeakerCards {
+                                speakers: speakers(),
+                                disabled: state().is_busy(),
+                                warnings: part_spec
+                                    .as_ref()
+                                    .map(|spec| speaker_warnings(spec, &speakers()))
+                                    .unwrap_or_default(),
+                                onedit: move |idx| state.write().editing_speaker_idx = Some(idx),
+                                onvoice: move |(idx, choice): (usize, VoiceChoice)| {
+                                    let mut list = speakers();
+                                    if let Some(speaker) = list.get_mut(idx) {
+                                        *speaker = with_choice(speaker.clone(), choice);
                                     }
-                                }
+                                    state.write().custom_speakers = list;
+                                },
+                            }
+                        }
+
+                        if let Some(error) = catalogue.error() {
+                            div { class: "error-message", "Could not load the voices: {error}" }
+                            button {
+                                class: "voice-button",
+                                onclick: move |_| catalogue.retry(),
+                                "Try again"
                             }
                         }
 
@@ -481,9 +525,7 @@ pub fn Home() -> Element {
                                         if idx < list.len() {
                                             list[idx] = updated;
                                         }
-                                        let mut s = state.write();
-                                        s.custom_speakers = list;
-                                        s.editing_speaker_idx = None;
+                                        set_speakers(state, list);
                                     }
                                 }
                             }
@@ -493,9 +535,12 @@ pub fn Home() -> Element {
                     div { class: "info-box",
                         p { class: "info-title", "How voices are used" }
                         p {
-                            "The script is read in short chunks of up to two voices each and joined. A part with \
-                             three voices (host and two guests) simply needs more chunks. Chunks already read for \
-                             the same words and voices are reused at no cost."
+                            "Every speaker is read by a voice of its own from Google's voice library, in the \
+                             speaker's accent: British, American, Australian, Irish, Indian English and more. \
+                             Voices are picked automatically; under Customize speakers, Listen plays a voice \
+                             before anything is recorded and Another voice swaps it. The script is read in short \
+                             chunks and joined; chunks already read for the same words and voices are reused at \
+                             no cost."
                         }
                     }
                 }
@@ -535,7 +580,8 @@ pub fn Home() -> Element {
                                 }
                                 button {
                                     class: "download-button secondary",
-                                    disabled: state().is_generating_audio,
+                                    disabled: state().is_generating_audio || !catalogue.is_ready(),
+                                    title: if catalogue.is_ready() { "" } else { "Waiting for the list of voices" },
                                     onclick: handle_generate_audio,
                                     if state().is_generating_audio { "Recording..." } else { "Generate audio" }
                                 }
@@ -779,8 +825,8 @@ async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest
     if !still_current(state, run) {
         return;
     }
-    let job_id = match started {
-        Ok(job_id) => job_id,
+    let started = match started {
+        Ok(started) => started,
         Err(e) => {
             let mut s = state.write();
             s.audio_error = Some(format!("Could not start the recording: {e}"));
@@ -788,8 +834,16 @@ async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest
             return;
         }
     };
-    state.write().audio_job_id = Some(job_id.clone());
-    fetch_audio(state, run, job_id).await;
+    {
+        // Keep the voices the server records with (the same rule as here,
+        // so normally nothing changes).
+        let mut s = state.write();
+        if effective_speakers(&s) != started.speakers {
+            s.custom_speakers = started.speakers;
+        }
+        s.audio_job_id = Some(started.job_id.clone());
+    }
+    fetch_audio(state, run, started.job_id).await;
 }
 
 /// Waits for a started job and records where its WAV is; also behind "Check again".

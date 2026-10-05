@@ -16,6 +16,7 @@ pub mod speaker;
 pub mod task;
 pub mod usage;
 pub mod validation;
+pub mod voice;
 
 #[allow(unused_imports)] // consumed on the server only
 pub use audio::*;
@@ -29,3 +30,4 @@ pub use speaker::*;
 pub use task::*;
 pub use usage::*;
 pub use validation::*;
+pub use voice::*;

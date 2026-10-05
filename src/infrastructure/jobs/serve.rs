@@ -1,10 +1,10 @@
-//! Streams finished recordings straight from disk.
+//! Streams finished recordings and voice samples straight from disk.
 //!
-//! This is a plain axum handler, not a server function: the browser puts the
+//! These are plain axum handlers, not server functions: the browser puts the
 //! URL in `<audio src>` and in a download link, so the response must be the
 //! WAV itself with the right content type and `Range` support (seeking in a
-//! 30-minute file), not a server-function envelope. `main.rs` mounts it at
-//! `application::audio::AUDIO_ROUTE`.
+//! 30-minute file), not a server-function envelope. `startup` mounts them at
+//! `application::audio::AUDIO_ROUTE` and `application::voices::VOICE_SAMPLE_ROUTE`.
 
 use dioxus::server::axum::{
     body::Body,
@@ -14,6 +14,9 @@ use dioxus::server::axum::{
 };
 use tower_http::services::ServeFile;
 
+use crate::domain::Voice;
+
+use super::super::tts::stored_sample;
 use super::store::{JobState, JobStore};
 
 /// `GET /audio/{job_id}`: the WAV of a completed job, or 404 with a
@@ -44,6 +47,38 @@ pub async fn serve_audio(Path(job_id): Path<String>, request: Request) -> Respon
     }
 }
 
+/// `GET /voice-sample/{voice_id}`: the stored sample of a voice, or 404.
+/// Nothing is synthesised here; `application::voices` makes samples.
+pub async fn serve_voice_sample(Path(voice_id): Path<String>, request: Request) -> Response {
+    if Voice::check_id(&voice_id).is_err() {
+        return not_found("Voice sample not found");
+    }
+    let Some(sample) = stored_sample(&voice_id).await else {
+        return not_found("Voice sample not found");
+    };
+    match ServeFile::new(sample.path).try_call(request).await {
+        Ok(response) => response.map(Body::new),
+        Err(e) => {
+            tracing::warn!(voice = %voice_id, "cannot read the voice sample: {e}");
+            not_found("The voice sample file is missing")
+        }
+    }
+}
+
 fn not_found(message: &'static str) -> Response {
     (StatusCode::NOT_FOUND, message).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn sample_route_refuses_what_is_not_a_voice_id() {
+        for id in ["", "..", "../jobs.db", "jobs.db", "en gb", &"x".repeat(101)] {
+            let response =
+                serve_voice_sample(Path(id.to_string()), Request::new(Body::empty())).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{id}");
+        }
+    }
 }

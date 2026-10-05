@@ -1,8 +1,11 @@
-//! Text-to-speech: voice selection, chunking and reuse of synthesised speech.
+//! Text-to-speech: the voice catalogue, chunking, reuse of synthesised
+//! speech and voice samples.
 
 mod cache;
+mod samples;
 mod synthesize;
 pub mod voices;
 
-pub use cache::purge_older_than as purge_speech_cache;
+pub use cache::{Reuse, purge_older_than as purge_speech_cache};
+pub use samples::{SAMPLE_KEEP_HOURS, make_sample, stored_sample};
 pub use synthesize::{TtsError, synthesize_passage};

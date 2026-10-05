@@ -70,12 +70,17 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 - **`src/infrastructure/` is `#![cfg(feature = "server")]`** and must not define `#[server]`
   functions. `main.rs` gates the module and calls `infrastructure::startup::run(App)`:
   `bootstrap()` (validated config loaded once, data dirs, tracing), SQLite, then
-  `dioxus::server::router(App)` plus the one plain axum route `GET /audio/{job_id}`, served by
-  `dioxus::serve` in debug (hot reload) or an explicit listener otherwise (portable mode opens
-  the browser); startup errors are returned, not panicked. The browser build uses `dioxus::launch`.
+  `dioxus::server::router(App)` plus two plain axum routes, `GET /audio/{job_id}` and
+  `GET /voice-sample/{voice_id}`, served by `dioxus::serve` in debug (hot reload) or an explicit
+  listener otherwise (portable mode opens the browser); startup errors are returned, not
+  panicked. The browser build uses `dioxus::launch`.
 - **`src/ui/` talks to the server only through `crate::application`.** The part view holds a
   single `HomeState` signal; the exam view a single `ExamState` signal provided by the `Navbar`
-  layout. Both only display issues; rule checks belong to the domain. Browser-side orchestration
+  layout. `Navbar` also provides the second context, `VoiceCatalogueCtx` (`ui/components/voices.rs`):
+  the voice catalogue, loaded once with the free `voice_catalogue`. Both views assign voices from
+  it in the browser with the domain's `assign_voices` / `assign_exam_voices`, writing the state
+  only when a voice changed; "Another voice" is `domain::next_voice`. Both views only display
+  issues; rule checks belong to the domain. Browser-side orchestration
   (script first, then questions and recording side by side, `futures_util::future::join`) lives
   in the views and chains the application's server functions; a `run` counter drops late results
   of a cancelled or superseded run.
@@ -92,6 +97,12 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   and a unit test for the validator arm.
 - Passage speaker labels are always "Speaker A/B/C"; names live inside the lines. TTS and
   grounding checks depend on this.
+- Every speaker of a part has a voice of its own (`SpeakerConfig.voice: VoiceChoice`: `Auto`,
+  `Assigned` by the app, `Chosen` by the teacher and never replaced). The browser assigns as soon
+  as the catalogue is there; `start_part_audio` / `start_exam_audio` assign again on the server
+  (`application::voices::prepare_speakers`, same rule, parts in order) before `validate()`, which
+  refuses `Auto` and shared or wrong-gender voices, and return the speakers they recorded with
+  for the views to keep. `describe()` never names the voice (a name would turn up in the script).
 - Errors are teacher-readable (`DomainError`, `ValidationIssue`). Infrastructure errors are
   converted at the application boundary via `application::user_error`; never surface HTTP
   codes or stack traces. Validation failures are returned as issues beside the draft, never
@@ -102,15 +113,31 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 ### Infrastructure facts that shape code
 
 - One `GeminiClient` (`infrastructure/llm/gemini.rs`) owns the retry policy (429/503/504/timeout,
-  exponential backoff), JSON mode and the usage meter; do not add parallel HTTP paths. Every
-  request is `POST /v1beta/interactions` with `"store": false` (Google stores interactions for
-  55 days otherwise). The API key goes in the `x-goog-api-key` header, never in the URL.
+  exponential backoff, a 429's `retryDelay`), JSON mode and the usage meter; do not add parallel
+  HTTP paths. Every request goes through its `send`: text and speech are
+  `POST /v1beta/interactions` with `"store": false` (Google stores interactions for 55 days
+  otherwise); the free voice list `GET /v1beta/voices` (`list_voices`) uses the same path. The
+  API key goes in the `x-goog-api-key` header, never in the URL. A voice Google does not know
+  is `LlmError::UnknownVoice`, never a rejected key.
+- The accent belongs to the voice: pools hold regional library voices (`en-gb-…`, `en-au-…`,
+  `en-in-…`); the 30 classic voices (`despina`, `Puck`, …) are all General American and may only
+  appear in the American pool. The built-in pools (`tts/default_voices.json`, compiled in,
+  chosen with `tools/voice_lab.py audition`, see `docs/voices.md`) list several voices per
+  accent and gender plus the announcer; `voices.json` version 2 (`VOICES_PATH`) holds overrides only (a non-empty list
+  replaces one pool). A 0.7 file is parsed strictly, then ignored: left at the 0.7 defaults it
+  is renamed `voices.0.7.json` and the v2 template written; a customised one is kept and a
+  startup notice says "0.7 format".
 - Gemini 3.8 TTS reads its input **verbatim**: delivery directions go in each item's
   `speech_metadata.style`, speakers in `speech_metadata.speaker` (`"SpeakerA"`, the label
-  without spaces), never in the text. At most two voices and 8,192 input tokens per request, so
-  `tts/synthesize.rs` cuts a passage into chunks of at most 200 words and two speakers and joins
-  them; `tts/cache.rs` reuses a chunk synthesised before for the same model, voices, words and
-  style (`DATA_DIR/audio/cache`, `SPEECH_CACHE_HOURS`). Raw 24 kHz mono 16-bit PCM is requested
+  without spaces), never in the text. The style is per turn, short and the same for every turn
+  of a speaker: its role's `delivery_style()` plus `EXAM_PACE` (long or changing styles make
+  voices drift). Never put accent, gender, age or a name in a style. At most two voices and 8,192
+  input tokens per request, so `tts/synthesize.rs` (`plan_passage`) cuts a passage into chunks of
+  at most 200 words and two speakers, listing the voices in label order, and joins them; a
+  designed voice (`voice_…`) reads alone, one turn per request. At most 3 speech requests run at
+  once in the whole process. `tts/cache.rs` (`speech-cache-v2`) reuses a chunk synthesised
+  before for the same model, voices, words and per-turn styles (`DATA_DIR/audio/cache`,
+  `SPEECH_CACHE_HOURS`). Raw 24 kHz mono 16-bit PCM is requested
   (`audio/l16`, WAV accepted too); WAV is encoded/decoded by hand in
   `infrastructure/audio/wav.rs` (no audio crate).
 - Usage: every server function that calls Gemini records its client's `usage()` in the `usage`
@@ -118,6 +145,7 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   and recording jobs record on completion and on failure. Prices live in
   `infrastructure/llm/pricing.rs` (3.8 introductory rates until 2026-12-31, list rates after);
   update that table when Google changes prices. Over-budget exams are warned about, never blocked.
+  Voice samples are booked under `UsageStep::Voices`; requests that cost nothing add no row.
 - Audio synthesis runs as background jobs (SQLite `jobs.db` + WAV under `DATA_DIR/audio/`);
   the browser polls `audio_job_status` (`ui/jobs.rs`, per-kind cadence and deadline) and streams
   the finished WAV from `/audio/{job_id}`, a plain axum route (`infrastructure/jobs/serve.rs`).
@@ -127,6 +155,10 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   recordings. Jobs no saved exam refers to are purged hourly from boot once older than
   `AUDIO_RETENTION_HOURS` (default 24, `0` = never); a job named by a saved exam's
   `recording_job` is never purged and is deleted with the exam.
+- Voice samples ("Listen") are recorded once per voice by `voice_preview` (catalogue ids only,
+  `Bucket::VoiceSample`), stored as `DATA_DIR/audio/voices/{id}.wav`, streamed from the plain
+  route `/voice-sample/{voice_id}` for the same reason as `/audio/{job_id}`, and purged after 30
+  days unused. A stored sample is free.
 - Saved exams live in the same `jobs.db` (`infrastructure/exams.rs`: `exams` table with the
   `SavedExam` JSON body plus summary columns) behind `application/exams.rs`. The exam page
   saves on its own after each finished step once a script exists (`SaveWork` in

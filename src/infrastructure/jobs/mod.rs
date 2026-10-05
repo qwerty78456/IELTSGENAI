@@ -4,6 +4,6 @@ mod serve;
 mod store;
 mod worker;
 
-pub use serve::serve_audio;
+pub use serve::{serve_audio, serve_voice_sample};
 pub use store::{JobKind, JobRecord, JobState, JobStore, now_secs};
 pub use worker::{ensure_cleanup_running, remove_output, spawn_exam_audio, spawn_part_audio};

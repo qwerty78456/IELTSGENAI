@@ -10,7 +10,15 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Passage** | The script of one part: ordered lines attributed to speaker labels. | "script" is acceptable in the UI; the type is `Passage` |
 | **Passage kind** (`PassageKind`) | Conversation, Interview (host + guests), Monologue, Excerpt ("part of a talk"). | |
 | **Playback** (`PlayCount`) | Once or Twice. Decides replays in the audio programme. | |
-| **Speaker** (`SpeakerConfig`) | A voice: label + gender + accent + role. The label is "Speaker A", never a character name. | "voice" alone (that is the TTS voice name) |
+| **Speaker** (`SpeakerConfig`) | A person heard in the passage: label + gender + accent + role + voice choice. The label is "Speaker A", never a character name. | "voice" (that is the `Voice`) |
+| **Voice** (`Voice`) | The TTS voice a speaker is read with, identified by its id. Two speakers of a part never share one. | "speaker", "actor" |
+| **Library voice** (`VoiceSource::Library`) | A Google prebuilt voice (Extended Voice Library, id like `en-gb-advisor-1`, or a classic voice). | |
+| **Designed voice** (`VoiceSource::Designed`) | A voice made with Voice Design from a description (id `voice_…`); it belongs to the API key's Google project. | "custom voice" |
+| **Voice pool** | The catalogue voices of one accent and gender, in preference order; assignment takes from it. | |
+| **Voice choice** (`VoiceChoice`) | How a speaker got its voice: Automatic (none yet), assigned by the app, or chosen by the teacher (kept). | |
+| **Voice catalogue** (`VoiceCatalogue`) | Every voice this server gives speakers (the pools, in preference order) and the announcer: the built-in pools plus `voices.json` overrides. | "voice list" is fine in UI text |
+| **Voice sample** (`VoiceSample`) | A short recording of one voice, made once and kept, behind "Listen". | "preview" |
+| **Delivery style** (`SpeakerRole::delivery_style`) | A few words on how a speaker sounds ("polite and helpful"), sent beside the text and never spoken; never age, gender, accent or a name. | "stage direction" |
 | **Task** | One question block under one rubric: a task kind over a contiguous item range. | "exercise", "section" |
 | **Task kind** (`TaskKind`) | T/F/NG, who-mentioned, multiple selection, multiple choice, short answer, summary / note / sentence completion, matching. | |
 | **Item** | One numbered question with its key and evidence. | "question" is fine in UI text; the type is `Item` |

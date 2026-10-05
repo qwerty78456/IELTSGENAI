@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::{AudioRequest, AudioTrack, ExamAudioRequest};
+use crate::domain::{AudioRequest, AudioTrack, ExamAudioRequest, SpeakerConfig};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobStatus {
@@ -38,16 +38,38 @@ pub fn audio_url(job_id: &str) -> String {
     format!("/audio/{job_id}")
 }
 
-/// Starts synthesising one part's passage; returns the job id to poll.
-/// `exam` names the saved exam the spend is booked to (none from the part page).
+/// A part recording that started: the job to poll, and the speakers with
+/// the voices the server gave them, for the browser to keep.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AudioStarted {
+    pub job_id: String,
+    pub speakers: Vec<SpeakerConfig>,
+}
+
+/// An exam recording that started: the job to poll, and every part's
+/// speakers with their voices, index-aligned with the request's parts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExamAudioStarted {
+    pub job_id: String,
+    pub parts: Vec<Vec<SpeakerConfig>>,
+}
+
+/// Starts synthesising one part's passage. Speakers without a usable voice
+/// get one first (`voices::prepare_speakers`). `exam` names the saved exam
+/// the spend is booked to (none from the part page).
 #[server]
 pub async fn start_part_audio(
     request: AudioRequest,
     exam: Option<Uuid>,
-) -> Result<String, ServerFnError> {
-    use crate::application::user_error;
+) -> Result<AudioStarted, ServerFnError> {
+    use crate::application::{user_error, voices::prepare_speakers};
     use crate::infrastructure::{jobs, rate_limiter};
 
+    let speakers = prepare_speakers(request.speakers, &[]).map_err(ServerFnError::new)?;
+    let request = AudioRequest {
+        speakers,
+        ..request
+    };
     request.validate().map_err(user_error)?;
     rate_limiter::check(rate_limiter::Bucket::Audio).map_err(ServerFnError::new)?;
     let store = jobs::JobStore::global().await;
@@ -60,20 +82,40 @@ pub async fn start_part_audio(
         .create(jobs::JobKind::PartAudio)
         .await
         .map_err(user_error)?;
+    let speakers = request.speakers.clone();
     jobs::spawn_part_audio(job_id.clone(), request, exam.map(|id| id.to_string()));
-    Ok(job_id)
+    Ok(AudioStarted { job_id, speakers })
 }
 
-/// Starts rendering the whole exam recording; returns the job id to poll.
-/// `exam` names the saved exam the spend is booked to.
+/// Starts rendering the whole exam recording. Every part's speakers get
+/// voices first, part by part, each part preferring voices the others do not
+/// use (`voices::prepare_exam_speakers`). `exam` names the saved exam the
+/// spend is booked to.
 #[server]
 pub async fn start_exam_audio(
     request: ExamAudioRequest,
     exam: Option<Uuid>,
-) -> Result<String, ServerFnError> {
-    use crate::application::user_error;
+) -> Result<ExamAudioStarted, ServerFnError> {
+    use crate::application::{user_error, voices::prepare_exam_speakers};
     use crate::infrastructure::{jobs, rate_limiter};
 
+    let mut request = request;
+    let line_ups: Vec<Vec<SpeakerConfig>> =
+        request.parts.iter().map(|p| p.speakers.clone()).collect();
+    let exam_format = request.format.format();
+    for (part, prepared) in request
+        .parts
+        .iter_mut()
+        .zip(prepare_exam_speakers(&line_ups))
+    {
+        part.speakers = prepared.map_err(|e| {
+            let title = exam_format.part(part.passage.part).map_or_else(
+                || format!("Part {}", part.passage.part),
+                |spec| spec.title.clone(),
+            );
+            ServerFnError::new(format!("{title}: {e}"))
+        })?;
+    }
     request.validate().map_err(user_error)?;
     rate_limiter::check(rate_limiter::Bucket::Audio).map_err(ServerFnError::new)?;
     let store = jobs::JobStore::global().await;
@@ -86,8 +128,9 @@ pub async fn start_exam_audio(
         .create(jobs::JobKind::ExamAudio)
         .await
         .map_err(user_error)?;
+    let parts = request.parts.iter().map(|p| p.speakers.clone()).collect();
     jobs::spawn_exam_audio(job_id.clone(), request, exam.map(|id| id.to_string()));
-    Ok(job_id)
+    Ok(ExamAudioStarted { job_id, parts })
 }
 
 /// The status the browser sees for a stored job.

@@ -1,0 +1,335 @@
+{
+  "version": 2,
+  "comment": "Chosen on 2026-10-05 with tools/voice_lab.py audition (docs/voices.md): per accent and gender, library voices whose accent the AI ear confirmed come first, ordered by naturalness and clarity. The ear hears most non-rhotic accents as England, so some voices are kept on the catalogue's word until the PO has listened: Canadian (all), Australian male en-au-podcaster-2, New Zealand female en-nz-assistant-3 and en-nz-training-3, Irish en-ie-training-1 and en-ie-csagent-4, South African (all).",
+  "announcer": {
+    "id": "en-gb-tutor-9",
+    "name": "Tutor 9",
+    "description": "Male, British (Winchester), 40s, crisp and eager, low pitch"
+  },
+  "pools": {
+    "british": {
+      "male": [
+        {
+          "id": "en-gb-advisor-8",
+          "name": "Authoritative Advisor 8",
+          "description": "Male, British (Winchester), 40s, crisp and eager, low pitch"
+        },
+        {
+          "id": "en-gb-tutor-8",
+          "name": "Tutor 8",
+          "description": "Male, British (Winchester), 40s, relaxed, low pitch"
+        },
+        {
+          "id": "en-gb-assistant-2",
+          "name": "Digital Assistant 2",
+          "description": "Male, British (Winchester), 20s, professional yet approachable, low pitch"
+        },
+        {
+          "id": "en-gb-assistant-10",
+          "name": "Digital Assistant 10",
+          "description": "Male, British (Winchester), 30s, enthusiastic, engaging and fun, low pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-gb-assistant-1",
+          "name": "Digital Assistant 1",
+          "description": "Female, British (Winchester), 30s, natural and clear, high pitch"
+        },
+        {
+          "id": "en-gb-advisor-1",
+          "name": "Authoritative Advisor 1",
+          "description": "Female, British (Winchester), 30s, professional yet approachable, medium pitch"
+        },
+        {
+          "id": "en-gb-tutor-10",
+          "name": "Tutor 10",
+          "description": "Female, British (Winchester), 50s, natural and clear, high pitch"
+        },
+        {
+          "id": "en-gb-tutor-21",
+          "name": "Tutor 21",
+          "description": "Female, British (Winchester), 30s, crisp and eager, medium pitch"
+        },
+        {
+          "id": "en-gb-tutor-4",
+          "name": "Tutor 4",
+          "description": "Female, British (Winchester), 30s, textured, resonant and soothing, low pitch"
+        }
+      ]
+    },
+    "american": {
+      "male": [
+        {
+          "id": "en-us-tutor-1",
+          "name": "Tutor 1",
+          "description": "Male, American (East Coast), 30s, clear and friendly, low pitch"
+        },
+        {
+          "id": "en-us-tutor-19",
+          "name": "Tutor 19",
+          "description": "Male, American (Midwest), 50s, professional yet approachable, low pitch"
+        },
+        {
+          "id": "rasalgethi",
+          "name": "Rasalgethi",
+          "description": "Male, American (General American), informative and measured, medium pitch"
+        },
+        {
+          "id": "en-us-tutor-22",
+          "name": "Tutor 22",
+          "description": "Male, American (Northwest), 30s, engaging and empathic, low pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-us-sola",
+          "name": "Sola",
+          "description": "Female, American (West Coast), 30s, relaxed, high pitch"
+        },
+        {
+          "id": "despina",
+          "name": "Despina",
+          "description": "Female, American (General American), smooth, mellow and polished, medium pitch"
+        },
+        {
+          "id": "en-us-assistant-1",
+          "name": "Digital Assistant 1",
+          "description": "Female, American (Midwest), 20s, textured, resonant and soothing, low pitch"
+        },
+        {
+          "id": "en-us-tutor-18",
+          "name": "Tutor 18",
+          "description": "Female, American (Northwest), 40s, objective, direct and helpful, medium pitch"
+        }
+      ]
+    },
+    "australian": {
+      "male": [
+        {
+          "id": "en-au-tutor-5",
+          "name": "Tutor 5",
+          "description": "Male, Australian (Sydney), 50s, conversational, slightly dry humor and warm, low pitch"
+        },
+        {
+          "id": "en-au-podcaster-2",
+          "name": "Podcaster 2",
+          "description": "Male, Australian (Sydney), 30s, clear and friendly, low pitch"
+        },
+        {
+          "id": "en-au-podcaster-6",
+          "name": "Podcaster 6",
+          "description": "Male, Australian (Sydney), 40s, professional yet approachable, low pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-au-tutor-3",
+          "name": "Tutor 3",
+          "description": "Female, Australian (Sydney), 30s, resonant and witty, medium pitch"
+        },
+        {
+          "id": "en-au-advisor-8",
+          "name": "Authoritative Advisor 8",
+          "description": "Female, Australian (Sydney), 40s, high pitch"
+        },
+        {
+          "id": "en-au-concierge-5",
+          "name": "Concierge 5",
+          "description": "Female, Australian (Sydney), 50s, objective, direct and helpful, medium pitch"
+        },
+        {
+          "id": "en-au-storyteller-1",
+          "name": "Storyteller 1",
+          "description": "Female, Australian (Sydney), 40s, reflective, calm and reassuring, low pitch"
+        }
+      ]
+    },
+    "canadian": {
+      "male": [
+        {
+          "id": "en-ca-tutor-2",
+          "name": "Tutor 2",
+          "description": "Male, Canadian (Toronto), 30s, cool, confident and collaborative, low pitch"
+        },
+        {
+          "id": "en-ca-concierge-2",
+          "name": "Concierge 2",
+          "description": "Male, Canadian (Toronto), 20s, clear and friendly, low pitch"
+        },
+        {
+          "id": "en-ca-assistant-4",
+          "name": "Digital Assistant 4",
+          "description": "Male, Canadian (Vancouver), 50s, warm and engaging, medium pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-ca-tutor-4",
+          "name": "Tutor 4",
+          "description": "Female, Canadian (Toronto), 50s, clear and friendly, medium pitch"
+        },
+        {
+          "id": "en-ca-assistant-6",
+          "name": "Digital Assistant 6",
+          "description": "Female, Canadian (Toronto), 30s, natural and clear, low pitch"
+        },
+        {
+          "id": "en-ca-tutor-5",
+          "name": "Tutor 5",
+          "description": "Female, Canadian (Toronto), 30s, relaxed, high pitch"
+        }
+      ]
+    },
+    "newzealand": {
+      "male": [
+        {
+          "id": "en-nz-tutor-2",
+          "name": "Tutor 2",
+          "description": "Male, New Zealand (Auckland), 30s, warm and engaging, low pitch"
+        },
+        {
+          "id": "en-nz-training-2",
+          "name": "Training Voiceover 2",
+          "description": "Male, New Zealand (Auckland), 40s, low pitch"
+        },
+        {
+          "id": "en-nz-assistant-8",
+          "name": "Digital Assistant 8",
+          "description": "Male, New Zealand (Auckland), 30s, high pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-nz-podcaster-8",
+          "name": "Podcaster 8",
+          "description": "Female, New Zealand (Auckland), 30s, warm and engaging, high pitch"
+        },
+        {
+          "id": "en-nz-assistant-3",
+          "name": "Digital Assistant 3",
+          "description": "Female, New Zealand (Auckland), 40s, light, airy and precise, low pitch"
+        },
+        {
+          "id": "en-nz-training-3",
+          "name": "Training Voiceover 3",
+          "description": "Female, New Zealand (Auckland), 30s, reflective, calm and reassuring, medium pitch"
+        }
+      ]
+    },
+    "irish": {
+      "male": [
+        {
+          "id": "en-ie-tutor-7",
+          "name": "Tutor 7",
+          "description": "Male, Irish (Dublin), 50s, objective, direct and helpful, low pitch"
+        },
+        {
+          "id": "en-ie-csagent-4",
+          "name": "Call Center Agent 4",
+          "description": "31-year-old Customer Service Agent from Dublin. Speaks with a Dublin English accent. Voice is clear, medium-pitch, and friendly."
+        }
+      ],
+      "female": [
+        {
+          "id": "en-ie-concierge-5",
+          "name": "Concierge 5",
+          "description": "Female, Irish (Dublin), 40s, professional yet approachable, low pitch"
+        },
+        {
+          "id": "en-ie-training-1",
+          "name": "Training Voiceover 1",
+          "description": "36-year-old Instructional Video Host from Dublin. Speaks with a Dublin English accent. Tone is objective, direct, and helpful"
+        }
+      ]
+    },
+    "scottish": {
+      "male": [
+        {
+          "id": "en-gb-podcaster-5",
+          "name": "Podcaster 5",
+          "description": "Male, Scottish (Glasgow), 40s, objective, direct and helpful, medium pitch"
+        },
+        {
+          "id": "en-gb-advisor-9",
+          "name": "Authoritative Advisor 9",
+          "description": "Male, Scottish (Glasgow), 50s, engaging and empathic, low pitch"
+        },
+        {
+          "id": "en-gb-training-8",
+          "name": "Training Voiceover 8",
+          "description": "Male, Scottish (Glasgow), 40s, warm and engaging, low pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-gb-assistant-6",
+          "name": "Digital Assistant 6",
+          "description": "Female, Scottish (Glasgow), 30s, crisp and eager, high pitch"
+        },
+        {
+          "id": "en-gb-advisor-11",
+          "name": "Authoritative Advisor 11",
+          "description": "Female, Scottish (Glasgow), 40s, high pitch"
+        },
+        {
+          "id": "en-gb-techagent-5",
+          "name": "Tech Advisor 5",
+          "description": "Female, Scottish (Glasgow), 20s, warm and engaging, medium pitch"
+        }
+      ]
+    },
+    "southafrican": {
+      "male": [
+        {
+          "id": "en-za-advisor-2",
+          "name": "Authoritative Advisor 2",
+          "description": "57-year-old Researcher from Cape Town South Africa. Speaks with a Cape Town South Africa English accent. Currently at an appointment. Voice is warm and engaging."
+        },
+        {
+          "id": "en-za-training-8",
+          "name": "Training Voiceover 8",
+          "description": "58-year-old Instructional Video Host from Cape Town South Africa. Speaks with a Cape Town South Africa English accent. Currently in an indie film. Tone is professional yet approachable."
+        }
+      ],
+      "female": [
+        {
+          "id": "en-za-tutor-3",
+          "name": "Tutor 3",
+          "description": "48-year-old Tutor from Cape Town South Africa. Speaks with a Cape Town South Africa English accent. Voice is cool, confident, and collaborative."
+        },
+        {
+          "id": "en-za-podcaster-6",
+          "name": "Podcaster 6",
+          "description": "42-year-old Radio Host from Cape Town South Africa. Speaks with a Cape Town South Africa English accent. Tone is objective, direct, and helpful"
+        }
+      ]
+    },
+    "indian": {
+      "male": [
+        {
+          "id": "en-in-concierge-11",
+          "name": "Concierge 11",
+          "description": "Male, Indian, 40s, objective, direct and helpful, medium pitch"
+        },
+        {
+          "id": "en-in-tutor-10",
+          "name": "Tutor 10",
+          "description": "Male, Indian, 50s, warm and engaging, low pitch"
+        }
+      ],
+      "female": [
+        {
+          "id": "en-in-podcaster-11",
+          "name": "Podcaster 11",
+          "description": "Female, Indian, 30s, clear and friendly, high pitch"
+        },
+        {
+          "id": "en-in-tutor-2",
+          "name": "Tutor 2",
+          "description": "Female, Indian, 40s, engaging and empathic, medium pitch"
+        }
+      ]
+    }
+  }
+}

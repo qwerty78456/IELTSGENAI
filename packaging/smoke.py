@@ -67,6 +67,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     config = appdir / ".env"
     voices = appdir / "voices.json"
     assert config.is_file() and voices.is_file()
+    assert json.loads(voices.read_bytes())["version"] == 2
     original_voices = voices.read_bytes()
     config.write_bytes(b"GEMINI_API_KEY=never-print-this-secret\xff")
     failure("UTF-8")
@@ -82,6 +83,19 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     voices.write_text("{broken", encoding="utf-8")
     failure("voices.json")
     assert voices.read_text() == "{broken"
+    # A 0.7 voices.json left at its defaults is renamed and replaced by the
+    # version 2 template; a customised one is kept as it is (checked below).
+    shipped_0_7 = (b'{"male": {"british": "Puck", "american": "Orus", "australian": "Fenrir", "canadian": "Puck", '
+                   b'"newzealand": "Fenrir", "default": "Puck"}, "female": {"british": "Zephyr", "american": "Leda", '
+                   b'"australian": "Aoede", "canadian": "Zephyr", "newzealand": "Aoede", "default": "Zephyr"}, '
+                   b'"announcer": "Charon"}')
+    customised_0_7 = shipped_0_7.replace(b'"Leda"', b'"Kore"')
+    retired = appdir / "voices.0.7.json"
+    voices.write_bytes(shipped_0_7)
+    failure("PORT", {"PORT": "0"})
+    assert retired.read_bytes() == shipped_0_7
+    assert json.loads(voices.read_bytes())["version"] == 2
+    retired.unlink()
     voices.write_bytes(original_voices)
     voices.unlink()
     failure("PORT", {"PORT": "0"})
@@ -138,6 +152,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     (base / ".env").write_text("deliberately malformed dotenv !", encoding="utf-8")
 
     logpath = base / "server.log"
+    voices.write_bytes(customised_0_7)
     def start(extra=None, open_browser=False):
         output = logpath.open("wb")
         options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
@@ -212,6 +227,8 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
         with urllib.request.urlopen(url + "/audio/fixture") as response:
             assert response.read() == wavpath.read_bytes()
         logs = logpath.read_text(errors="replace")
+        assert "0.7 format" in logs, logs[-5000:]
+        assert voices.read_bytes() == customised_0_7 and not retired.exists()
         route = re.search(r"POST (/\S*audio_job_status\S*)", logs)
         assert route, logs[-5000:]
         request = urllib.request.Request(url + route[1], data=json.dumps({"job_id": "fixture"}).encode(),
@@ -220,6 +237,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
             assert b"fixture" in response.read()
     finally:
         stop(process)
+    voices.write_bytes(original_voices)
 
     # Without a key anywhere the server still starts and asks for one in the
     # browser. On Windows the key may also come from the registry, which this
@@ -314,6 +332,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     assert (base / "custom configuration" / ".env").is_file()
     assert (base / "custom configuration" / "voices.json").is_file()
     assert not (payloads() - existing_payloads), payloads() - existing_payloads
-    print("PASS: first run, malformed config, preservation, paths, logs/database failures, port conflict,")
+    print("PASS: first run, malformed config, preservation, 0.7 voices.json (renamed or kept), paths,")
+    print("      logs/database failures, port conflict,")
     print("      pages/assets/WASM/CSS, server function, audio range/download,")
     print("      successful exit codes, shutdown, relocation and explicit configuration directory.")

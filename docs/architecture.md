@@ -49,7 +49,9 @@ src/
   domain/                 pure; compiles on wasm and server
     format.rs             ExamFormat, PartSpec, TaskSpec, TaskKind, WordLimit, PlayCount, PassageKind
                           + presets ExamFormat::ielts_listening(), ::hsg_national()
-    speaker.rs            SpeakerConfig (label, gender, accent, role)
+    speaker.rs            SpeakerConfig (label, gender, accent, role, voice: VoiceChoice), Accent::language_code
+    voice.rs              Voice, VoiceSource (Library | Designed), VoiceChoice; assign_voices, assign_exam_voices,
+                          next_voice, voice_conflicts, speaker_change; VoiceDesignRequest (+ validate)
     passage.rs            Passage / Line, parser for "Speaker A: ..." text, script/transcript views, duration estimate
     speech.rs             speech markup: SPEECH_TAGS, EXAM_SPEECH_TAGS, display/speech text, markup problems
     task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty
@@ -65,7 +67,11 @@ src/
     tasks.rs              generate_task    -> TaskDraft { task, issues }
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
     usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record() after every Gemini call
-    settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over a working operator key)
+    settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over a working operator key);
+                          local_server(), the loopback rule voices reuse
+    voices.rs             voice_catalogue, voice_preview (catalogue or this key's designed voices) -> VoiceSample;
+                          design_voice -> DesignedVoice, designed_voices -> DesignedVoices, delete_voice
+                          (design/delete: loopback only, app-made voices only); prepare_speakers (server, async)
     exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job), ExamSummary
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
     config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from
@@ -77,21 +83,27 @@ src/
     startup.rs            bootstrap -> SQLite -> router + GET /audio/{job_id}; dioxus::serve in debug
                           (hot reload), else an explicit listener, browser opening, graceful Ctrl+C
     llm/gemini.rs         GeminiClient on /v1beta/interactions (store: false): generate_text, generate_json<T>,
-                          synthesize(SpeechRequest); one retry policy; usage meter shared by clones
+                          synthesize(SpeechRequest); Voices API: list_voices, get_voice, delete_voice,
+                          create_voice (POST /v1beta/voices, store: true, never retried after a timeout);
+                          one retry policy; usage meter shared by clones
     llm/pricing.rs        price table per model (intro until 2026-12-31, list after), cost_micro_usd
     prompts/              topic_prompt, passage_prompt, task_prompt (+ TaskDraftDto)
-    tts/                  voices.json mapping; synthesize_passage (chunks of <= 200 words, <= 2 voices);
-                          cache.rs (speech reuse under DATA_DIR/audio/cache); Announcer
+    tts/                  voices.rs (VoiceCatalog: built-in pools + voices.json v2 overrides);
+                          synthesize.rs (plan_passage: chunks of <= 200 words, <= 2 voices, designed voices alone);
+                          cache.rs (speech reuse under DATA_DIR/audio/cache); samples.rs (voice samples under
+                          DATA_DIR/audio/voices); designed.rs (design_voice, designed_voices cached 60 s,
+                          find_voice, delete_designed_voice; `designed_voices` table of the voices made here); Announcer
     audio/wav.rs          Pcm16: silence, tone, append, WAV encode/decode (no crate)
     audio/program.rs      render_program(AudioProgram, passages, announcer, assets)
     jobs/store.rs         SQLite job table (JobStore); output_path is a file name resolved under DATA_DIR/audio
     jobs/worker.rs        spawn_part_audio, spawn_exam_audio (usage recorded on success and failure),
                           hourly clean-up (AUDIO_RETENTION_HOURS, SPEECH_CACHE_HOURS)
-    jobs/serve.rs         serve_audio: plain axum handler streaming a finished WAV (audio/wav, Range)
-    rate_limiter.rs       per-minute buckets
+    jobs/serve.rs         serve_audio, serve_voice_sample: plain axum handlers streaming a WAV (audio/wav, Range)
+    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5)
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
   export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
-  ui/                     components (audio player, exam library, issue list, key setup, loading popup, speaker modal), views (home, exam, navbar)
+  ui/                     components (audio player, exam library, issue list, key setup, loading popup, speaker modal,
+                          voices: VoicePicker and the speaker dialog's DesignedVoicesPanel), views (home, exam, navbar)
     jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
     clock.rs              local-time formatting (js-sys Date in the browser, UTC fallback on the server)
 ```

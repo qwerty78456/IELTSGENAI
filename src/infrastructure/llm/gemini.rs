@@ -4,9 +4,13 @@
 //! Every generation request is `POST /v1beta/interactions` with
 //! `"store": false`: the app keeps no conversation on Google's side, and
 //! Google would otherwise store each interaction (55 days on the paid tier).
-//! The voice catalogue is `GET /v1beta/voices`. Both go through `send`, one
-//! retry policy. The API key travels in the `x-goog-api-key` header, never in
-//! the URL, so it cannot leak through logs or proxies.
+//! The Voices API is `GET /v1beta/voices` (the catalogue and this project's
+//! designed voices), `GET` and `DELETE /v1beta/voices/{id}`, and
+//! `POST /v1beta/voices` with `"store": true` (Voice Design): the only
+//! request that keeps something at Google, the designed voice itself. All of
+//! them go through `send`, one retry policy. The API key travels in the
+//! `x-goog-api-key` header, never in the URL, so it cannot leak through logs
+//! or proxies.
 //!
 //! Every billed response is added to the client's usage meter before it is
 //! parsed, so a reply that is cut off or malformed is still counted.
@@ -20,7 +24,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
-use crate::domain::{Usage, Voice};
+use crate::domain::{Gender, Usage, Voice};
 
 use super::super::audio::{Pcm16, SAMPLE_RATE};
 use super::super::config::config;
@@ -32,7 +36,12 @@ const KEY_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const TEXT_TIMEOUT: Duration = Duration::from_secs(90);
 const TTS_TIMEOUT: Duration = Duration::from_secs(300);
 const VOICES_TIMEOUT: Duration = Duration::from_secs(30);
+/// Voice Design answered in 21 s on 2026-10-05 (the voice and a 20 s sample).
+const DESIGN_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_RETRIES: u32 = 3;
+/// A 503 answered within this is a refusal before any work; a later one may
+/// not be, so a request that creates something is not repeated after it.
+const QUICK_REFUSAL: Duration = Duration::from_secs(5);
 const FIRST_BACKOFF_MS: u64 = 1_000;
 /// Longest wait honoured from a 429's `retryDelay`.
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
@@ -93,6 +102,24 @@ pub enum LlmError {
         "Google could not use the voice \"{0}\": it does not exist, or it was designed with another API key (Google project). Choose another voice."
     )]
     UnknownVoice(String),
+    /// A string that cannot be a voice id; the text says what one looks like.
+    #[error("{0}")]
+    NotAVoiceId(String),
+    /// Voice Design refused: the project holds as many designed voices as
+    /// Google allows, or too many were made just now.
+    #[error(
+        "Google would not create another designed voice: the Google project of this API key may already hold 200 designed voices (Google's limit), or too many were created just now. Delete designed voices you no longer use, or try again in a few minutes."
+    )]
+    VoiceLimit,
+    /// Voice Design refused the description or the name.
+    #[error("Google did not create this voice: {0}. Change the name or description and try again.")]
+    VoiceNotCreated(String),
+    /// Voice Design did not answer in time. It is never repeated on its own:
+    /// the voice may have been made anyway.
+    #[error(
+        "Google took too long to create the voice. It may still appear among the designed voices in a minute; look there before creating it again."
+    )]
+    VoiceDesignTimeout,
 }
 
 /// A passage label bound to a Gemini voice id.
@@ -177,6 +204,42 @@ pub struct CatalogVoice {
     pub voice_type: String,
 }
 
+/// What Voice Design is asked to make.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceDesign {
+    pub display_name: String,
+    pub gender: Gender,
+    /// "en-GB": the accent's language tag.
+    pub language_code: String,
+    /// One or two sentences: age, timbre, regional accent, pace.
+    pub description: String,
+}
+
+/// A voice Voice Design made, with the sample Google returns with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreatedVoice {
+    /// "voice_kwq20yi2gjin".
+    pub id: String,
+    pub display_name: String,
+    /// "female" or "male", as Google reports it.
+    pub gender: String,
+    pub language_code: String,
+    /// About 20 s of the voice; `None` when Google sent none or it did not decode.
+    pub sample: Option<Pcm16>,
+}
+
+/// Which failures `send` repeats.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Retry {
+    /// 429, 503, 504 and timeouts.
+    Always,
+    /// 429, and a 503 answered within `QUICK_REFUSAL`: what Google answers
+    /// before doing the work. A request that creates something (a stored
+    /// voice) is never repeated after a timeout, a 504 or a slow 503: it may
+    /// have been made, and billed, already.
+    BeforeWork,
+}
+
 #[derive(Clone)]
 pub struct GeminiClient {
     http: reqwest::Client,
@@ -253,6 +316,16 @@ impl GeminiClient {
         &self.tts_model
     }
 
+    /// Tells the Google projects of two keys apart without keeping the key:
+    /// designed voices belong to the project, so what was listed with one
+    /// key must not be reused with another.
+    pub fn project_tag(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.api_key.hash(&mut hasher);
+        hasher.finish()
+    }
+
     /// Everything this client (and its clones) has been billed for so far.
     pub fn usage(&self) -> Usage {
         self.meter.lock().map(|usage| *usage).unwrap_or_default()
@@ -312,8 +385,8 @@ impl GeminiClient {
         Ok(pcm)
     }
 
-    /// Google's voice catalogue, every page: free, nothing is billed.
-    #[allow(dead_code)] // `voice_live_probe` now; designed voices (M4) next
+    /// Google's voice catalogue, every page: free, nothing is billed. With
+    /// `voice_type` "prompted", the designed voices of this key's project.
     pub async fn list_voices(&self, query: &VoiceQuery) -> Result<Vec<CatalogVoice>, LlmError> {
         let mut voices = Vec::new();
         let mut token: Option<String> = None;
@@ -325,6 +398,7 @@ impl GeminiClient {
                     &query.pairs(token.as_deref()),
                     None,
                     VOICES_TIMEOUT,
+                    Retry::Always,
                 )
                 .await?;
             voices.extend(
@@ -344,6 +418,79 @@ impl GeminiClient {
             }
         }
         Err(LlmError::Malformed("the voice list did not end".into()))
+    }
+
+    /// One voice with its sample (designed voices carry one; library voices
+    /// are not served here and give `UnknownVoice`). Free.
+    pub async fn get_voice(&self, id: &str) -> Result<(CatalogVoice, Option<Pcm16>), LlmError> {
+        let path = voice_path(id)?;
+        let response = self
+            .send(Method::GET, &path, &[], None, VOICES_TIMEOUT, Retry::Always)
+            .await
+            .map_err(|e| unknown_voice(e, id))?;
+        let voice = catalog_voice(&response)
+            .ok_or_else(|| LlmError::Malformed("the voice came back without an id".into()))?;
+        Ok((voice, sample_of(&response)))
+    }
+
+    /// Deletes a designed voice of this key's project. Free.
+    pub async fn delete_voice(&self, id: &str) -> Result<(), LlmError> {
+        let path = voice_path(id)?;
+        self.send(
+            Method::DELETE,
+            &path,
+            &[],
+            None,
+            VOICES_TIMEOUT,
+            Retry::Always,
+        )
+        .await
+        .map_err(|e| unknown_voice(e, id))?;
+        Ok(())
+    }
+
+    /// Voice Design: makes and stores a voice in this key's Google project
+    /// (`"store": true`, the only stored request; up to 200 voices, kept a
+    /// year after their last use). Never repeated after a timeout, so one
+    /// click makes at most one voice.
+    ///
+    /// Metered at the TTS model's rates from the tokens Google reports, or
+    /// from the sample's length when it reports none. Both are estimates:
+    /// Google's pricing page does not list Voice Design (on 2026-10-05 one
+    /// voice reported 219 input, 630 audio and 926 thinking tokens, about
+    /// $0.014 at those rates).
+    pub async fn create_voice(&self, design: &VoiceDesign) -> Result<CreatedVoice, LlmError> {
+        let body = voice_design_body(design);
+        let started = Instant::now();
+        let response = self
+            .send(
+                Method::POST,
+                "voices",
+                &[],
+                Some(&body),
+                DESIGN_TIMEOUT,
+                Retry::BeforeWork,
+            )
+            .await
+            .map_err(|e| match e {
+                LlmError::Timeout => LlmError::VoiceDesignTimeout,
+                LlmError::Rejected { body, .. } => LlmError::VoiceNotCreated(body),
+                other => other,
+            })?;
+        let created = designed_voice_from(&response);
+        let sample = created.as_ref().ok().and_then(|c| c.sample.as_ref());
+        let usage = design_usage(&self.tts_model, &response, sample, now_secs());
+        tracing::info!(
+            model = self.tts_model.as_str(),
+            input = usage.input_tokens,
+            output = usage.output_tokens,
+            thinking = usage.thinking_tokens,
+            micro_usd = usage.micro_usd,
+            latency_ms = started.elapsed().as_millis() as u64,
+            "Gemini voice design (cost estimated at TTS rates)"
+        );
+        self.add_usage(&usage);
+        created
     }
 
     /// Sends a request, meters the response, then checks that it finished.
@@ -370,14 +517,24 @@ impl GeminiClient {
 
     /// One interaction (`POST /interactions`).
     async fn call(&self, body: &Value, timeout: Duration) -> Result<Value, LlmError> {
-        self.send(Method::POST, "interactions", &[], Some(body), timeout)
-            .await
+        self.send(
+            Method::POST,
+            "interactions",
+            &[],
+            Some(body),
+            timeout,
+            Retry::Always,
+        )
+        .await
     }
 
     /// Any request under `API_ROOT`: `path` is relative ("interactions",
-    /// "voices"). Retries 429, 503, 504 and timeouts with exponential backoff
-    /// (a 429's `retryDelay` when Google gives one); a refused key is marked
-    /// in `secrets`. An empty success body is `Value::Null`.
+    /// "voices"). Retries what `retry` allows (429, 503, 504 and timeouts)
+    /// with exponential backoff (a 429's `retryDelay` when Google gives one);
+    /// a refused key is marked in `secrets`. A request to create a voice that
+    /// Google refuses for the project's voice limit is `VoiceLimit`, at once
+    /// when the refusal says so, or when it is still "resource exhausted"
+    /// after the retries. An empty success body is `Value::Null`.
     async fn send(
         &self,
         method: Method,
@@ -385,9 +542,12 @@ impl GeminiClient {
         query: &[(&str, String)],
         body: Option<&Value>,
         timeout: Duration,
+        retry: Retry,
     ) -> Result<Value, LlmError> {
         let url = format!("{API_ROOT}/{path}");
+        let creates_voice = method == Method::POST && path == "voices";
         let mut backoff_ms = FIRST_BACKOFF_MS;
+        let mut exhausted = false;
         for attempt in 0..=MAX_RETRIES {
             let mut request = self
                 .http
@@ -400,6 +560,7 @@ impl GeminiClient {
             if let Some(body) = body {
                 request = request.json(body);
             }
+            let sent = Instant::now();
             let (retry_reason, asked_wait) = match request.send().await {
                 Ok(response) if response.status().is_success() => {
                     super::super::secrets::mark_accepted(&self.api_key);
@@ -416,6 +577,17 @@ impl GeminiClient {
                 Ok(response) if matches!(response.status().as_u16(), 429 | 503 | 504) => {
                     let status = response.status().as_u16();
                     let text = response.text().await.unwrap_or_default();
+                    if creates_voice && voice_limit(status, &text) {
+                        return Err(LlmError::VoiceLimit);
+                    }
+                    // A 503 that took a while may come after the work was
+                    // done (seen once, after 62 s, on 2026-10-05).
+                    if retry == Retry::BeforeWork
+                        && (status == 504 || (status == 503 && sent.elapsed() > QUICK_REFUSAL))
+                    {
+                        return Err(LlmError::Timeout);
+                    }
+                    exhausted = status == 429 && resource_exhausted(&text);
                     let asked = if status == 429 {
                         retry_delay(&text)
                     } else {
@@ -433,11 +605,18 @@ impl GeminiClient {
                         other => other,
                     });
                 }
+                Err(e) if e.is_timeout() && retry == Retry::BeforeWork => {
+                    return Err(LlmError::Timeout);
+                }
                 Err(e) if e.is_timeout() => (LlmError::Timeout, None),
                 Err(e) => return Err(LlmError::Network(e.to_string())),
             };
             if attempt == MAX_RETRIES {
-                return Err(retry_reason);
+                return Err(if creates_voice && exhausted {
+                    LlmError::VoiceLimit
+                } else {
+                    retry_reason
+                });
             }
             let wait = asked_wait.unwrap_or(Duration::from_millis(backoff_ms));
             tracing::warn!(
@@ -644,7 +823,11 @@ fn tokens_of(response: &Value) -> TokenCount {
 /// that, the model that served it.
 fn priced_usage(model: &str, response: &Value, at_secs: i64) -> Usage {
     let tokens = tokens_of(response);
-    let served = response.get("model").and_then(Value::as_str);
+    // The Voices API names it "models/gemini-3.8-flash-tts".
+    let served = response
+        .get("model")
+        .and_then(Value::as_str)
+        .map(|m| m.trim_start_matches("models/"));
     let rates = rates_for(model, at_secs).or_else(|| served.and_then(|m| rates_for(m, at_secs)));
     Usage {
         requests: 1,
@@ -746,7 +929,165 @@ fn refusal(status: u16, body: &str, path: &str, request: Option<&Value>) -> LlmE
     if matches!(error, LlmError::Blocked(_)) {
         return error;
     }
+    // Voice Design (the only request with a body to "voices") refused for
+    // the project's voice count.
+    if path == "voices" && request.is_some() && status != 401 && voice_limit(status, body) {
+        return LlmError::VoiceLimit;
+    }
     voice_refusal(status, body, path, request).unwrap_or(error)
+}
+
+/// Whether a refusal says the project cannot hold another designed voice:
+/// the message is about voices and a limit, or a quota that names voices
+/// ran out.
+fn voice_limit(status: u16, body: &str) -> bool {
+    let Some(error) = error_object(body) else {
+        return false;
+    };
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let limit_words = ["limit", "maximum", "quota", "exceed", "too many"];
+    let says_so = message.contains("voice") && limit_words.iter().any(|w| message.contains(w));
+    let quota_names_voices = matches!(status, 429 | 400 | 403)
+        && error
+            .get("details")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|detail| {
+                let violations = detail
+                    .get("violations")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                std::iter::once(detail.clone()).chain(violations)
+            })
+            .any(|detail| {
+                ["quotaMetric", "quotaId", "reason", "subject"]
+                    .iter()
+                    .filter_map(|field| detail.get(*field).and_then(Value::as_str))
+                    .any(|value| value.to_ascii_lowercase().contains("voice"))
+            });
+    says_so || quota_names_voices
+}
+
+/// A 429 whose status is `RESOURCE_EXHAUSTED` (a quota, not a busy server).
+fn resource_exhausted(body: &str) -> bool {
+    error_object(body)
+        .and_then(|e| e.get("status").and_then(Value::as_str).map(str::to_string))
+        .is_some_and(|status| status == "RESOURCE_EXHAUSTED")
+}
+
+/// `voices/{id}` for an id that is safe in a path; nothing is built from
+/// anything else.
+fn voice_path(id: &str) -> Result<String, LlmError> {
+    Voice::check_id(id).map_err(|e| LlmError::NotAVoiceId(e.to_string()))?;
+    Ok(format!("voices/{id}"))
+}
+
+/// A 403 or 404 for `voices/{id}`, whatever its wording, is a voice this key
+/// cannot use. Key refusals stay key refusals.
+fn unknown_voice(error: LlmError, id: &str) -> LlmError {
+    match error {
+        LlmError::Rejected {
+            status: 403 | 404, ..
+        } => LlmError::UnknownVoice(id.to_string()),
+        other => other,
+    }
+}
+
+/// Google's gender word.
+fn wire_gender(gender: Gender) -> &'static str {
+    match gender {
+        Gender::Female => "female",
+        Gender::Male => "male",
+    }
+}
+
+/// A Voice Design request: a prompted voice, stored in the project. There
+/// is no `voice.model`: without one, Google made the voice for
+/// gemini-3.8-flash-tts on 2026-10-05 (probe E9), the shape this sends.
+fn voice_design_body(design: &VoiceDesign) -> Value {
+    json!({
+        "store": true,
+        "voice": {
+            "type": "prompted",
+            "display_name": design.display_name,
+            "gender": wire_gender(design.gender),
+            "language_code": design.language_code,
+            "prompted": { "input": design.description },
+        },
+    })
+}
+
+/// The Voice object Voice Design answers with (the shape seen on
+/// 2026-10-05: `id`, `display_name`, `gender`, `language_code`, `model`,
+/// `expire_time`, `prompted`, `sample_audio`, `usage`). The id must be a
+/// voice id; the sample is optional.
+fn designed_voice_from(response: &Value) -> Result<CreatedVoice, LlmError> {
+    let listed = catalog_voice(response)
+        .ok_or_else(|| LlmError::Malformed("the new voice came back without an id".into()))?;
+    Voice::check_id(&listed.id).map_err(|_| {
+        LlmError::Malformed("the new voice came back with an id that is not a voice id".into())
+    })?;
+    Ok(CreatedVoice {
+        id: listed.id,
+        display_name: listed.display_name,
+        gender: listed.gender,
+        language_code: listed.language_code,
+        sample: sample_of(response),
+    })
+}
+
+/// A voice's `sample_audio` (base64 WAV, or raw L16 with its rate). One
+/// that is missing or does not decode is `None`: the voice is usable
+/// without it.
+fn sample_of(voice: &Value) -> Option<Pcm16> {
+    let sample = voice.get("sample_audio")?;
+    let data = sample.get("data").and_then(Value::as_str)?;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .map_err(|e| e.to_string())
+        .and_then(|bytes| {
+            if bytes.starts_with(b"RIFF") {
+                Pcm16::from_wav(&bytes)
+            } else {
+                let rate = sample
+                    .get("sample_rate")
+                    .and_then(Value::as_u64)
+                    .map_or(SAMPLE_RATE, |rate| rate as u32);
+                Ok(Pcm16::from_le_bytes(&bytes, rate))
+            }
+        });
+    match decoded {
+        Ok(pcm) if pcm.duration_ms() > 0 => Some(pcm),
+        Ok(_) => None,
+        Err(e) => {
+            tracing::warn!("a voice sample from Google did not decode: {e}");
+            None
+        }
+    }
+}
+
+/// What one Voice Design request cost, as far as can be told: the reported
+/// tokens at the TTS model's rates or, with no output tokens reported, the
+/// sample's length at `AUDIO_TOKENS_PER_SECOND`. An ESTIMATE either way:
+/// Google prices Voice Design nowhere in its tables.
+fn design_usage(tts_model: &str, response: &Value, sample: Option<&Pcm16>, at_secs: i64) -> Usage {
+    let mut usage = priced_usage(tts_model, response, at_secs);
+    if usage.output_tokens == 0
+        && let Some(sample) = sample
+    {
+        let output_tokens = u64::from(sample.duration_ms()) * AUDIO_TOKENS_PER_SECOND / 1_000;
+        usage.output_tokens = output_tokens;
+        usage.micro_usd += rates_for(tts_model, at_secs)
+            .map(|rates| cost_micro_usd(rates, 0, 0, output_tokens, 0))
+            .unwrap_or(0);
+    }
+    usage
 }
 
 /// `UnknownVoice` for a 400, 403 or 404 to a request that names voices (a
@@ -828,10 +1169,20 @@ fn catalog_voice(value: &Value) -> Option<CatalogVoice> {
         let id = name.strip_prefix("voices/").unwrap_or(&name);
         (!id.is_empty()).then(|| id.to_string())
     })?;
+    // A designed voice has no description; its design prompt describes it.
+    let description = Some(field("description"))
+        .filter(|d| !d.is_empty())
+        .or_else(|| {
+            value
+                .pointer("/prompted/input")
+                .and_then(Value::as_str)
+                .map(|input| input.trim().to_string())
+        })
+        .unwrap_or_default();
     Some(CatalogVoice {
         id,
         display_name: field("display_name"),
-        description: field("description"),
+        description,
         gender: field("gender"),
         accent: field("accent"),
         language_code: field("language_code"),
@@ -1186,6 +1537,205 @@ mod tests {
             ),
             LlmError::Rejected { status: 400, .. }
         ));
+    }
+
+    fn teacher_design() -> VoiceDesign {
+        VoiceDesign {
+            display_name: "probe 2026-10 British teacher".into(),
+            gender: Gender::Female,
+            language_code: "en-GB".into(),
+            description: "A woman in her forties with a warm, clear Southern British accent, an experienced teacher speaking at a steady pace.".into(),
+        }
+    }
+
+    #[test]
+    fn voice_design_body_is_stored_prompted_and_has_no_model() {
+        let body = voice_design_body(&teacher_design());
+        // As sent by the probe that made voice_kwq20yi2gjin on 2026-10-05.
+        assert_eq!(
+            body,
+            json!({
+                "store": true,
+                "voice": {
+                    "type": "prompted",
+                    "display_name": "probe 2026-10 British teacher",
+                    "gender": "female",
+                    "language_code": "en-GB",
+                    "prompted": { "input": "A woman in her forties with a warm, clear Southern British accent, an experienced teacher speaking at a steady pace." },
+                },
+            })
+        );
+        assert!(body["voice"].get("model").is_none());
+        assert!(body.get("model").is_none());
+        let male = VoiceDesign {
+            gender: Gender::Male,
+            ..teacher_design()
+        };
+        assert_eq!(voice_design_body(&male)["voice"]["gender"], json!("male"));
+    }
+
+    /// The response of `POST /v1beta/voices` on 2026-10-05 (probe E9), with
+    /// its 20 s sample replaced by `SAMPLE` (a short WAV made by the test).
+    const E9_RESPONSE: &str = r#"{
+        "id": "voice_kwq20yi2gjin",
+        "model": "models/gemini-3.8-flash-tts",
+        "type": "prompted",
+        "expire_time": "2027-10-05T10:22:19.809240699Z",
+        "display_name": "probe 2026-10 British teacher",
+        "prompted": {"input": "A woman in her forties with a warm, clear Southern British accent, an experienced teacher speaking at a steady pace."},
+        "language_code": "en-GB",
+        "gender": "female",
+        "usage": {
+            "total_tokens": 849, "total_input_tokens": 219,
+            "input_tokens_by_modality": [{"modality": "text", "tokens": 69}],
+            "total_cached_tokens": 0, "total_output_tokens": 630,
+            "output_tokens_by_modality": [{"modality": "audio", "tokens": 630}],
+            "total_tool_use_tokens": 0, "total_thought_tokens": 926, "raw_prompt_token": 382
+        },
+        "sample_audio": {"mime_type": "audio/wav", "data": "SAMPLE"}
+    }"#;
+
+    fn e9_response(sample_ms: u32) -> Value {
+        let wav = Pcm16::tone(220.0, sample_ms, 0.3, SAMPLE_RATE).to_wav();
+        let data = base64::engine::general_purpose::STANDARD.encode(wav);
+        serde_json::from_str(&E9_RESPONSE.replace("SAMPLE", &data)).unwrap()
+    }
+
+    #[test]
+    fn designed_voice_response_is_parsed() {
+        let response = e9_response(1_500);
+        let created = designed_voice_from(&response).unwrap();
+        assert_eq!(created.id, "voice_kwq20yi2gjin");
+        assert_eq!(created.display_name, "probe 2026-10 British teacher");
+        assert_eq!(
+            (created.gender.as_str(), created.language_code.as_str()),
+            ("female", "en-GB")
+        );
+        let sample = created.sample.unwrap();
+        assert_eq!(
+            (sample.sample_rate, sample.duration_ms()),
+            (SAMPLE_RATE, 1_500)
+        );
+        // Listed, the same voice describes itself with its design prompt.
+        let listed = catalog_voice(&response).unwrap();
+        assert!(listed.description.starts_with("A woman in her forties"));
+        assert_eq!(listed.voice_type, "prompted");
+
+        // Priced at TTS rates from the reported tokens (an estimate):
+        // 219 x $0.50 + (630 + 926) x $9.00 per million at the 2026 rates,
+        // 14,113.5 µUSD, as the probe's ledger recorded.
+        let usage = design_usage(
+            "gemini-3.8-flash-tts",
+            &response,
+            sample_of(&response).as_ref(),
+            0,
+        );
+        assert_eq!(
+            (
+                usage.requests,
+                usage.input_tokens,
+                usage.output_tokens,
+                usage.thinking_tokens
+            ),
+            (1, 219, 630, 926)
+        );
+        assert_eq!(usage.micro_usd, 14_114);
+        assert_eq!(usage.unpriced, 0);
+
+        // Without token counts, the sample's length is billed instead.
+        let mut bare = e9_response(2_000);
+        bare.as_object_mut().unwrap().remove("usage");
+        let sample = sample_of(&bare).unwrap();
+        let usage = design_usage("gemini-3.8-flash-tts", &bare, Some(&sample), 0);
+        assert_eq!(usage.output_tokens, 64);
+        assert_eq!(usage.micro_usd, 64 * 9);
+
+        // A missing or broken sample leaves the voice usable; a missing or
+        // unsafe id does not.
+        let mut no_sample = e9_response(10);
+        no_sample["sample_audio"]["data"] = json!("not base64!");
+        assert_eq!(designed_voice_from(&no_sample).unwrap().sample, None);
+        no_sample.as_object_mut().unwrap().remove("sample_audio");
+        assert_eq!(designed_voice_from(&no_sample).unwrap().sample, None);
+        let mut unsafe_id = e9_response(10);
+        unsafe_id["id"] = json!("../voices");
+        assert!(matches!(
+            designed_voice_from(&unsafe_id),
+            Err(LlmError::Malformed(_))
+        ));
+        assert!(designed_voice_from(&json!({ "display_name": "x" })).is_err());
+    }
+
+    #[test]
+    fn voice_errors_are_readable() {
+        // GET or DELETE voices/{id} that this key cannot see, whatever the wording.
+        let not_found = r#"{"error":{"message":"The voice was not found or the caller does not have permission to access it.","code":"not_found"}}"#;
+        let denied =
+            r#"{"error":{"code":403,"message":"Permission denied.","status":"PERMISSION_DENIED"}}"#;
+        for (status, body) in [(404, not_found), (403, denied)] {
+            let error = unknown_voice(
+                refusal(status, body, "voices/voice_60zf03beui2x", None),
+                "voice_60zf03beui2x",
+            );
+            assert!(
+                matches!(&error, LlmError::UnknownVoice(id) if id == "voice_60zf03beui2x"),
+                "{status}: {error:?}"
+            );
+        }
+        // A refused key stays a refused key there too.
+        let leaked = r#"{"error":{"code":403,"message":"Your API key was reported as leaked. Please use another API key.","status":"PERMISSION_DENIED"}}"#;
+        assert!(matches!(
+            unknown_voice(refusal(403, leaked, "voices/voice_abc", None), "voice_abc"),
+            LlmError::KeyRejected
+        ));
+        // Nothing that is not a voice id becomes a path.
+        for bad in ["", "../models", "voice_a/b", "voice a"] {
+            assert!(
+                matches!(voice_path(bad), Err(LlmError::NotAVoiceId(_))),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            voice_path("voice_kwq20yi2gjin").unwrap(),
+            "voices/voice_kwq20yi2gjin"
+        );
+
+        // The project's voice limit, said outright or as a quota on voices.
+        let design = Some(voice_design_body(&teacher_design()));
+        let full = r#"{"error":{"code":400,"message":"The project has reached the maximum number of voices (200).","status":"FAILED_PRECONDITION"}}"#;
+        let quota = r#"{"error":{"code":429,"message":"Resource has been exhausted.","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/stored_voices","quotaId":"StoredVoicesPerProject"}]}]}}"#;
+        assert!(matches!(
+            refusal(400, full, "voices", design.as_ref()),
+            LlmError::VoiceLimit
+        ));
+        assert!(voice_limit(429, quota) && resource_exhausted(quota));
+        let busy = r#"{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED","details":[{"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{"quotaMetric":"generativelanguage.googleapis.com/generate_requests_per_model"}]}]}}"#;
+        assert!(!voice_limit(429, busy) && resource_exhausted(busy));
+        // Other refusals of a design are about the request, said without a status code.
+        let bad =
+            r#"{"error":{"code":400,"message":"Invalid prompt","status":"INVALID_ARGUMENT"}}"#;
+        assert!(matches!(
+            refusal(400, bad, "voices", design.as_ref()),
+            LlmError::Rejected { status: 400, .. }
+        ));
+
+        // Every message a teacher may see says what to do and shows no HTTP code.
+        let messages = [
+            LlmError::UnknownVoice("voice_60zf03beui2x".into()).to_string(),
+            LlmError::VoiceLimit.to_string(),
+            LlmError::VoiceNotCreated("Invalid prompt".into()).to_string(),
+            LlmError::VoiceDesignTimeout.to_string(),
+        ];
+        assert!(messages[1].contains("200 designed voices"));
+        for message in messages
+            .iter()
+            .chain([&voice_path("../x").unwrap_err().to_string()])
+        {
+            for code in ["400", "403", "404", "429"] {
+                assert!(!message.contains(code), "{message}");
+            }
+        }
+        assert!(messages.iter().all(|m| m.ends_with('.')), "{messages:?}");
     }
 
     #[test]

@@ -320,6 +320,79 @@ body {
     display: none;
 }
 
+.voice-button.danger {
+    border-color: #e0a0a0;
+    color: #b02a37;
+}
+
+.voice-button.danger:hover:not(:disabled) {
+    border-color: #b02a37;
+    color: #b02a37;
+}
+
+/* Designed voices in the speaker dialog: the list, then the form that makes one */
+.designed-voices {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid #e9ecef;
+}
+
+.designed-voices > .muted {
+    margin: 0.5rem 0;
+    font-size: 0.85rem;
+}
+
+.designed-voice {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem 0.75rem;
+    padding: 0.5rem 0;
+    border-bottom: 1px dashed #dee2e6;
+}
+
+.designed-voice-text {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.designed-voice-text .voice-name {
+    margin-bottom: 0;
+}
+
+.designed-voice-text .muted {
+    font-size: 0.8rem;
+}
+
+.designed-voice-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.designed-voice-form .muted {
+    margin: 0;
+    font-size: 0.8rem;
+}
+
+.designed-voice-form textarea {
+    resize: vertical;
+    font-family: inherit;
+}
+
+.designed-voice-form .voice-button {
+    align-self: flex-start;
+}
+
+.designed-voice-title {
+    margin: 0;
+    font-weight: 500;
+    color: #495057;
+}
+
 .customize-header {
     display: flex;
     align-items: center;
@@ -385,6 +458,8 @@ body {
     border-radius: 8px;
     width: 90%;
     max-width: 500px;
+    max-height: 90vh;
+    overflow-y: auto;
     box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
 }
 

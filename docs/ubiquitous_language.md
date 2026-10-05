@@ -13,7 +13,7 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Speaker** (`SpeakerConfig`) | A person heard in the passage: label + gender + accent + role + voice choice. The label is "Speaker A", never a character name. | "voice" (that is the `Voice`) |
 | **Voice** (`Voice`) | The TTS voice a speaker is read with, identified by its id. Two speakers of a part never share one. | "speaker", "actor" |
 | **Library voice** (`VoiceSource::Library`) | A Google prebuilt voice (Extended Voice Library, id like `en-gb-advisor-1`, or a classic voice). | |
-| **Designed voice** (`VoiceSource::Designed`) | A voice made with Voice Design from a description (id `voice_…`); it belongs to the API key's Google project. | "custom voice" |
+| **Designed voice** (`VoiceSource::Designed`) | A voice made with Voice Design from a teacher's description (`VoiceDesignRequest`: name, description, gender, accent; id `voice_…`). It belongs to the Google project of the API key (at most 200, kept a year after last use), is only ever chosen by the teacher, and reads each of its turns in a request of its own. The app deletes only the designed voices it made. | "custom voice", "cloned voice" (that is Voice Replication, not built) |
 | **Voice pool** | The catalogue voices of one accent and gender, in preference order; assignment takes from it. | |
 | **Voice choice** (`VoiceChoice`) | How a speaker got its voice: Automatic (none yet), assigned by the app, or chosen by the teacher (kept). | |
 | **Voice catalogue** (`VoiceCatalogue`) | Every voice this server gives speakers (the pools, in preference order) and the announcer: the built-in pools plus `voices.json` overrides. | "voice list" is fine in UI text |

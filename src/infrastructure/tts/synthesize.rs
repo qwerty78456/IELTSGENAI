@@ -74,6 +74,9 @@ pub enum TtsError {
     /// Synthesised speech could not be written to `DATA_DIR`.
     #[error("The recording could not be saved: {0}")]
     Storage(String),
+    /// Something this server will not do; the text says why.
+    #[error("{0}")]
+    Refused(String),
 }
 
 /// One stretch of one speaker in one style.
@@ -782,6 +785,84 @@ mod tests {
             plan_words(&plan),
             words_of(lines.iter().map(|(_, text)| *text))
         );
+    }
+
+    #[test]
+    fn designed_voice_speakers_never_share_a_request() {
+        // Google accepted designed voices in two-voice requests (gate G4) but
+        // documents one turn per request; the app keeps to the documentation.
+        let designed = Voice {
+            id: "voice_kwq20yi2gjin".into(),
+            name: "Probe teacher".into(),
+            gender: Gender::Female,
+            accent: Accent::British,
+            source: VoiceSource::Designed,
+            description: String::new(),
+        };
+        assert!(reads_alone(&designed));
+        let speakers = [
+            SpeakerConfig::new(
+                "Speaker A",
+                Gender::Female,
+                Accent::British,
+                SpeakerRole::Host,
+            )
+            .with_voice(designed.clone()),
+            voiced(
+                "Speaker B",
+                Gender::Male,
+                SpeakerRole::Guest,
+                "en-gb-assistant-2",
+            ),
+        ];
+        let lines = [
+            ("Speaker A", "Good morning, everyone."),
+            ("Speaker B", "Morning."),
+            ("Speaker A", "Today we practise numbers."),
+            ("Speaker A", "And dates."),
+            ("Speaker B", "Sounds good."),
+            ("Speaker B", "Shall we start?"),
+            ("Speaker A", "Yes."),
+        ];
+        let plan = plan_passage(&passage(&lines), &speakers, MODEL).unwrap();
+        // A | B | A (two lines, one turn) | B (two lines) | A.
+        assert_eq!(plan.requests.len(), 5);
+        for request in &plan.requests {
+            assert_eq!(request.voices.len(), 1, "{request:?}");
+            assert!(request.turns.iter().all(|t| t.speaker.is_none()));
+        }
+        let voices: Vec<&str> = plan
+            .requests
+            .iter()
+            .map(|r| r.voices[0].voice.as_str())
+            .collect();
+        assert_eq!(
+            voices,
+            [
+                "voice_kwq20yi2gjin",
+                "en-gb-assistant-2",
+                "voice_kwq20yi2gjin",
+                "en-gb-assistant-2",
+                "voice_kwq20yi2gjin"
+            ]
+        );
+        // Every word, in order; turns of different speakers are joined with
+        // the turn gap.
+        assert_eq!(
+            plan_words(&plan),
+            words_of(lines.iter().map(|(_, text)| *text))
+        );
+        assert_eq!(
+            plan.gaps_ms,
+            [0, TURN_GAP_MS, TURN_GAP_MS, TURN_GAP_MS, TURN_GAP_MS]
+        );
+
+        // Even a designed voice whose source was lost reads alone by its id.
+        let by_id = Voice {
+            source: VoiceSource::Library,
+            ..designed
+        };
+        assert!(reads_alone(&by_id));
     }
 
     #[test]

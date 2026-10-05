@@ -80,7 +80,8 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   the voice catalogue, loaded once with the free `voice_catalogue`. Both views assign voices from
   it in the browser with the domain's `assign_voices` / `assign_exam_voices`, writing the state
   only when a voice changed; "Another voice" is `domain::next_voice`. Components keep only
-  form-local signals (the speaker dialog's fields, a voice picker's sample). On the exam page
+  form-local signals (the speaker dialog's fields, a voice picker's sample, the dialog's
+  `DesignedVoicesPanel` list and form, loaded when opened; on both pages). On the exam page
   every speaker edit goes through `set_part_speakers` (reassign, revalidate, `note_edit`).
   Out-of-date scripts and recordings are derived (`Passage::written_for`,
   `ExamPart::recorded_for`, `HomeState.recorded_for`), never flagged on edit, so opening an
@@ -132,9 +133,22 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   exponential backoff, a 429's `retryDelay`), JSON mode and the usage meter; do not add parallel
   HTTP paths. Every request goes through its `send`: text and speech are
   `POST /v1beta/interactions` with `"store": false` (Google stores interactions for 55 days
-  otherwise); the free voice list `GET /v1beta/voices` (`list_voices`) uses the same path. The
-  API key goes in the `x-goog-api-key` header, never in the URL. A voice Google does not know
-  is `LlmError::UnknownVoice`, never a rejected key.
+  otherwise). The Voices API uses the same path: `GET /v1beta/voices` (`list_voices`, free;
+  `type=prompted` lists the key's designed voices), `GET` and `DELETE /v1beta/voices/{id}`
+  (`get_voice` with a designed voice's free sample, `delete_voice`), and `POST /v1beta/voices`
+  with `"store": true`, `type: prompted` and no `voice.model` (`create_voice`, Voice Design): the
+  only stored request, never retried after a timeout, metered at TTS rates as an estimate. Ids go
+  through `Voice::check_id` before any path is built. The API key goes in the `x-goog-api-key`
+  header, never in the URL. A voice Google does not know (404/403 on `voices/{id}`) is
+  `LlmError::UnknownVoice`, never a rejected key; a full project is `LlmError::VoiceLimit`.
+- Designed voices (`tts/designed.rs`) belong to the key's Google project: at most 200, kept a
+  year after their last use, unusable with another key (`prepare_speakers` refuses them at job
+  start). The project's list is cached 60 s and forgotten after a create or delete. The
+  `designed_voices` table of `jobs.db` records the voices this app made, with their exact
+  accent (Google keeps only the language tag); only those may be deleted, and designing or
+  deleting is allowed only on a loopback bind (`settings::local_server`, the browser-key rule)
+  and limited by `Bucket::VoiceDesign`. Voices made elsewhere in the project (the PO's) are
+  listed and usable, never deleted.
 - The accent belongs to the voice: pools hold regional library voices (`en-gb-…`, `en-au-…`,
   `en-in-…`); the 30 classic voices (`despina`, `Puck`, …) are all General American and may only
   appear in the American pool. The built-in pools (`tts/default_voices.json`, compiled in,
@@ -165,7 +179,8 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   and recording jobs record on completion and on failure. Prices live in
   `infrastructure/llm/pricing.rs` (3.8 introductory rates until 2026-12-31, list rates after);
   update that table when Google changes prices. Over-budget exams are warned about, never blocked.
-  Voice samples are booked under `UsageStep::Voices`; requests that cost nothing add no row.
+  Voice samples and designed voices are booked under `UsageStep::Voices`; requests that cost
+  nothing add no row.
 - Audio synthesis runs as background jobs (SQLite `jobs.db` + WAV under `DATA_DIR/audio/`);
   the browser polls `audio_job_status` (`ui/jobs.rs`, per-kind cadence and deadline) and streams
   the finished WAV from `/audio/{job_id}`, a plain axum route (`infrastructure/jobs/serve.rs`).
@@ -175,10 +190,11 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   recordings. Jobs no saved exam refers to are purged hourly from boot once older than
   `AUDIO_RETENTION_HOURS` (default 24, `0` = never); a job named by a saved exam's
   `recording_job` is never purged and is deleted with the exam.
-- Voice samples ("Listen") are recorded once per voice by `voice_preview` (catalogue ids only,
-  `Bucket::VoiceSample`), stored as `DATA_DIR/audio/voices/{id}.wav`, streamed from the plain
-  route `/voice-sample/{voice_id}` for the same reason as `/audio/{job_id}`, and purged after 30
-  days unused. A stored sample is free.
+- Voice samples ("Listen") are made once per voice by `voice_preview` (catalogue ids, or the
+  designed voices of the key's project; anything else is refused; `Bucket::VoiceSample`),
+  stored as `DATA_DIR/audio/voices/{id}.wav`, streamed from the plain route
+  `/voice-sample/{voice_id}` for the same reason as `/audio/{job_id}`, and purged after 30 days
+  unused. A stored sample is free, and so is a designed voice's: it is Google's own sample.
 - Saved exams live in the same `jobs.db` (`infrastructure/exams.rs`: `exams` table with the
   `SavedExam` JSON body plus summary columns) behind `application/exams.rs`. The exam page
   saves on its own after each finished step once a script exists (`SaveWork` in

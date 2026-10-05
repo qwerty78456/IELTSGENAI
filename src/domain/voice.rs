@@ -81,6 +81,83 @@ impl Voice {
     }
 }
 
+/// Longest name a designed voice may be given.
+pub const MAX_DESIGN_NAME_CHARS: usize = 60;
+/// Bounds of a voice description: one or two sentences.
+pub const MIN_DESIGN_DESCRIPTION_CHARS: usize = 20;
+pub const MAX_DESIGN_DESCRIPTION_CHARS: usize = 500;
+/// Letters a description needs at least, so it describes rather than lists numbers.
+const MIN_DESIGN_DESCRIPTION_LETTERS: usize = 10;
+
+/// A teacher's request for a designed voice (Voice Design): a name, one or
+/// two sentences describing it, and the gender and accent it is made for.
+/// Google gets the accent's language tag; the app remembers the accent
+/// itself, since several accents share one tag (en-GB).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VoiceDesignRequest {
+    pub name: String,
+    /// Age, timbre, regional accent and pace, in English.
+    pub description: String,
+    pub gender: Gender,
+    pub accent: Accent,
+}
+
+impl VoiceDesignRequest {
+    /// The request with runs of whitespace (line breaks included) collapsed
+    /// to one space and the ends trimmed: what is checked and sent.
+    pub fn cleaned(&self) -> Self {
+        let squeeze = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        Self {
+            name: squeeze(&self.name),
+            description: squeeze(&self.description),
+            ..self.clone()
+        }
+    }
+
+    /// A name of 1 to 60 characters, and a description of 20 to 500
+    /// characters made of words. Checked on the cleaned text.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        let cleaned = self.cleaned();
+        let invalid = |message: String| Err(DomainError::InvalidRequest(message));
+        let name_chars = cleaned.name.chars().count();
+        if name_chars == 0 {
+            return invalid("Give the voice a name.".into());
+        }
+        if name_chars > MAX_DESIGN_NAME_CHARS {
+            return invalid(format!(
+                "The voice name is {name_chars} characters long; use at most {MAX_DESIGN_NAME_CHARS}."
+            ));
+        }
+        if cleaned.name.chars().any(char::is_control) {
+            return invalid("The voice name cannot contain control characters.".into());
+        }
+        let description_chars = cleaned.description.chars().count();
+        if description_chars < MIN_DESIGN_DESCRIPTION_CHARS {
+            return invalid(format!(
+                "Describe the voice in at least {MIN_DESIGN_DESCRIPTION_CHARS} characters: age, timbre, accent and pace."
+            ));
+        }
+        if description_chars > MAX_DESIGN_DESCRIPTION_CHARS {
+            return invalid(format!(
+                "The description is {description_chars} characters long; keep it to one or two sentences (at most {MAX_DESIGN_DESCRIPTION_CHARS} characters)."
+            ));
+        }
+        let letters = cleaned
+            .description
+            .chars()
+            .filter(|c| c.is_alphabetic())
+            .count();
+        if letters < MIN_DESIGN_DESCRIPTION_LETTERS
+            || cleaned.description.chars().any(char::is_control)
+        {
+            return invalid(
+                "Describe the voice in words: age, timbre, accent and pace, in English.".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 /// How a speaker got its voice.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum VoiceChoice {
@@ -710,5 +787,65 @@ mod tests {
         assert!(Voice::is_designed_id("voicekey_abc"));
         assert!(!Voice::is_designed_id("en-gb-advisor-1"));
         assert!(!Voice::is_designed_id("Zephyr"));
+    }
+
+    fn design(name: &str, description: &str) -> VoiceDesignRequest {
+        VoiceDesignRequest {
+            name: name.into(),
+            description: description.into(),
+            gender: Gender::Female,
+            accent: Accent::Scottish,
+        }
+    }
+
+    #[test]
+    fn voice_design_requests_are_checked() {
+        let fine = "A warm woman in her forties from Edinburgh, calm and clear.";
+        assert!(design("Mrs Reid", fine).validate().is_ok());
+        // Bounds are inclusive, counted in characters after cleaning.
+        let longest_name = "é".repeat(MAX_DESIGN_NAME_CHARS);
+        assert!(design(&longest_name, fine).validate().is_ok());
+        let shortest = "abcdefghij klmnopqrs";
+        assert_eq!(shortest.chars().count(), MIN_DESIGN_DESCRIPTION_CHARS);
+        assert!(design("A", shortest).validate().is_ok());
+        let longest = format!("{} ", "word").repeat(100);
+        assert_eq!(
+            longest.trim().chars().count(),
+            MAX_DESIGN_DESCRIPTION_CHARS - 1
+        );
+        assert!(design("A", &longest).validate().is_ok());
+
+        let refused = [
+            design("", fine),
+            design("   \n ", fine),
+            design(&"n".repeat(MAX_DESIGN_NAME_CHARS + 1), fine),
+            design("A", "Too short."),
+            // Whitespace does not count towards the minimum.
+            design("A", "  warm   and   calm   "),
+            design("A", &"a".repeat(MAX_DESIGN_DESCRIPTION_CHARS + 1)),
+            design("A", "1234567890 1234567890 12345"),
+        ];
+        for request in refused {
+            let error = request.validate().unwrap_err().to_string();
+            assert!(!error.is_empty(), "{request:?}");
+        }
+        assert!(
+            design("", fine)
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("name")
+        );
+    }
+
+    #[test]
+    fn voice_design_requests_are_cleaned() {
+        let request = design("  Mrs \n Reid ", " Calm,\n\n warm  and clear voice. ").cleaned();
+        assert_eq!(request.name, "Mrs Reid");
+        assert_eq!(request.description, "Calm, warm and clear voice.");
+        assert_eq!(
+            (request.gender, request.accent),
+            (Gender::Female, Accent::Scottish)
+        );
     }
 }

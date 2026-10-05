@@ -1,9 +1,11 @@
 use dioxus::prelude::*;
 use uuid::Uuid;
 
-use crate::domain::{Accent, Gender, SpeakerConfig, SpeakerRole, ValidationIssue, VoiceChoice};
+use crate::domain::{
+    Accent, Gender, SpeakerConfig, SpeakerRole, ValidationIssue, Voice, VoiceChoice,
+};
 use crate::ui::components::issue_list::IssueList;
-use crate::ui::components::voices::VoicePicker;
+use crate::ui::components::voices::{DesignedVoicesPanel, VoicePicker};
 
 /// The speakers of a part as cards: gender, accent and role badges, the
 /// voice with its buttons, then the validator's warnings about the line-up.
@@ -52,17 +54,29 @@ pub fn SpeakerCards(
     }
 }
 
-/// Edits gender, accent and role of one speaker. The label is fixed; a new
-/// gender or accent sends the speaker back to an automatic voice.
+/// Edits gender, accent and role of one speaker, or gives it a designed
+/// voice (listed, and made, in the "Designed voices" section). The label is
+/// fixed; a new gender or accent sends the speaker back to an automatic
+/// voice, and a designed voice brings its own gender and accent.
 #[component]
 pub fn SpeakerEditModal(
     speaker: SpeakerConfig,
+    /// Voice ids the other speakers of the part have.
+    #[props(default)]
+    taken: Vec<String>,
+    /// The saved exam a new designed voice is booked to.
+    #[props(default)]
+    exam: Option<Uuid>,
     onclose: EventHandler<()>,
     onsave: EventHandler<SpeakerConfig>,
 ) -> Element {
     let label = speaker.label.clone();
     let mut edited_gender = use_signal(|| speaker.gender);
     let mut edited_accent = use_signal(|| speaker.accent);
+    // A designed voice picked in this dialog, saved with the speaker.
+    let mut chosen = use_signal(|| None::<Voice>);
+    // The speaker's saved voice was deleted in this dialog: it gets a new one.
+    let mut dropped = use_signal(|| false);
     let mut edited_role_key = use_signal(|| speaker.role.key().to_string());
     let mut custom_role_text = use_signal(|| match &speaker.role {
         SpeakerRole::Other(s) => s.clone(),
@@ -77,18 +91,33 @@ pub fn SpeakerEditModal(
         let (gender, accent) = (edited_gender(), edited_accent());
         // The voice fits the old gender and accent only; after a change the
         // speaker waits for a new one.
-        let voice = if (gender, accent) == (saved_gender, saved_accent) {
+        let voice = if (gender, accent) == (saved_gender, saved_accent) && !dropped() {
             saved_voice.clone()
         } else {
             VoiceChoice::Auto
         };
-        onsave.call(SpeakerConfig {
+        let edited = SpeakerConfig {
             label: save_label.clone(),
             gender,
             accent,
             role: SpeakerRole::from_key(&edited_role_key(), &custom_role_text()),
             voice,
+        };
+        onsave.call(match chosen() {
+            Some(designed) => edited.with_voice(designed),
+            None => edited,
         });
+    };
+    let unchanged_voice = speaker.voice_id().map(str::to_string);
+    let deleted_from = unchanged_voice.clone();
+    let current_voice = match chosen() {
+        Some(voice) => Some(voice.id),
+        None if (edited_gender(), edited_accent()) == (saved_gender, saved_accent)
+            && !dropped() =>
+        {
+            unchanged_voice
+        }
+        None => None,
     };
 
     rsx! {
@@ -114,7 +143,11 @@ pub fn SpeakerEditModal(
                             class: "form-select",
                             value: if matches!(edited_gender(), Gender::Male) { "male" } else { "female" },
                             onchange: move |evt| {
-                                edited_gender.set(if evt.value() == "male" { Gender::Male } else { Gender::Female });
+                                let gender = if evt.value() == "male" { Gender::Male } else { Gender::Female };
+                                edited_gender.set(gender);
+                                if chosen.peek().as_ref().is_some_and(|v| v.gender != gender) {
+                                    chosen.set(None);
+                                }
                             },
                             option { value: "male", selected: edited_gender() == Gender::Male, "Male" }
                             option { value: "female", selected: edited_gender() == Gender::Female, "Female" }
@@ -129,6 +162,9 @@ pub fn SpeakerEditModal(
                             onchange: move |evt| {
                                 if let Some(accent) = Accent::from_key(&evt.value()) {
                                     edited_accent.set(accent);
+                                    if chosen.peek().as_ref().is_some_and(|v| v.accent != accent) {
+                                        chosen.set(None);
+                                    }
                                 }
                             },
                             for accent in Accent::ALL {
@@ -167,13 +203,39 @@ pub fn SpeakerEditModal(
                         "Role shapes the script and the delivery; the voice comes from gender and accent."
                     }
                     p { class: "muted",
-                        if (edited_gender(), edited_accent()) != (saved_gender, saved_accent) {
+                        if let Some(voice) = chosen() {
+                            "Voice: {voice.display_name()} (designed), kept when you save."
+                        } else if (edited_gender(), edited_accent()) != (saved_gender, saved_accent)
+                            || dropped()
+                        {
                             "A new {edited_gender().label().to_lowercase()} {edited_accent().label()} voice is picked when you save."
                         } else if let Some(voice) = saved_voice_line.voice() {
                             "Voice: {voice.display_name()}"
                         } else {
                             "The voice is picked automatically."
                         }
+                    }
+
+                    DesignedVoicesPanel {
+                        label: label.clone(),
+                        gender: edited_gender(),
+                        accent: edited_accent(),
+                        current: current_voice,
+                        taken: taken.clone(),
+                        exam,
+                        onchoose: move |voice: Voice| {
+                            edited_gender.set(voice.gender);
+                            edited_accent.set(voice.accent);
+                            chosen.set(Some(voice));
+                        },
+                        ondelete: move |id: String| {
+                            if deleted_from.as_deref() == Some(id.as_str()) {
+                                dropped.set(true);
+                            }
+                            if chosen.peek().as_ref().is_some_and(|v| v.id == id) {
+                                chosen.set(None);
+                            }
+                        },
                     }
                 }
 

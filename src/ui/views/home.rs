@@ -29,7 +29,9 @@ use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, do
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
-use crate::ui::components::voices::{VoiceCatalogueCtx, speaker_warnings, with_choice};
+use crate::ui::components::voices::{
+    VoiceCatalogueCtx, speaker_warnings, voices_of_others, with_choice,
+};
 use crate::ui::jobs::{PART_AUDIO_DEADLINE_MS, PART_AUDIO_POLL_MS, wait_for_job};
 
 #[derive(Clone)]
@@ -609,6 +611,7 @@ pub fn Home() -> Element {
                             if let Some(speaker) = speakers().get(idx) {
                                 SpeakerEditModal {
                                     speaker: speaker.clone(),
+                                    taken: voices_of_others(&speakers(), idx),
                                     onclose: move |_| state.write().editing_speaker_idx = None,
                                     onsave: move |updated: SpeakerConfig| {
                                         let mut list = speakers();

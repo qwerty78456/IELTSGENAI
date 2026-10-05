@@ -73,6 +73,18 @@ pub fn can_remember(configured: Option<KeySource>) -> bool {
     matches!(configured, None | Some(KeySource::DotEnv))
 }
 
+/// Whether this server listens on a loopback address only (127.0.0.1, ::1):
+/// then only this computer reaches it. What changes the operator's Google
+/// project (a key typed in the browser, designing or deleting voices) is
+/// allowed only then.
+#[cfg(feature = "server")]
+pub(crate) fn local_server() -> bool {
+    crate::infrastructure::config::config()
+        .address
+        .ip()
+        .is_loopback()
+}
+
 #[cfg(feature = "server")]
 fn configured_source() -> Option<KeySource> {
     use crate::infrastructure::config::{KeyOrigin, config};
@@ -85,7 +97,7 @@ fn configured_source() -> Option<KeySource> {
 
 #[cfg(feature = "server")]
 fn current_status() -> KeyStatus {
-    use crate::infrastructure::{config::config, secrets};
+    use crate::infrastructure::secrets;
     let configured = configured_source();
     let source = if secrets::browser_key().is_some() {
         KeySource::Browser
@@ -93,7 +105,7 @@ fn current_status() -> KeyStatus {
         configured.unwrap_or(KeySource::Missing)
     };
     let rejected = secrets::active_key_rejected();
-    let loopback = config().address.ip().is_loopback();
+    let loopback = local_server();
     KeyStatus {
         source,
         rejected,
@@ -117,8 +129,7 @@ pub async fn set_api_key(key: String, remember: bool) -> Result<KeyStatus, Serve
 
     rate_limiter::check(rate_limiter::Bucket::KeyEntry).map_err(ServerFnError::new)?;
     let status = current_status();
-    let loopback = config::config().address.ip().is_loopback();
-    if let Some(reason) = entry_refusal(status.source, status.rejected, loopback) {
+    if let Some(reason) = entry_refusal(status.source, status.rejected, local_server()) {
         return Err(ServerFnError::new(reason));
     }
     if remember && !status.can_remember {

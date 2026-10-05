@@ -67,7 +67,9 @@ pub async fn start_part_audio(
     use crate::application::{user_error, voices::prepare_speakers};
     use crate::infrastructure::{jobs, rate_limiter};
 
-    let speakers = prepare_speakers(request.speakers, &[]).map_err(ServerFnError::new)?;
+    let speakers = prepare_speakers(request.speakers, &[])
+        .await
+        .map_err(ServerFnError::new)?;
     let request = AudioRequest {
         speakers,
         ..request
@@ -111,7 +113,7 @@ pub async fn start_exam_audio(
     for (part, prepared) in request
         .parts
         .iter_mut()
-        .zip(prepare_exam_speakers(&line_ups))
+        .zip(prepare_exam_speakers(&line_ups).await)
     {
         part.speakers = prepared.map_err(|e| {
             let title = exam_format.part(part.passage.part).map_or_else(

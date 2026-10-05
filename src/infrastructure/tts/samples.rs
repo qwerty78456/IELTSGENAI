@@ -1,15 +1,17 @@
 //! Voice samples ("Preview"): one short recording per voice, made once and
 //! kept under `DATA_DIR/audio/voices/{id}.wav`, so hearing a voice again is
-//! free. The hourly clean-up deletes samples unused for `SAMPLE_KEEP_HOURS`.
+//! free. A designed voice comes with a sample of its own from Google (when it
+//! is created, and from `GET voices/{id}`), so it never costs a synthesis.
+//! The hourly clean-up deletes samples unused for `SAMPLE_KEEP_HOURS`.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::domain::{SpeakerRole, Voice};
+use crate::domain::{SpeakerRole, Voice, VoiceSource};
 
 use super::super::audio::{Pcm16, duration_ms_for_len};
 use super::super::config::config;
-use super::super::llm::{GeminiClient, SpeechRequest, SpeechTurn, VoiceAssignment};
+use super::super::llm::{GeminiClient, LlmError, SpeechRequest, SpeechTurn, VoiceAssignment};
 use super::cache;
 use super::synthesize::{TtsError, speaker_style};
 
@@ -33,13 +35,41 @@ pub async fn stored_sample(id: &str) -> Option<SampleFile> {
     stored_sample_in(&config().voice_sample_dir(), id).await
 }
 
-/// Records `PREVIEW_TEXT` in `voice` (one paid request of about 12 s of
-/// audio) and stores it, replacing an older sample. The caller records
-/// the client's usage.
+/// Makes and stores a sample of `voice`, replacing an older one. A designed
+/// voice first gets Google's own sample (free); otherwise, or when it has
+/// none, `PREVIEW_TEXT` is recorded in the voice (one paid request of about
+/// 12 s of audio). The caller records the client's usage.
 pub async fn make_sample(client: &GeminiClient, voice: &Voice) -> Result<SampleFile, TtsError> {
     Voice::check_id(&voice.id)?;
+    if voice.source == VoiceSource::Designed || Voice::is_designed_id(&voice.id) {
+        match client.get_voice(&voice.id).await {
+            Ok((_, Some(pcm))) => return store_sample(&voice.id, &pcm).await,
+            Ok((_, None)) => {}
+            Err(LlmError::Malformed(problem)) => {
+                tracing::warn!(voice = %voice.id, "no usable sample from Google: {problem}");
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
     let pcm = client.synthesize(&sample_request(voice)).await?;
-    store_sample_in(&config().voice_sample_dir(), &voice.id, &pcm).await
+    store_sample(&voice.id, &pcm).await
+}
+
+/// Stores `pcm` as the sample of voice `id`, replacing an older one.
+pub async fn store_sample(id: &str, pcm: &Pcm16) -> Result<SampleFile, TtsError> {
+    store_sample_in(&config().voice_sample_dir(), id, pcm).await
+}
+
+/// Deletes the stored sample of voice `id`, if any.
+pub async fn remove_sample(id: &str) {
+    let Some(path) = sample_path(&config().voice_sample_dir(), id) else {
+        return;
+    };
+    match tokio::fs::remove_file(&path).await {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => tracing::warn!(voice = %id, "cannot delete the voice sample: {e}"),
+    }
 }
 
 /// Where the sample of `id` lives in `directory`; `None` for an id that is

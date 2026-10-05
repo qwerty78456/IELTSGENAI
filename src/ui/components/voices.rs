@@ -11,10 +11,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use dioxus::prelude::*;
 use uuid::Uuid;
 
-use crate::application::voices::{VoiceCatalogue, VoiceSample, voice_preview};
+use crate::application::voices::{
+    DesignedVoiceRow, DesignedVoices, VoiceCatalogue, VoiceSample, delete_voice, design_voice,
+    designed_voices, voice_preview,
+};
 use crate::domain::{
-    PartSpec, Severity, SpeakerConfig, ValidationIssue, Voice, VoiceChoice, next_voice,
-    validate_speakers,
+    Accent, Gender, PartSpec, Severity, SpeakerConfig, ValidationIssue, Voice, VoiceChoice,
+    VoiceDesignRequest, VoiceSource, next_voice, validate_speakers,
 };
 
 /// The voice catalogue, loaded once by `Navbar` and read by both pages.
@@ -74,6 +77,16 @@ pub fn voices_summary(speakers: &[SpeakerConfig]) -> String {
         .join(", ")
 }
 
+/// The voice ids of every speaker but the one at `index`.
+pub fn voices_of_others(speakers: &[SpeakerConfig], index: usize) -> Vec<String> {
+    speakers
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| *i != index)
+        .filter_map(|(_, speaker)| speaker.voice_id().map(str::to_string))
+        .collect()
+}
+
 /// What a teacher should look at in a line-up (two speakers on one voice, a
 /// voice of the other gender). Errors are left for the requests to report.
 pub fn speaker_warnings(spec: &PartSpec, speakers: &[SpeakerConfig]) -> Vec<ValidationIssue> {
@@ -122,6 +135,10 @@ pub fn VoicePicker(
         VoiceChoice::Auto => ("Voice: not assigned yet".to_string(), String::new()),
         VoiceChoice::Assigned(voice) => (
             format!("Voice: {} \u{b7} automatic", voice.display_name()),
+            voice.description.clone(),
+        ),
+        VoiceChoice::Chosen(voice) if voice.source == VoiceSource::Designed => (
+            format!("Voice: {} \u{b7} designed", voice.display_name()),
             voice.description.clone(),
         ),
         VoiceChoice::Chosen(voice) => (
@@ -247,6 +264,343 @@ pub fn VoicePicker(
     }
 }
 
+/// The designed voices of the API key's Google project, in the speaker
+/// dialog: those of the speaker's gender with Listen, Use and (for voices
+/// this app made, on a local server) a two-click Delete, then a form that
+/// designs a new voice of the dialog's gender and accent. The list is asked
+/// for when the section is first opened. A new voice plays its sample and is
+/// chosen at once; `onchoose` gets every chosen voice, `ondelete` every
+/// deleted id.
+#[component]
+pub fn DesignedVoicesPanel(
+    /// The speaker's label, for the default name of a new voice.
+    label: String,
+    gender: Gender,
+    accent: Accent,
+    /// The voice the dialog would save.
+    current: Option<String>,
+    /// Voice ids the other speakers of the part have.
+    taken: Vec<String>,
+    /// The saved exam a new voice is booked to.
+    #[props(default)]
+    exam: Option<Uuid>,
+    onchoose: EventHandler<Voice>,
+    ondelete: EventHandler<String>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    let mut list = use_signal(|| None::<DesignedVoices>);
+    let mut loading = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    // "create", or the id of a voice being sampled or deleted.
+    let mut busy = use_signal(|| None::<String>);
+    let mut confirming = use_signal(|| None::<String>);
+    let mut name = use_signal(String::new);
+    let mut description = use_signal(String::new);
+    let mut sample = use_signal(|| None::<VoiceSample>);
+    let show_controls = use_signal(|| false);
+    let player = use_hook(|| {
+        format!(
+            "voice-sample-{}",
+            NEXT_PLAYER.fetch_add(1, Ordering::Relaxed)
+        )
+    });
+
+    let mut load = move || {
+        loading.set(true);
+        error.set(None);
+        spawn(async move {
+            let outcome = designed_voices().await;
+            loading.set(false);
+            match outcome {
+                Ok(found) => list.set(Some(found)),
+                Err(e) => error.set(Some(format!("Could not list the designed voices: {e}"))),
+            }
+        });
+    };
+    let toggle = move |_| {
+        let opening = !open();
+        open.set(opening);
+        if opening && list.peek().is_none() && !*loading.peek() {
+            load();
+        }
+    };
+
+    let default_name = format!(
+        "{label}, {} {}",
+        accent.label(),
+        gender.label().to_lowercase()
+    );
+    let create_name = default_name.clone();
+    let create = move |_| {
+        let typed = name();
+        let request = VoiceDesignRequest {
+            name: if typed.trim().is_empty() {
+                create_name.clone()
+            } else {
+                typed
+            },
+            description: description(),
+            gender,
+            accent,
+        };
+        if let Err(e) = request.validate() {
+            error.set(Some(e.to_string()));
+            return;
+        }
+        error.set(None);
+        busy.set(Some("create".into()));
+        let mut show_controls = show_controls;
+        spawn(async move {
+            let outcome = design_voice(request, exam).await;
+            busy.set(None);
+            match outcome {
+                Ok(made) => {
+                    if let Some(found) = list.write().as_mut() {
+                        found.voices.insert(
+                            0,
+                            DesignedVoiceRow {
+                                voice: made.voice.clone(),
+                                deletable: true,
+                            },
+                        );
+                    }
+                    name.set(String::new());
+                    description.set(String::new());
+                    show_controls.set(false);
+                    sample.set(Some(made.sample));
+                    onchoose.call(made.voice);
+                }
+                Err(e) => error.set(Some(format!("Could not create the voice: {e}"))),
+            }
+        });
+    };
+
+    let found = list();
+    let rows: Vec<DesignedVoiceRow> = found
+        .as_ref()
+        .map(|found| {
+            found
+                .voices
+                .iter()
+                .filter(|row| row.voice.gender == gender)
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    let other_gender = found
+        .as_ref()
+        .map_or(0, |found| found.voices.len() - rows.len());
+    let can_design = found.as_ref().is_some_and(|found| found.can_design);
+    let creating = busy().as_deref() == Some("create");
+    let mount_player = player.clone();
+
+    rsx! {
+        div { class: "designed-voices",
+            button {
+                class: "customize-toggle",
+                r#type: "button",
+                onclick: toggle,
+                span { "Designed voices" }
+                span { class: "toggle-icon", if open() { "\u{25bc}" } else { "\u{25b6}" } }
+            }
+            if open() {
+                if loading() {
+                    p { class: "muted", "Loading the designed voices of this API key..." }
+                }
+                if found.is_some() {
+                    if rows.is_empty() {
+                        p { class: "muted",
+                            "No {gender.label().to_lowercase()} designed voices in the Google project of this API key yet."
+                        }
+                    }
+                    for row in rows {
+                        {
+                            let id = row.voice.id.clone();
+                            let in_use = current.as_deref() == Some(id.as_str());
+                            let elsewhere = taken.contains(&id);
+                            let pending = confirming().as_deref() == Some(id.as_str());
+                            let working = busy().as_deref() == Some(id.as_str());
+                            let (listen_id, delete_id, confirm_id) = (id.clone(), id.clone(), id.clone());
+                            let voice = row.voice.clone();
+                            let replay = player.clone();
+                            rsx! {
+                                div { class: "designed-voice", key: "{id}",
+                                    div { class: "designed-voice-text",
+                                        span { class: "voice-name", title: "{row.voice.description}",
+                                            "{row.voice.display_name()}"
+                                        }
+                                        span { class: "muted", "{row.voice.accent.label()}" }
+                                    }
+                                    div { class: "voice-actions",
+                                        button {
+                                            class: "voice-button",
+                                            r#type: "button",
+                                            disabled: busy().is_some(),
+                                            title: "Hear Google's sample of this voice (free)",
+                                            onclick: move |_| {
+                                                let id = listen_id.clone();
+                                                error.set(None);
+                                                if sample.peek().as_ref().is_some_and(|s| s.voice_id == id) {
+                                                    play(replay.clone(), show_controls);
+                                                    return;
+                                                }
+                                                busy.set(Some(id.clone()));
+                                                let mut show_controls = show_controls;
+                                                spawn(async move {
+                                                    let outcome = voice_preview(id, exam).await;
+                                                    busy.set(None);
+                                                    match outcome {
+                                                        Ok(made) => {
+                                                            show_controls.set(false);
+                                                            sample.set(Some(made));
+                                                        }
+                                                        Err(e) => error.set(Some(format!("Could not play this voice: {e}"))),
+                                                    }
+                                                });
+                                            },
+                                            if working && !pending { "Loading..." } else { "Listen" }
+                                        }
+                                        button {
+                                            class: "voice-button",
+                                            r#type: "button",
+                                            disabled: in_use || elsewhere,
+                                            title: "Read this speaker with this voice; its gender and accent come with it",
+                                            onclick: move |_| onchoose.call(voice.clone()),
+                                            if in_use {
+                                                "In use"
+                                            } else if elsewhere {
+                                                "Used by another speaker"
+                                            } else {
+                                                "Use"
+                                            }
+                                        }
+                                        if row.deletable {
+                                            if pending {
+                                                button {
+                                                    class: "voice-button danger",
+                                                    r#type: "button",
+                                                    disabled: busy().is_some(),
+                                                    onclick: move |_| {
+                                                        let id = confirm_id.clone();
+                                                        confirming.set(None);
+                                                        error.set(None);
+                                                        busy.set(Some(id.clone()));
+                                                        spawn(async move {
+                                                            let outcome = delete_voice(id.clone()).await;
+                                                            busy.set(None);
+                                                            match outcome {
+                                                                Ok(()) => {
+                                                                    if let Some(found) = list.write().as_mut() {
+                                                                        found.voices.retain(|r| r.voice.id != id);
+                                                                    }
+                                                                    if sample.peek().as_ref().is_some_and(|s| s.voice_id == id) {
+                                                                        sample.set(None);
+                                                                    }
+                                                                    ondelete.call(id);
+                                                                }
+                                                                Err(e) => error.set(Some(format!("Could not delete the voice: {e}"))),
+                                                            }
+                                                        });
+                                                    },
+                                                    if working { "Deleting..." } else { "Confirm delete" }
+                                                }
+                                                button {
+                                                    class: "voice-button",
+                                                    r#type: "button",
+                                                    onclick: move |_| confirming.set(None),
+                                                    "Cancel"
+                                                }
+                                            } else {
+                                                button {
+                                                    class: "voice-button",
+                                                    r#type: "button",
+                                                    disabled: busy().is_some(),
+                                                    title: "Delete this voice from the Google project of this API key",
+                                                    onclick: move |_| confirming.set(Some(delete_id.clone())),
+                                                    "Delete"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if other_gender > 0 {
+                        p { class: "muted",
+                            "{other_gender} designed voice(s) of the other gender are hidden; change Gender above to see them."
+                        }
+                    }
+                    if can_design {
+                        div { class: "designed-voice-form",
+                            p { class: "designed-voice-title",
+                                "New {gender.label().to_lowercase()} {accent.label()} voice"
+                            }
+                            input {
+                                class: "form-input",
+                                r#type: "text",
+                                maxlength: "60",
+                                placeholder: "{default_name}",
+                                value: "{name}",
+                                disabled: creating,
+                                oninput: move |evt| name.set(evt.value()),
+                            }
+                            textarea {
+                                class: "form-input",
+                                rows: "3",
+                                maxlength: "500",
+                                placeholder: "e.g. {description_example(gender, accent)}",
+                                value: "{description}",
+                                disabled: creating,
+                                oninput: move |evt| description.set(evt.value()),
+                            }
+                            p { class: "muted",
+                                "Describe age, timbre, accent and pace in 1-2 sentences, in English."
+                            }
+                            p { class: "muted",
+                                "Creating a voice takes about 20 s and costs about $0.02; a designed voice reads each of its turns in its own request."
+                            }
+                            button {
+                                class: "voice-button",
+                                r#type: "button",
+                                disabled: busy().is_some(),
+                                onclick: create,
+                                if creating { "Creating the voice (about 20 s)..." } else { "Create voice" }
+                            }
+                        }
+                    } else {
+                        p { class: "muted",
+                            "New voices can only be designed on a copy of the app running on your own computer."
+                        }
+                    }
+                }
+                if let Some(message) = error() {
+                    p { class: "voice-note", "{message}" }
+                }
+                if found.is_none() && !loading() && error().is_some() {
+                    button {
+                        class: "voice-button",
+                        r#type: "button",
+                        onclick: move |_| load(),
+                        "Try again"
+                    }
+                }
+                if let Some(playing) = sample() {
+                    audio {
+                        key: "{playing.url}",
+                        id: "{player}",
+                        class: "voice-sample",
+                        src: "{playing.url}",
+                        preload: "auto",
+                        controls: show_controls(),
+                        onmounted: move |_| play(mount_player.clone(), show_controls),
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Plays the sample element `id` from the start. A browser may refuse sound
 /// that does not closely follow a click (the sample took a while to make);
 /// then the player's own controls are shown instead.
@@ -266,4 +620,16 @@ fn play(id: String, mut show_controls: Signal<bool>) {
             show_controls.set(true);
         }
     });
+}
+
+/// A sample description for the design form, in the speaker's gender and accent.
+fn description_example(gender: Gender, accent: Accent) -> String {
+    let person = match gender {
+        Gender::Female => "A warm woman in her forties",
+        Gender::Male => "A calm man in his fifties",
+    };
+    format!(
+        "{person} with a clear {} accent; measured and unhurried, like a teacher.",
+        accent.label().trim_end_matches(" English")
+    )
 }

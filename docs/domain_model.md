@@ -85,6 +85,19 @@ Pure rules over a catalogue slice, run in the browser and again on the server:
   both sides have one: the app assigning a voice to a speaker on `Auto` (the
   catalogue loading, or after "Automatic") is no change.
 
+### Designed voices (`VoiceDesignRequest`, `voice.rs`)
+A teacher designs a voice from a description: `VoiceDesignRequest { name,
+description, gender, accent }`. `cleaned()` collapses whitespace;
+`validate()` wants a name of 1–60 characters and a description of 20–500
+characters with at least 10 letters (age, timbre, accent, pace, in English).
+Google gets `accent.language_code()`; the app remembers the accent itself,
+since en-GB is both British and Scottish English. A designed voice is a
+`Voice` with `source: Designed`: it belongs to the API key's Google project,
+is only ever `Chosen` (never assigned from the catalogue), brings its gender
+and accent with it (`with_voice`), and reads each of its turns in a request of
+its own. Designed voices made outside the app get the first accent of their
+language tag.
+
 ### Out of date is derived, never flagged
 A script and a recording each remember the line-up they were made for:
 `Passage.written_for` and `ExamPart.recorded_for` (the part page keeps its
@@ -233,7 +246,10 @@ Both pages start new work expressive; a saved exam keeps the choice
 (`SavedExam.expressive`, false for exams saved before 0.8).
 
 Voices are assigned before an `AudioRequest` is validated: the browser and the
-server both run `assign_voices` first. `AudioRequest.fresh` (`#[serde(default)]`)
+server both run `assign_voices` first. The server also refuses, before the job
+starts, a chosen designed voice that is not in the key's Google project
+("Speaker B's designed voice "X" is not in the Google project of this API key;
+choose another voice."). `AudioRequest.fresh` (`#[serde(default)]`)
 asks for a **new take**: the job reads that passage again instead of reusing
 speech made before for the same words and voices (`Reuse::Refresh`) and keeps
 the new take in their place. In an `ExamAudioRequest` it is per part; the

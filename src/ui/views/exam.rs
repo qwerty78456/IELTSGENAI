@@ -53,7 +53,7 @@ use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
 use crate::ui::components::voices::{
-    VoiceCatalogueCtx, speaker_warnings, voices_summary, with_choice,
+    VoiceCatalogueCtx, speaker_warnings, voices_of_others, voices_summary, with_choice,
 };
 use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, sleep_ms, wait_for_job};
 
@@ -1004,6 +1004,13 @@ pub fn ExamView() -> Element {
                 if let Some(speaker) = current.exam.parts.get(i).and_then(|p| p.speakers.get(k)).cloned() {
                     SpeakerEditModal {
                         speaker,
+                        taken: current
+                            .exam
+                            .parts
+                            .get(i)
+                            .map(|p| voices_of_others(&p.speakers, k))
+                            .unwrap_or_default(),
+                        exam: Some(current.exam.id),
                         onclose: move |_| state.write().editing_speaker = None,
                         onsave: move |updated: SpeakerConfig| {
                             let Some(mut list) = state.peek().exam.parts.get(i).map(|p| p.speakers.clone()) else {

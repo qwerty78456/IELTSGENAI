@@ -157,6 +157,7 @@ impl JobStore {
         .await?;
         super::super::exams::create_schema(&pool).await?;
         super::super::usage::create_schema(&pool).await?;
+        super::super::tts::create_designed_voices_schema(&pool).await?;
         // SQLite can open an existing database read-only despite requesting writes.
         // Exercise a real write and roll it back before accepting any requests.
         let mut transaction = pool.begin().await?;

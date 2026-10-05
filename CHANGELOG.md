@@ -192,11 +192,12 @@ bật cười, ho đúng chỗ mà không một ký hiệu nào lọt vào đề
 | `cargo fmt --check` app và launcher | sạch |
 | `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba |
 | `cargo test --features server --no-default-features` | **181/181**, 3 test chạy tay (0.7.1: 86; thêm 95 test: gán giọng, danh mục và `voices.json` v2, chia đoạn theo giọng, cache v2, thẻ giọng, transcript không thẻ, Voices API và Voice Design, đề 0.7.1 vẫn mở, suy ra "cũ") |
-| Bản Windows 0.8.0 | (điền sau khi build) |
-| `smoke.py` trên chính file `.exe` phát hành | (điền sau khi build) |
-| Bản Linux 0.8.0 | (điền sau khi build) |
-| `smoke.py` trên AppImage thật, Ubuntu 22.04 và 24.04 sạch | (điền sau khi build) |
-| WASM release (chưa qua wasm-opt) | (điền sau khi build) |
+| Bản Windows 0.8.0 | `.exe` **9,3 MB** (9.335.808 byte, 0.7.1: 8.733.696); chỉ gọi DLL hệ thống của Windows, như 0.7.1 |
+| `smoke.py` trên chính file `.exe` phát hành | ✅ đạt, kể cả `voices.json` version 2 lần đầu chạy, file 0.7 mặc định bị đổi tên, file 0.7 đã sửa được giữ nguyên, và đóng cửa sổ console; "không có key ở đâu" vẫn **không chạy được** trên máy build (key nằm trong môi trường Windows) |
+| Giọng trên chính file `.exe` phát hành, thư mục cấu hình mới | 3 thẻ người nói có giọng tự động (*Digital Assistant 1*, *Sola*, *Authoritative Advisor 8*); *Listen* ghi một mẫu 17 giây, 1 request, **0,0054 USD**, phát ngay trong trang; nghe lần hai không gọi Google |
+| Bản Linux 0.8.0 | `.AppImage` **13,2 MB** (13.183.480 byte, 0.7.1: 12.634.616), build trong container Ubuntu 22.04; fmt, check và 181 test chạy lại trong đó |
+| `smoke.py` trên AppImage thật, Ubuntu 22.04 và 24.04 sạch | ✅ đạt cả hai, user `nobody`, kể cả `voices.json` 0.7 và **khởi động khi không có key ở đâu** |
+| WASM release (chưa qua wasm-opt, vẫn crash trên Windows) | **4,17 MB** (0.7.1: 3,88 MB) |
 | HSG Part 1, cùng đoạn 701 từ, ba người *Female, British*: số giọng gửi đi | 0.7.1: 1 (`Zephyr` cho A, B, C) → 0.8.0: **3** giọng `en-gb` khác nhau |
 | Cùng đoạn đó, tai AI nghe | nữ, **Mỹ** → nữ, **Anh** |
 | Cùng đoạn đó, lượt bị đổi thành giọng nam (F0 dưới 120 Hz) | **2/10 → 0** |
@@ -210,7 +211,7 @@ bật cười, ho đúng chỗ mà không một ký hiệu nào lọt vào đề
 | *New take of this part* cho Part 1 | 3 request, 16 đoạn dùng lại, 0,052 USD (giá 2027: 0,104) |
 | *Listen* lần đầu / lần sau | khoảng 0,005 USD, 8 giây / **0 USD**, 0,7 giây |
 | Voice Design: tạo một giọng | khoảng 0,009 USD (ước tính theo giá TTS), 18 giây; 80 giây khi Google báo bận |
-| Tiền Gemini tốn cho 0.8.0 | khoảng 1,3 USD thăm dò và tuyển giọng (`docs/voices.md`), 0,025 USD thử trong app, 0,546 USD kiểm thử đầu-cuối: **khoảng 1,9 USD** |
+| Tiền Gemini tốn cho 0.8.0 | khoảng 1,3 USD thăm dò và tuyển giọng (`docs/voices.md`), 0,025 USD thử trong app, 0,546 USD kiểm thử đầu-cuối, 0,005 USD nghe thử trên file `.exe` phát hành: **khoảng 1,9 USD** (chi tiết trong `docs/portable-verification-v0.8.0.md`) |
 
 ### Thêm
 

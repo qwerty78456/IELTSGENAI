@@ -1,4 +1,4 @@
-Listening Exam Generator 0.7.0
+Listening Exam Generator 0.7.1
 
 Windows 10/11 x64: run the EXE from a writable folder.
 Linux x86-64 (Ubuntu 22.04 or newer baseline): chmod +x the AppImage, then run it.
@@ -14,8 +14,11 @@ Gemini API key, first match wins:
 The console says where the key came from, never the key. Read the warning above
 the form: the key travels over plain HTTP, the app has no login, and "Remember"
 writes it unencrypted to .env. The form works only when the app listens on
-127.0.0.1, never replaces a key from the environment or .env, and checks the key
-with Google (free) before keeping it.
+127.0.0.1 and checks the key with Google (free) before keeping it. It never
+replaces a working key from the environment or .env. If Google rejects that key,
+every page says where the key came from and offers the form; a key pasted there
+is used until the app restarts. "Remember" is offered only when .env would win
+after a restart, i.e. not when the bad key is an environment variable.
 
 The browser opens after initialization. The console prints the address (default
 http://127.0.0.1:8080). Keep the console open. Ctrl+C, or closing the
@@ -45,7 +48,7 @@ Missing configuration files are recreated; invalid files are never overwritten.
 Invalid ports/paths/settings stop startup; a missing key does not.
 
 If Linux FUSE is unavailable:
-APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.7.0-linux-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.7.1-linux-x86_64.AppImage
 Ctrl+C in this mode may return shell status 130 from the AppImage runtime,
 even after "Server stopped cleanly.", and may leave its temporary extraction.
 Alternatively, run the AppImage with --appimage-extract once, then run

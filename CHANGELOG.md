@@ -3,7 +3,13 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
-## [Chưa phát hành]
+## [0.7.1] – 2026-10-05 — 🔑 "Key hỏng thì nói thẳng, và cho thay ngay trên trang."
+
+Ở 0.7.0, một key đã thu hồi hay gõ sai trong biến môi trường Windows là đủ để
+mọi bước báo một câu khó hiểu, trong khi ô nhập key trên trang lại khoá vì
+"đã có key". **Từ 0.7.1, app nói key hỏng nằm ở đâu, và trên máy của chính
+giáo viên thì cho dán key khác ngay trên trang, không cần khởi động lại.**
+Không có gì thay đổi khi key vẫn chạy.
 
 ### Thay đổi
 

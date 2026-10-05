@@ -43,6 +43,21 @@ Không có gì thay đổi khi key vẫn chạy.
   bộ nhớ, không gọi Google), nên lỗi key ở bất kỳ bước nào cũng làm hộp hiện
   ra mà không phải sửa từng chỗ báo lỗi trong các view.
 
+### 📊 Con số biết nói
+
+| Kiểm tra | Kết quả |
+|---|---|
+| `cargo fmt --check` app và launcher | sạch |
+| `cargo check` web / server / wasm32 (`--locked`) | sạch, **0 warning** cả ba |
+| `cargo test --features server --no-default-features` | **86/86**, 2 test chạy tay (0.7.0: 84; thêm 2 test: body lỗi key thật của Google, khi nào *Remember* có tác dụng) |
+| Bản Windows 0.7.1 | `.exe` **8,7 MB** (8.733.696 byte, 0.7.0: 8.732.672); chỉ gọi DLL hệ thống của Windows, như 0.7.0 |
+| `smoke.py` trên chính file `.exe` phát hành | ✅ đạt, kể cả đóng cửa sổ console; "không có key ở đâu" vẫn **không chạy được** trên máy build (key nằm trong môi trường Windows) |
+| Luồng key hỏng trên chính file `.exe` phát hành, key bịa trong biến môi trường | lỗi nói *from the server's environment*; hộp hiện, ô nhập che ký tự, không có *Remember* |
+| Bản Linux 0.7.1 | `.AppImage` **12,6 MB** (12.634.616 byte, 0.7.0: 12.618.232), build trong container Ubuntu 22.04; fmt, check và 86 test chạy lại trong đó |
+| `smoke.py` trên AppImage thật, Ubuntu **22.04** và **24.04** sạch, user `nobody` | ✅ đạt cả hai, **kể cả khởi động khi không có key ở đâu** |
+| WASM release (chưa qua wasm-opt, vẫn crash trên Windows) | **3,88 MB**, như 0.7.0 |
+| Tiền Gemini tốn cho toàn bộ kiểm tra | **0 USD**: mọi request dùng key bịa hoặc không key, Google từ chối miễn phí |
+
 ### Biết rồi, để bản sau
 
 - Các lỗi khác ngoài lỗi key vẫn hiện mã HTTP, ví dụ *rejected the request

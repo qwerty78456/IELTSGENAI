@@ -40,6 +40,13 @@ GEMINI_THINKING_LEVEL (low by default) and SPEECH_CACHE_HOURS (72: speech alread
 made for the same words and voices is reused for free) are in .env too. Speech
 made by 0.7 is not reused: rendering an old exam again pays once.
 
+Downloads are named after the test, five words about the draft and the time,
+e.g. IELTS-Listening-Part1_Booking-A-Hotel-Room-Online_06-10-2026_14-32-05.docx.
+The five words come from gemini-3.5-flash-lite (GEMINI_SUMMARY_MODEL), about
+0.0001 USD per draft. Tick "Download the DOCX and WAV automatically" to save
+each file as soon as it is ready; the browser may ask once to allow several
+downloads.
+
 Voices: every speaker gets a regional voice of its own (British, American,
 Australian, Canadian, New Zealand, Irish, Scottish, South African or Indian
 English). Listen plays a short sample: the first listen of a voice costs about

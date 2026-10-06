@@ -34,6 +34,8 @@ use super::pricing::{cost_micro_usd, rates_for};
 const API_ROOT: &str = "https://generativelanguage.googleapis.com/v1beta";
 const KEY_CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const TEXT_TIMEOUT: Duration = Duration::from_secs(90);
+/// A few words from a small model (`generate_brief`) come back in a second or two.
+const BRIEF_TIMEOUT: Duration = Duration::from_secs(20);
 const TTS_TIMEOUT: Duration = Duration::from_secs(300);
 const VOICES_TIMEOUT: Duration = Duration::from_secs(30);
 /// Voice Design answered in 21 s on 2026-10-05 (the voice and a 20 s sample).
@@ -57,6 +59,9 @@ const MAX_VOICE_PAGES: usize = 20;
 /// Cap on one text answer, thinking included. Every real answer fits in a
 /// fraction of it; it only stops a runaway reply from running up the bill.
 const MAX_OUTPUT_TOKENS: u32 = 8_192;
+/// Cap on a brief answer, thinking included: room for a model that thinks
+/// at medium by default, while five words need about ten tokens.
+const BRIEF_MAX_OUTPUT_TOKENS: u32 = 1_024;
 /// Audio tokens billed per second of speech: 32, measured with
 /// gemini-3.8-flash-tts on 2026-09-28 (the pricing page says 25). Used only
 /// when a speech response reports no output tokens.
@@ -341,8 +346,23 @@ impl GeminiClient {
 
     /// Plain text completion.
     pub async fn generate_text(&self, prompt: &str) -> Result<String, LlmError> {
-        let body = text_body(&self.text_model, prompt, &self.thinking_level, false);
+        let body = text_body(
+            &self.text_model,
+            prompt,
+            Some(&self.thinking_level),
+            MAX_OUTPUT_TOKENS,
+            false,
+        );
         let response = self.billed(&self.text_model, body, TEXT_TIMEOUT).await?;
+        output_text(&response).ok_or_else(|| LlmError::Malformed("no text in the response".into()))
+    }
+
+    /// A few words from `model` (the download-name summary). No thinking
+    /// level is sent, so each model thinks at its default: minimal on
+    /// Flash-Lite, which the 3.8 text model would refuse.
+    pub async fn generate_brief(&self, model: &str, prompt: &str) -> Result<String, LlmError> {
+        let body = text_body(model, prompt, None, BRIEF_MAX_OUTPUT_TOKENS, false);
+        let response = self.billed(model, body, BRIEF_TIMEOUT).await?;
         output_text(&response).ok_or_else(|| LlmError::Malformed("no text in the response".into()))
     }
 
@@ -350,7 +370,13 @@ impl GeminiClient {
     pub async fn generate_json<T: DeserializeOwned>(&self, prompt: &str) -> Result<T, LlmError> {
         let json_prompt =
             format!("{prompt}\n\nRespond with a single JSON object and nothing else.");
-        let body = text_body(&self.text_model, &json_prompt, &self.thinking_level, true);
+        let body = text_body(
+            &self.text_model,
+            &json_prompt,
+            Some(&self.thinking_level),
+            MAX_OUTPUT_TOKENS,
+            true,
+        );
         let response = self.billed(&self.text_model, body, TEXT_TIMEOUT).await?;
         let text = output_text(&response)
             .ok_or_else(|| LlmError::Malformed("no text in the response".into()))?;
@@ -633,17 +659,26 @@ impl GeminiClient {
 }
 
 /// A text request. `thinking_level` is low, medium or high (3.8 Flash
-/// rejects `minimal` and cannot turn thinking off).
-fn text_body(model: &str, prompt: &str, thinking_level: &str, json_mode: bool) -> Value {
+/// rejects `minimal` and cannot turn thinking off); `None` leaves it to the
+/// model's default.
+fn text_body(
+    model: &str,
+    prompt: &str,
+    thinking_level: Option<&str>,
+    max_output_tokens: u32,
+    json_mode: bool,
+) -> Value {
     let mut body = json!({
         "model": model,
         "input": prompt,
         "generation_config": {
-            "thinking_level": thinking_level,
-            "max_output_tokens": MAX_OUTPUT_TOKENS,
+            "max_output_tokens": max_output_tokens,
         },
         "store": false,
     });
+    if let Some(level) = thinking_level {
+        body["generation_config"]["thinking_level"] = json!(level);
+    }
     if json_mode {
         body["response_format"] = json!({ "type": "text", "mime_type": "application/json" });
     }
@@ -1252,7 +1287,13 @@ mod tests {
 
     #[test]
     fn text_requests_are_not_stored_and_think_little() {
-        let body = text_body("gemini-3.8-flash", "Write.", "low", true);
+        let body = text_body(
+            "gemini-3.8-flash",
+            "Write.",
+            Some("low"),
+            MAX_OUTPUT_TOKENS,
+            true,
+        );
         assert_eq!(body["store"], json!(false));
         assert_eq!(body["input"], json!("Write."));
         assert_eq!(body["generation_config"]["thinking_level"], json!("low"));
@@ -1265,10 +1306,29 @@ mod tests {
             json!("application/json")
         );
         assert!(
-            text_body("m", "p", "low", false)
+            text_body("m", "p", Some("low"), MAX_OUTPUT_TOKENS, false)
                 .get("response_format")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn brief_requests_leave_thinking_to_the_model() {
+        let body = text_body(
+            "gemini-3.5-flash-lite",
+            "Five words.",
+            None,
+            BRIEF_MAX_OUTPUT_TOKENS,
+            false,
+        );
+        assert_eq!(body["model"], json!("gemini-3.5-flash-lite"));
+        assert_eq!(body["store"], json!(false));
+        assert!(body["generation_config"].get("thinking_level").is_none());
+        assert_eq!(
+            body["generation_config"]["max_output_tokens"],
+            json!(BRIEF_MAX_OUTPUT_TOKENS)
+        );
+        assert!(body.get("response_format").is_none());
     }
 
     #[test]
@@ -2033,5 +2093,45 @@ mod tests {
         );
         println!("total: {}", client.usage().cost_text());
         println!("recordings: {}", dir.join("ielts-probe-*.wav").display());
+    }
+
+    /// Calls the real API once for a download-name summary with the summary
+    /// model (`GEMINI_SUMMARY_MODEL`, default gemini-3.5-flash-lite), no
+    /// thinking level sent. Costs about $0.0002. Run on demand:
+    /// `cargo test --features server --no-default-features brief_live_probe -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn brief_live_probe() {
+        let key = std::env::var("GEMINI_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+            .or_else(|| super::super::super::config::windows_environment().remove("GEMINI_API_KEY"))
+            .expect("GEMINI_API_KEY in the environment");
+        let model = std::env::var("GEMINI_SUMMARY_MODEL").unwrap_or("gemini-3.5-flash-lite".into());
+        let client = GeminiClient::new(
+            key,
+            "gemini-3.8-flash".into(),
+            "gemini-3.8-flash-tts".into(),
+            "low".into(),
+        )
+        .unwrap();
+        let prompt = crate::infrastructure::prompts::summary_prompt(&[
+            "Cities and the environment".to_string(),
+            "A woman phones a hotel to book a room for a conference in May.".to_string(),
+            "A guided tour of a new science museum.".to_string(),
+        ]);
+        let started = Instant::now();
+        let reply = client.generate_brief(&model, &prompt).await.unwrap();
+        let spent = client.usage();
+        println!(
+            "{model}: {:.1} s -> {reply:?} / line {:?}; in {}, out {}, thinking {}, {}",
+            started.elapsed().as_secs_f32(),
+            crate::infrastructure::prompts::summary_line(&reply),
+            spent.input_tokens,
+            spent.output_tokens,
+            spent.thinking_tokens,
+            spent.cost_text()
+        );
+        assert_eq!(spent.unpriced, 0, "{model} is missing from the price table");
     }
 }

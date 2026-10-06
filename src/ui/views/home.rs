@@ -24,8 +24,10 @@ use crate::domain::{
     AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
     ValidationIssue, VoiceChoice, assign_voices, has_errors, speaker_change, validate_passage,
 };
+use crate::export::naming::test_type;
 use crate::export::{docx, markdown};
-use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, download_text};
+use crate::ui::components::audio_player::AudioPlayerSection;
+use crate::ui::components::auto_download::AutoDownloadToggle;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
@@ -33,6 +35,8 @@ use crate::ui::components::voices::{
     VoiceCatalogueCtx, speaker_warnings, voices_of_others, with_choice,
 };
 use crate::ui::jobs::{PART_AUDIO_DEADLINE_MS, PART_AUDIO_POLL_MS, wait_for_job};
+use crate::ui::naming::{Content, DraftNaming, NameRequest, download, prefetch};
+use crate::ui::prefs;
 
 #[derive(Clone)]
 pub struct HomeState {
@@ -78,6 +82,21 @@ pub struct HomeState {
     /// by `start_part_audio`). The recording is stale while the speakers
     /// sound different from it (`speaker_change(..).recording`).
     pub recorded_for: Vec<SpeakerConfig>,
+
+    /// How this part's downloads are named (`ui::naming`).
+    pub naming: DraftNaming,
+}
+
+impl AsRef<DraftNaming> for HomeState {
+    fn as_ref(&self) -> &DraftNaming {
+        &self.naming
+    }
+}
+
+impl AsMut<DraftNaming> for HomeState {
+    fn as_mut(&mut self) -> &mut DraftNaming {
+        &mut self.naming
+    }
 }
 
 impl Default for HomeState {
@@ -113,6 +132,7 @@ impl HomeState {
             audio_job_id: None,
             audio: None,
             recorded_for: Vec::new(),
+            naming: DraftNaming::default(),
         }
     }
 
@@ -144,6 +164,7 @@ impl HomeState {
         self.audio_job_id = None;
         self.audio = None;
         self.recorded_for.clear();
+        self.naming.new_draft();
     }
 
     /// The script's issues against the current speakers: after a speaker
@@ -320,11 +341,6 @@ pub fn Home() -> Element {
 
     let exam_format = state().format.format();
     let part_spec = exam_format.part(state().part).cloned();
-    let file_prefix = format!(
-        "{}_Part{}",
-        state().format.key().to_uppercase(),
-        state().part
-    );
 
     let handle_generate_topic = move |_| {
         state.write().topic_error = None;
@@ -562,6 +578,7 @@ pub fn Home() -> Element {
                         " Expressive delivery (sighs, laughs)"
                     }
                     p { class: "muted", "New scripts may carry a few sighs, coughs, laughs and chuckles that the voices perform. Transcripts, questions and downloads show only the words." }
+                    AutoDownloadToggle {}
                 }
 
                 // Column 2: speakers
@@ -713,19 +730,17 @@ pub fn Home() -> Element {
                                 button {
                                     class: "download-button secondary",
                                     title: "The words of the script, without speech tags such as <sigh>",
-                                    onclick: {
-                                        let script = passage.transcript_text();
-                                        let name = format!("{file_prefix}_script.txt");
-                                        move |_| download_text(&script, &name)
+                                    onclick: move |_| {
+                                        let script = state.peek().passage.as_ref().map(|p| Content::Text(p.transcript_text()));
+                                        download_part(state, script, Some("script"), "txt");
                                     },
                                     "Download script"
                                 }
                                 button {
                                     class: "download-button info",
-                                    onclick: {
-                                        let transcript = markdown::render_transcript(&passage, &speakers());
-                                        let name = format!("{file_prefix}_transcript.md");
-                                        move |_| download_text(&transcript, &name)
+                                    onclick: move |_| {
+                                        let transcript = part_transcript(&state.peek()).map(Content::Text);
+                                        download_part(state, transcript, Some("transcript"), "md");
                                     },
                                     "Download transcript (Markdown)"
                                 }
@@ -741,10 +756,6 @@ pub fn Home() -> Element {
                                         let tasks = state().tasks.clone();
                                         let paper = markdown::render_part_paper(&spec, &tasks);
                                         let key = markdown::render_key(&tasks);
-                                        let docx_spec = spec.clone();
-                                        let docx_name = format!("{file_prefix}_paper.docx");
-                                        let markdown_spec = spec.clone();
-                                        let markdown_name = format!("{file_prefix}_paper.md");
                                         rsx! {
                                             IssueList { issues: state().task_issues.clone() }
                                             div { class: "script-preview",
@@ -756,27 +767,14 @@ pub fn Home() -> Element {
                                             div { class: "download-buttons",
                                                 button {
                                                     class: "download-button primary",
-                                                    onclick: move |_| {
-                                                        let s = state.peek();
-                                                        let voices = speakers.peek();
-                                                        let transcript = s.passage.as_ref().map(|p| (p, voices.as_slice()));
-                                                        let bytes = docx::render_part_docx(&docx_spec, &s.tasks, transcript);
-                                                        download_bytes(&bytes, docx::DOCX_MIME, &docx_name);
-                                                    },
+                                                    onclick: move |_| download_part_docx(state),
                                                     "Download paper + key + transcript (DOCX)"
                                                 }
                                                 button {
                                                     class: "download-button info",
                                                     onclick: move |_| {
-                                                        let s = state.peek();
-                                                        let paper = markdown::render_part_paper(&markdown_spec, &s.tasks);
-                                                        let key = markdown::render_key(&s.tasks);
-                                                        let transcript = s
-                                                            .passage
-                                                            .as_ref()
-                                                            .map(|p| markdown::render_transcript(p, &speakers.peek()))
-                                                            .unwrap_or_default();
-                                                        download_text(&format!("{paper}\n### Key\n\n{key}\n{transcript}"), &markdown_name);
+                                                        let paper = part_paper_markdown(&state.peek()).map(Content::Text);
+                                                        download_part(state, paper, None, "md");
                                                     },
                                                     "Download paper + key + transcript (Markdown)"
                                                 }
@@ -810,8 +808,8 @@ pub fn Home() -> Element {
                             if let Some(track) = state().audio.clone() {
                                 AudioPlayerSection {
                                     src: audio_url(&track.location),
-                                    file_name: format!("{file_prefix}_audio.wav"),
                                     duration_ms: Some(track.duration_ms),
+                                    ondownload: move |_| download_part_wav(state),
                                 }
                             }
                         }
@@ -865,6 +863,80 @@ fn build_script_request(
     Ok(request)
 }
 
+/// What this part's downloads are named after: the format and part, and the
+/// script's topic. `None` before there is a script.
+fn part_name(state: &HomeState) -> Option<NameRequest> {
+    let passage = state.passage.as_ref()?;
+    Some(NameRequest {
+        test_type: test_type(&state.format.format(), Some(state.part)),
+        source: vec![passage.topic.clone()],
+        exam: None,
+    })
+}
+
+/// Downloads one file of the part's draft: its content as it is now, its
+/// name once the summary is here (`ui::naming`).
+fn download_part(
+    state: Signal<HomeState>,
+    content: Option<Content>,
+    role: Option<&'static str>,
+    extension: &'static str,
+) {
+    let (Some(request), Some(content)) = (part_name(&state.peek()), content) else {
+        return;
+    };
+    spawn(download(state, request, content, role, extension));
+}
+
+/// Paper, key and transcript as DOCX, once there are questions.
+fn download_part_docx(state: Signal<HomeState>) {
+    let document = {
+        let s = state.peek();
+        let format = s.format.format();
+        format
+            .part(s.part)
+            .filter(|_| !s.tasks.is_empty())
+            .map(|spec| {
+                let speakers = effective_speakers(&s);
+                let transcript = s.passage.as_ref().map(|p| (p, speakers.as_slice()));
+                Content::Bytes(
+                    docx::render_part_docx(spec, &s.tasks, transcript),
+                    docx::DOCX_MIME,
+                )
+            })
+    };
+    download_part(state, document, None, "docx");
+}
+
+/// The finished recording, straight from the server.
+fn download_part_wav(state: Signal<HomeState>) {
+    let link = state
+        .peek()
+        .audio
+        .as_ref()
+        .map(|track| Content::Link(audio_url(&track.location)));
+    download_part(state, link, None, "wav");
+}
+
+/// The script as a Markdown transcript, voices described.
+fn part_transcript(state: &HomeState) -> Option<String> {
+    let passage = state.passage.as_ref()?;
+    Some(markdown::render_transcript(
+        passage,
+        &effective_speakers(state),
+    ))
+}
+
+/// Paper, key and transcript as one Markdown file.
+fn part_paper_markdown(state: &HomeState) -> Option<String> {
+    let format = state.format.format();
+    let spec = format.part(state.part)?;
+    let paper = markdown::render_part_paper(spec, &state.tasks);
+    let key = markdown::render_key(&state.tasks);
+    let transcript = part_transcript(state).unwrap_or_default();
+    Some(format!("{paper}\n### Key\n\n{key}\n{transcript}"))
+}
+
 /// True while `run` is still the run whose results the state expects.
 fn still_current(state: Signal<HomeState>, run: u32) -> bool {
     state.peek().run == run
@@ -882,19 +954,28 @@ async fn run_script(
     if !still_current(state, run) {
         return None;
     }
-    let mut s = state.write();
-    s.is_generating_script = false;
-    match outcome {
-        Ok(draft) => {
-            s.passage = Some(draft.passage.clone());
-            s.passage_issues = draft.issues;
-            Some(draft.passage)
+    let passage = {
+        let mut s = state.write();
+        s.is_generating_script = false;
+        match outcome {
+            Ok(draft) => {
+                s.passage = Some(draft.passage.clone());
+                s.passage_issues = draft.issues;
+                Some(draft.passage)
+            }
+            Err(e) => {
+                s.script_error = Some(format!("Script generation failed: {e}"));
+                None
+            }
         }
-        Err(e) => {
-            s.script_error = Some(format!("Script generation failed: {e}"));
-            None
-        }
+    };
+    // The summary for the download names, ready before the first file is.
+    // (Bound first: an `if let` would hold the read across `prefetch`'s write.)
+    let request = part_name(&state.peek());
+    if let Some(request) = request {
+        prefetch(state, request.source, request.exam);
     }
+    passage
 }
 
 /// Generates every task block of the part, one after another, appending each
@@ -914,6 +995,11 @@ async fn run_tasks(
         .unwrap_or(0);
     {
         let mut s = state.write();
+        // New questions for this script get a new download name; the first
+        // ones keep the one a downloaded recording may already have.
+        if !s.tasks.is_empty() {
+            s.naming.new_draft();
+        }
         s.tasks.clear();
         s.task_issues.clear();
         s.tasks_error = None;
@@ -943,13 +1029,25 @@ async fn run_tasks(
             }
         }
     }
-    state.write().is_generating_tasks = false;
+    let complete = {
+        let mut s = state.write();
+        s.is_generating_tasks = false;
+        s.tasks_error.is_none() && s.tasks.len() == task_count
+    };
+    if complete && prefs::auto_download() {
+        download_part_docx(state);
+    }
 }
 
 /// Starts the recording job and waits for its WAV.
 async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest) {
     {
         let mut s = state.write();
+        // A new take gets a new download name; the first recording keeps the
+        // one the questions may already have.
+        if s.audio.is_some() || request.fresh {
+            s.naming.new_draft();
+        }
         s.is_generating_audio = true;
         s.audio_error = None;
         s.audio_job_id = None;
@@ -988,16 +1086,29 @@ async fn fetch_audio(mut state: Signal<HomeState>, run: u32, job_id: String) {
     if !still_current(state, run) {
         return;
     }
-    let mut s = state.write();
-    match outcome {
-        Ok(job) => match job.track {
-            Some(track) => {
-                s.audio = Some(track);
-                s.audio_job_id = None;
+    let ready = {
+        let mut s = state.write();
+        let ready = match outcome {
+            Ok(job) => match job.track {
+                Some(track) => {
+                    s.audio = Some(track);
+                    s.audio_job_id = None;
+                    true
+                }
+                None => {
+                    s.audio_error = Some("The recording finished but its file is missing".into());
+                    false
+                }
+            },
+            Err(message) => {
+                s.audio_error = Some(message);
+                false
             }
-            None => s.audio_error = Some("The recording finished but its file is missing".into()),
-        },
-        Err(message) => s.audio_error = Some(message),
+        };
+        s.is_generating_audio = false;
+        ready
+    };
+    if ready && prefs::auto_download() {
+        download_part_wav(state);
     }
-    s.is_generating_audio = false;
 }

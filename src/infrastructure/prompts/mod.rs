@@ -3,8 +3,10 @@
 
 mod items;
 mod passage;
+mod summary;
 mod topic;
 
 pub use items::{TaskDraftDto, task_prompt};
 pub use passage::passage_prompt;
+pub use summary::{summary_line, summary_prompt};
 pub use topic::topic_prompt;

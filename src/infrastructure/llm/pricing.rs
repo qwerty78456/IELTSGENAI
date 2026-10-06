@@ -3,7 +3,8 @@
 //!
 //! The 3.8 models launched at introductory prices that double on 2027-01-01;
 //! each request is priced at the rate in force when it is made, so the
-//! ledger keeps what was actually billed. A model missing here is recorded
+//! ledger keeps what was actually billed. 3.5 Flash-Lite (download-name
+//! summaries) has no introductory price: its two rates are the same. A model missing here is recorded
 //! with its tokens and flagged as unpriced rather than guessed.
 
 /// USD per million tokens, which is the same number as µUSD per token.
@@ -24,7 +25,7 @@ struct Price {
 /// 2027-01-01T00:00:00Z: the end of the introductory 3.8 prices.
 const INTRO_ENDS_SECS: i64 = 1_798_761_600;
 
-const PRICES: [Price; 3] = [
+const PRICES: [Price; 4] = [
     Price {
         model: "gemini-3.8-flash",
         intro: Rates {
@@ -62,6 +63,19 @@ const PRICES: [Price; 3] = [
             input: 1.00,
             cached_input: 0.25,
             output: 12.00,
+        },
+    },
+    Price {
+        model: "gemini-3.5-flash-lite",
+        intro: Rates {
+            input: 0.30,
+            cached_input: 0.03,
+            output: 2.50,
+        },
+        list: Rates {
+            input: 0.30,
+            cached_input: 0.03,
+            output: 2.50,
         },
     },
 ];
@@ -113,5 +127,14 @@ mod tests {
         // 24,000 audio tokens (12.5 minutes at 32 tokens/s) on 3.8 Flash TTS: $0.216 now.
         let tts = rates_for("gemini-3.8-flash-tts", 0).unwrap();
         assert_eq!(cost_micro_usd(tts, 0, 0, 24_000, 0), 216_000);
+    }
+
+    #[test]
+    fn flash_lite_has_one_price() {
+        let before = rates_for("gemini-3.5-flash-lite", INTRO_ENDS_SECS - 1).unwrap();
+        let after = rates_for("gemini-3.5-flash-lite", INTRO_ENDS_SECS).unwrap();
+        assert_eq!(before, after);
+        // A file-name summary: 300 tokens in at 0.30, 10 out at 2.50.
+        assert_eq!(cost_micro_usd(before, 300, 0, 10, 0), 90 + 25);
     }
 }

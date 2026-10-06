@@ -20,7 +20,8 @@ args = parser.parse_args()
 artifact = args.artifact.resolve()
 env = {k: v for k, v in os.environ.items() if k not in {
     "GEMINI_API_KEY", "IP", "PORT", "DATA_DIR", "VOICES_PATH", "MUSIC_PATH",
-    "GEMINI_TEXT_MODEL", "GEMINI_TTS_MODEL", "AUDIO_RETENTION_HOURS", "RUST_LOG",
+    "GEMINI_TEXT_MODEL", "GEMINI_TTS_MODEL", "GEMINI_SUMMARY_MODEL", "GEMINI_THINKING_LEVEL",
+    "AUDIO_RETENTION_HOURS", "RUST_LOG",
     "DIOXUS_PUBLIC_PATH", "APPIMAGE",
 }}
 env["APPIMAGE_EXTRACT_AND_RUN"] = "1"

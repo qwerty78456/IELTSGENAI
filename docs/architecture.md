@@ -60,7 +60,7 @@ src/
                           written_for + speakers_changed (stale scripts)
     speech.rs             speech markup: SPEECH_TAGS, EXAM_SPEECH_TAGS, display/speech text, markup problems
     task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty
-    usage.rs              Usage (tokens + µUSD), UsageStep (+ Voices), ExamUsage (per step, budget)
+    usage.rs              Usage (tokens + µUSD), UsageStep (+ Voices, Naming; always_listed), ExamUsage (per step, budget)
     exam.rs               Exam aggregate: parts, answer key, completeness; ExamPart.recorded_for (stale recordings)
     audio.rs              AudioTrack, AudioProgram (tones, pauses, replays derived from the format)
     validation.rs         invariants -> Vec<ValidationIssue>; grounding of keys in the passage; validate_exam (structural completeness)
@@ -71,6 +71,7 @@ src/
     topics.rs             suggest_topic                       (every Gemini use case takes `exam: Option<Uuid>`
     passages.rs           generate_passage -> PassageDraft     for the usage ledger; the part page passes None)
     tasks.rs              generate_task    -> TaskDraft { task, issues }
+    naming.rs             summarize_topics: a few words for download names (GEMINI_SUMMARY_MODEL, no thinking level)
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
     usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record() after every Gemini call
     settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over a working operator key);
@@ -90,12 +91,15 @@ src/
                           GET /voice-sample/{voice_id}; dioxus::serve in debug
                           (hot reload), else an explicit listener, browser opening, graceful Ctrl+C
     llm/gemini.rs         GeminiClient on /v1beta/interactions (store: false): generate_text, generate_json<T>,
+                          generate_brief(model) (no thinking level, 20 s, 1,024 output tokens),
                           synthesize(SpeechRequest); Voices API: list_voices, get_voice, delete_voice,
                           create_voice (POST /v1beta/voices, store: true, never retried after a timeout);
                           one retry policy; usage meter shared by clones
-    llm/pricing.rs        price table per model (intro until 2026-12-31, list after), cost_micro_usd
+    llm/pricing.rs        price table per model (intro until 2026-12-31, list after; one price for 3.5 Flash-Lite),
+                          cost_micro_usd
     prompts/              topic_prompt, passage_prompt (names and wording that fit each speaker; the speech-tag
-                          DELIVERY block when expressive), task_prompt over the transcript (+ TaskDraftDto)
+                          DELIVERY block when expressive), task_prompt over the transcript (+ TaskDraftDto),
+                          summary_prompt (topics quoted as data, capped) + summary_line
     tts/                  voices.rs (VoiceCatalog: default_voices.json pools, compiled in, + voices.json v2 overrides;
                           a 0.7 file renamed or ignored); synthesize.rs (plan_passage: one voice table, chunks of
                           <= 200 words and <= 2 voices, designed voices alone; speaker_style, synthesize_passage,
@@ -109,14 +113,19 @@ src/
     jobs/worker.rs        spawn_part_audio, spawn_exam_audio (usage recorded on success and failure),
                           hourly clean-up (AUDIO_RETENTION_HOURS, SPEECH_CACHE_HOURS, voice samples after 30 days)
     jobs/serve.rs         serve_audio, serve_voice_sample: plain axum handlers streaming a WAV (audio/wav, Range)
-    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5)
+    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5, Naming 30)
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
   export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
+  export/naming.rs        download names: LocalStamp, slug_words (Vietnamese folded to ASCII), test_type, summary_slug,
+                          fallback_summary, file_stem, file_name
   ui/                     components (audio player, exam library, issue list, key setup, loading popup, speaker modal:
                           SpeakerCards + SpeakerEditModal, voices: VoiceCatalogueCtx, VoicePicker and the dialog's
-                          DesignedVoicesPanel), views (home, exam, navbar: loads the voice catalogue once)
+                          DesignedVoicesPanel, auto download: AutoDownloadToggle), views (home, exam, navbar: loads
+                          the voice catalogue once)
     jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
-    clock.rs              local-time formatting (js-sys Date in the browser, UTC fallback on the server)
+    clock.rs              local-time formatting and now_stamp (js-sys Date in the browser, UTC fallback on the server)
+    naming.rs             DraftNaming (summary per topics, frozen stem, draft token), prefetch, stem, download
+    prefs.rs              browser preferences in localStorage: auto_download
 ```
 
 ## Core model
@@ -191,6 +200,34 @@ issues keeps its own status and can be regenerated alone, and
 downloaded. The `ExamState` lives in the `Navbar` layout's context and its
 pipelines run on the root scope, so switching pages does not drop them.
 
+### Downloads and their names
+
+Every download is named `<test type>_<summary>_<DD-MM-YYYY_HH-MM-SS>`, for
+example `IELTS-Listening-Part1_Booking-A-Hotel-Room-Online_06-10-2026_14-32-05.docx`
+(the exam page drops the part). The pure pieces are in `export/naming.rs`;
+`ui/naming.rs` holds the state. Right after a script is written (on the exam
+page, once the last script of a run is in) the page asks `summarize_topics`
+to sum up the draft's theme and topics in five words; the summary is kept
+with the topics it sums up, so it is out of date as soon as they change and
+is never flagged. The first download of a draft takes the browser's time and
+fixes the stem for every other file of that draft, so its DOCX and WAV share
+a name; a step that changes a downloadable file (script, questions,
+recording) starts a new draft. A download waits at most ten seconds for the
+summary and is otherwise named after the topics themselves; a failed summary
+is asked again for the next draft. The content is taken when the download is
+asked for; only the name waits. Blobs are revoked a minute later, and the
+WAV is downloaded from `/audio/{job_id}` without passing through memory.
+
+With "Download the DOCX and WAV automatically" on (`ui/prefs.rs`, kept in
+this browser's `localStorage`, off by default, read after mount so the server
+render matches), the DOCX downloads when the last question block of the part,
+or of the exam's last part, is written (`Exam::is_complete`), and the WAV when
+the page sees a recording finish (`fetch_audio`, `fetch_exam_audio` from a
+render or "Check again"). The preference is read at that moment, so it can
+be switched on mid-run. Opening a saved exam never downloads anything, not
+even a recording that finishes after the exam was opened. Browsers may ask
+once to allow a site several automatic downloads.
+
 Validation is the product's quality gate. Text keys must occur verbatim in
 the passage (after normalisation), respect the word limit and the
 number rule; letter keys must exist among the options; multiple selection
@@ -211,7 +248,13 @@ The teacher edits; nothing is "final" until they say so.
   `gemini-3.8-flash-tts` (stable) for speech, both configuration. Text
   requests send `thinking_level` (`GEMINI_THINKING_LEVEL`, default `low`;
   3.8 Flash cannot turn thinking off and rejects `minimal`) and
-  `max_output_tokens: 8192` as a guard against runaway answers.
+  `max_output_tokens: 8192` as a guard against runaway answers. The
+  download-name summary uses `gemini-3.5-flash-lite` (`GEMINI_SUMMARY_MODEL`)
+  through `generate_brief`, which sends no `thinking_level`, so each model
+  thinks at its default (minimal on Flash-Lite, which 3.8 Flash would
+  refuse), with `max_output_tokens: 1024` and a 20 s timeout. Measured
+  2026-10-06: 1.2 s, 120 input and 5 output tokens, no thinking, about
+  $0.00005.
 * **The accent belongs to the voice.** Google's 30 classic voices (`Zephyr`,
   `Puck`, `despina`, ...) are all General American; up to 0.7 gender and
   accent picked one of them, so the accent never reached the model and every
@@ -354,8 +397,11 @@ part on Irish and Scottish voices): $0.364 now, **$0.728 at 2027 list
 prices, over the $0.70 bound** (text $0.042, recording $0.322 for 19
 requests and a 30:18 recording, one of them retried). Part of the rise is
 the reference audio every library voice bills as input. Voice samples and
-designed voices are booked under their own step, `voices`, and show in the
-exam's spend line.
+designed voices are booked under their own step, `voices`, and the
+download-name summaries under `naming` ("file names"); both show in the
+exam's spend line only once they have cost something (`always_listed`).
+3.5 Flash-Lite has one price ($0.30 input, $0.03 cached, $2.50 output per
+million tokens) before and after 2027.
 
 ## Jobs
 

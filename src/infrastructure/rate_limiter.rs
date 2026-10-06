@@ -18,12 +18,14 @@ pub enum Bucket {
     VoiceSample,
     /// Creating or deleting a designed voice (Voice Design).
     VoiceDesign,
+    /// The few-word summary in download file names.
+    Naming,
 }
 
 impl Bucket {
     /// Every bucket, in declaration order: `LIMITERS` is built from it and
     /// indexed by `bucket as usize`.
-    pub const ALL: [Bucket; 7] = [
+    pub const ALL: [Bucket; 8] = [
         Bucket::Topic,
         Bucket::Passage,
         Bucket::Task,
@@ -31,6 +33,7 @@ impl Bucket {
         Bucket::KeyEntry,
         Bucket::VoiceSample,
         Bucket::VoiceDesign,
+        Bucket::Naming,
     ];
 
     fn per_minute(self) -> u32 {
@@ -42,6 +45,7 @@ impl Bucket {
             Bucket::KeyEntry => 5,
             Bucket::VoiceSample => 30,
             Bucket::VoiceDesign => 5,
+            Bucket::Naming => 30,
         }
     }
 }
@@ -96,8 +100,9 @@ mod tests {
         }
         // The last variant closes the list: a variant added after it must
         // join ALL (and move this line) or indexing would go past the end.
-        assert_eq!(Bucket::VoiceDesign as usize + 1, Bucket::ALL.len());
+        assert_eq!(Bucket::Naming as usize + 1, Bucket::ALL.len());
         assert_eq!(Bucket::VoiceSample.per_minute(), 30);
         assert_eq!(Bucket::VoiceDesign.per_minute(), 5);
+        assert_eq!(Bucket::Naming.per_minute(), 30);
     }
 }

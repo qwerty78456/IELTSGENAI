@@ -90,6 +90,17 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   (script first, then questions and recording side by side, `futures_util::future::join`) lives
   in the views and chains the application's server functions; a `run` counter drops late results
   of a cancelled or superseded run.
+- Downloads are named by `export::naming` (pure: test type, five-word summary, browser time
+  `DD-MM-YYYY_HH-MM-SS`) through `ui/naming.rs`: each page state carries a `DraftNaming`
+  (`AsRef`/`AsMut`), the summary is asked for right after a script is written (`prefetch`) and
+  kept with the topics it sums up (derived, never flagged), the first download fixes the stem for
+  the draft, and a step that changes a downloadable file calls `new_draft()`. Take a download's
+  content synchronously, then `spawn` (part page) or `spawn_forever` (exam page) the naming.
+  Never hold a `peek()`/`read()` guard across a call that writes the same signal: bind the value
+  first, since an `if let` keeps its scrutinee's guard alive through the block. Automatic
+  downloads (`ui/prefs.rs`, `localStorage`, read after mount, off by default) fire only where a
+  page sees questions complete or a recording finish, never when opening a saved exam
+  (`fetch_exam_audio(.., auto: false)`).
 - Platform-specific deps are split in `Cargo.toml` by `target_arch = "wasm32"`; use
   `#[cfg(target_arch = "wasm32")]` in UI code for gloo/web-sys, not feature flags.
 
@@ -147,6 +158,9 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   through `Voice::check_id` before any path is built. The API key goes in the `x-goog-api-key`
   header, never in the URL. A voice Google does not know (404/403 on `voices/{id}`) is
   `LlmError::UnknownVoice`, never a rejected key; a full project is `LlmError::VoiceLimit`.
+  `generate_brief(model, ..)` (the download-name summary, `GEMINI_SUMMARY_MODEL`, default
+  `gemini-3.5-flash-lite`) is the one text request that names its own model and sends no
+  `thinking_level`, so each model thinks at its default; record its usage with that model.
 - Designed voices (`tts/designed.rs`) belong to the key's Google project: at most 200, kept a
   year after their last use, unusable with another key (`prepare_speakers` refuses them at job
   start). The project's list is cached 60 s and forgotten after a create or delete. The
@@ -185,8 +199,8 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   and recording jobs record on completion and on failure. Prices live in
   `infrastructure/llm/pricing.rs` (3.8 introductory rates until 2026-12-31, list rates after);
   update that table when Google changes prices. Over-budget exams are warned about, never blocked.
-  Voice samples and designed voices are booked under `UsageStep::Voices`; requests that cost
-  nothing add no row.
+  Voice samples and designed voices are booked under `UsageStep::Voices`, download-name
+  summaries under `UsageStep::Naming` (`Bucket::Naming`); requests that cost nothing add no row.
 - Audio synthesis runs as background jobs (SQLite `jobs.db` + WAV under `DATA_DIR/audio/`);
   the browser polls `audio_job_status` (`ui/jobs.rs`, per-kind cadence and deadline) and streams
   the finished WAV from `/audio/{job_id}`, a plain axum route (`infrastructure/jobs/serve.rs`).

@@ -4,3 +4,4 @@
 
 pub mod docx;
 pub mod markdown;
+pub mod naming;

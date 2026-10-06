@@ -1,6 +1,9 @@
-//! Local-time formatting for the Unix seconds the server hands out. The
-//! browser has the teacher's clock; the non-wasm build (server render) prints
-//! UTC, which no one sees because timestamps arrive after hydration.
+//! Local-time formatting for the Unix seconds the server hands out, and the
+//! time stamp in download names. The browser has the teacher's clock; the
+//! non-wasm build (server render) prints UTC, which no one sees because
+//! timestamps arrive after hydration and downloads happen in the browser.
+
+use crate::export::naming::LocalStamp;
 
 /// "HH:MM" in the browser's local time.
 #[cfg(target_arch = "wasm32")]
@@ -21,6 +24,42 @@ pub fn local_date_time(secs: i64) -> String {
         date.get_hours(),
         date.get_minutes()
     )
+}
+
+/// The browser's local time now, for download names.
+#[cfg(target_arch = "wasm32")]
+pub fn now_stamp() -> LocalStamp {
+    let date = js_sys::Date::new_0();
+    LocalStamp {
+        year: date.get_full_year() as i32,
+        month: date.get_month() + 1,
+        day: date.get_date(),
+        hour: date.get_hours(),
+        minute: date.get_minutes(),
+        second: date.get_seconds(),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn now_stamp() -> LocalStamp {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    stamp_utc(secs)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stamp_utc(secs: i64) -> LocalStamp {
+    let (year, month, day, hour, minute) = civil_utc(secs);
+    LocalStamp {
+        year: year as i32,
+        month,
+        day,
+        hour,
+        minute,
+        second: secs.rem_euclid(60) as u32,
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -69,5 +108,11 @@ mod tests {
         assert_eq!(local_date_time(951_782_400), "29/02/2000 00:00");
         assert_eq!(local_time(1_790_000_000), "14:13");
         assert_eq!(local_date_time(1_790_000_000), "21/09/2026 14:13");
+    }
+
+    #[test]
+    fn utc_stamp_carries_seconds() {
+        assert_eq!(stamp_utc(1_790_000_000).label(), "21-09-2026_14-13-20");
+        assert_eq!(stamp_utc(0).label(), "01-01-1970_00-00-00");
     }
 }

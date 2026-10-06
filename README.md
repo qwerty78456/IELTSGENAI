@@ -100,6 +100,7 @@ volume; recordings no saved exam refers to are purged after
 | `GEMINI_API_KEY` | — | process environment, then the Windows user/machine environment, then `.env`; without any, the page asks (loopback servers only) |
 | `GEMINI_TEXT_MODEL` | `gemini-3.8-flash` | scripts, topics, questions; pinned GA model (prices are known for it, not for aliases) |
 | `GEMINI_TTS_MODEL` | `gemini-3.8-flash-tts` | speech; any 3.8-generation TTS model, e.g. `gemini-3.8-flash-lite-tts` (a third cheaper) |
+| `GEMINI_SUMMARY_MODEL` | `gemini-3.5-flash-lite` | the five-word summary in download names; sent without a thinking level, so the model thinks at its default (minimal on Flash-Lite) |
 | `GEMINI_THINKING_LEVEL` | `low` | `low`, `medium` or `high` for text requests; thinking tokens are billed as output |
 | `EXAM_BUDGET_USD` | `0.70` | the exam page warns once an exam's Gemini spend passes it; `0` = no budget; nothing is blocked |
 | `SPEECH_CACHE_HOURS` | `72` | synthesised speech is reused for identical words, styles, voices and model this long after its last use; `0` = off |
@@ -141,6 +142,22 @@ a speaker's gender, accent or role changes after the script was written, the
 page offers to rewrite the script or keep it; a changed voice marks the
 recording to render again, and **New take** reads a part again without the
 speech cache.
+
+### Downloads
+
+Every DOCX, WAV and Markdown download is named after the test, five words
+about the draft and the browser's time, day first:
+`IELTS-Listening-Part1_Booking-A-Hotel-Room-Online_06-10-2026_14-32-05.docx`
+(the exam page leaves the part out). The five words come from
+`gemini-3.5-flash-lite` right after a script is written (about $0.0001 per
+draft, booked as "file names"); without them the files are named after the
+topics. The DOCX and the WAV of one draft share a name; new questions or a
+new take get a new time. **Download the DOCX and WAV automatically** (on
+both pages, remembered in this browser, off by default) saves the DOCX as
+soon as the questions are written and the WAV as soon as the recording is
+ready; opening a saved exam never downloads anything. Chrome and Edge ask
+once whether the site may download several files: allow it, or later
+downloads are blocked silently.
 
 ### API key
 

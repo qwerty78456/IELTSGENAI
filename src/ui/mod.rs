@@ -3,4 +3,6 @@
 pub mod clock;
 pub mod components;
 pub mod jobs;
+pub mod naming;
+pub mod prefs;
 pub mod views;

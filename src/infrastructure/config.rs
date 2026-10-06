@@ -11,6 +11,8 @@ use super::{audio::Pcm16, tts::voices::VoiceCatalog};
 
 pub const DEFAULT_TEXT_MODEL: &str = "gemini-3.8-flash";
 pub const DEFAULT_TTS_MODEL: &str = "gemini-3.8-flash-tts";
+/// Writes the few-word summaries in download file names: the cheapest text model.
+pub const DEFAULT_SUMMARY_MODEL: &str = "gemini-3.5-flash-lite";
 pub const DEFAULT_THINKING_LEVEL: &str = "low";
 pub const DEFAULT_EXAM_BUDGET_USD: &str = "0.70";
 pub const DEFAULT_SPEECH_CACHE_HOURS: u32 = 72;
@@ -18,14 +20,15 @@ pub const TTS_MAX_INPUT_TOKENS: usize = 8_192;
 pub const DEFAULT_AUDIO_RETENTION_HOURS: u32 = 24;
 /// The value `.env.example` and the portable template ship with; it means "no key".
 const PLACEHOLDER_KEY: &str = "your_api_key_here";
-const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\nDATA_DIR=./data\nVOICES_PATH=./voices.json\n# Leave the key out to use the GEMINI_API_KEY environment variable or to enter it in the browser.\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-3.8-flash\n# GEMINI_TTS_MODEL=gemini-3.8-flash-tts\n# GEMINI_THINKING_LEVEL=low\n# EXAM_BUDGET_USD=0.70\n# SPEECH_CACHE_HOURS=72\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
+const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\nDATA_DIR=./data\nVOICES_PATH=./voices.json\n# Leave the key out to use the GEMINI_API_KEY environment variable or to enter it in the browser.\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-3.8-flash\n# GEMINI_TTS_MODEL=gemini-3.8-flash-tts\n# GEMINI_SUMMARY_MODEL=gemini-3.5-flash-lite\n# GEMINI_THINKING_LEVEL=low\n# EXAM_BUDGET_USD=0.70\n# SPEECH_CACHE_HOURS=72\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
 
 /// Every setting the server reads, from the process environment, the persisted
 /// Windows environment and `.env`.
-const SETTINGS: [&str; 13] = [
+const SETTINGS: [&str; 14] = [
     "GEMINI_API_KEY",
     "GEMINI_TEXT_MODEL",
     "GEMINI_TTS_MODEL",
+    "GEMINI_SUMMARY_MODEL",
     "GEMINI_THINKING_LEVEL",
     "EXAM_BUDGET_USD",
     "SPEECH_CACHE_HOURS",
@@ -174,6 +177,9 @@ pub struct AppConfig {
     pub dotenv_path: PathBuf,
     pub text_model: String,
     pub tts_model: String,
+    /// The model for download-name summaries. Its requests carry no thinking
+    /// level: each model thinks at its default (minimal on Flash-Lite).
+    pub summary_model: String,
     /// `generation_config.thinking_level` for text requests: low, medium or high.
     pub thinking_level: String,
     /// What one exam should cost at most, in µUSD; 0 means no budget. Only warned about.
@@ -427,9 +433,11 @@ impl AppConfig {
         let (gemini_api_key, key_origin) = key.unzip();
         let text_model = value("GEMINI_TEXT_MODEL", DEFAULT_TEXT_MODEL);
         let tts_model = value("GEMINI_TTS_MODEL", DEFAULT_TTS_MODEL);
+        let summary_model = value("GEMINI_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL);
         for (name, model) in [
             ("GEMINI_TEXT_MODEL", &text_model),
             ("GEMINI_TTS_MODEL", &tts_model),
+            ("GEMINI_SUMMARY_MODEL", &summary_model),
         ] {
             if model.is_empty()
                 || !model
@@ -529,6 +537,7 @@ impl AppConfig {
             dotenv_path: env_path,
             text_model,
             tts_model,
+            summary_model,
             thinking_level,
             exam_budget_micro_usd,
             speech_cache_hours,
@@ -739,6 +748,7 @@ mod tests {
             ("RUST_LOG", "bad["),
             ("DATA_DIR", ""),
             ("GEMINI_TEXT_MODEL", "bad/model"),
+            ("GEMINI_SUMMARY_MODEL", "bad/model"),
             ("VOICES_PATH", ""),
             ("AUDIO_RETENTION_HOURS", "abc"),
             ("AUDIO_RETENTION_HOURS", "-1"),
@@ -902,6 +912,7 @@ mod tests {
         let cfg = AppConfig::load(dir.path(), true, &environment()).unwrap();
         assert_eq!(cfg.text_model, "gemini-3.8-flash");
         assert_eq!(cfg.tts_model, "gemini-3.8-flash-tts");
+        assert_eq!(cfg.summary_model, "gemini-3.5-flash-lite");
         assert_eq!(cfg.thinking_level, "low");
         assert_eq!(cfg.exam_budget_micro_usd, 700_000);
         assert_eq!(cfg.speech_cache_secs(), Some(72 * 3_600));

@@ -7,6 +7,7 @@
 
 pub mod audio;
 pub mod exams;
+pub mod naming;
 pub mod passages;
 pub mod settings;
 pub mod tasks;

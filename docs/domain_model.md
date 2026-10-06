@@ -225,10 +225,12 @@ answered from the cache, free), `input_tokens` (cached included),
 
 ### `UsageStep`
 `Topic` | `Script` | `Questions` | `Recording` | `Voices` (samples and designed
-voices), stored by `key()`; `label()` names it in the spend breakdown.
+voices) | `Naming` (the five-word summaries in download names), stored by
+`key()`; `label()` names it in the spend breakdown, where `always_listed()`
+steps show even at $0 and `Voices` and `Naming` only once they cost something.
 
 ### `ExamUsage`
-One `Usage` per step (`voices` defaults to empty for older data) plus
+One `Usage` per step (`voices` and `naming` default to empty for older data) plus
 `budget_micro_usd` (0 = none); `step()`, `step_mut()`, `total()`,
 `over_budget()`, `budget_text()`. Built by `application::usage::exam_usage`
 from the ledger; it includes failed and superseded runs.

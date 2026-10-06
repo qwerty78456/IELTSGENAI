@@ -1,4 +1,5 @@
 pub mod audio_player;
+pub mod auto_download;
 pub mod exam_library;
 pub mod issue_list;
 pub mod key_setup;

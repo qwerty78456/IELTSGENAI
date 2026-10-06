@@ -62,15 +62,18 @@ pub enum UsageStep {
     Recording,
     /// Voice samples ("Preview") and designed voices.
     Voices,
+    /// The few-word summaries in download file names.
+    Naming,
 }
 
 impl UsageStep {
-    pub const ALL: [UsageStep; 5] = [
+    pub const ALL: [UsageStep; 6] = [
         UsageStep::Topic,
         UsageStep::Script,
         UsageStep::Questions,
         UsageStep::Recording,
         UsageStep::Voices,
+        UsageStep::Naming,
     ];
 
     /// Stable key for storage.
@@ -81,6 +84,7 @@ impl UsageStep {
             UsageStep::Questions => "questions",
             UsageStep::Recording => "recording",
             UsageStep::Voices => "voices",
+            UsageStep::Naming => "naming",
         }
     }
 
@@ -96,6 +100,18 @@ impl UsageStep {
             UsageStep::Questions => "questions",
             UsageStep::Recording => "recording",
             UsageStep::Voices => "voices",
+            UsageStep::Naming => "file names",
+        }
+    }
+
+    /// Shown in the spend breakdown even at $0; the optional steps only once
+    /// they have cost something.
+    pub fn always_listed(self) -> bool {
+        match self {
+            UsageStep::Topic | UsageStep::Script | UsageStep::Questions | UsageStep::Recording => {
+                true
+            }
+            UsageStep::Voices | UsageStep::Naming => false,
         }
     }
 }
@@ -110,6 +126,8 @@ pub struct ExamUsage {
     pub recordings: Usage,
     #[serde(default)]
     pub voices: Usage,
+    #[serde(default)]
+    pub naming: Usage,
     /// 0 means no budget.
     pub budget_micro_usd: u64,
 }
@@ -122,6 +140,7 @@ impl ExamUsage {
             UsageStep::Questions => &mut self.questions,
             UsageStep::Recording => &mut self.recordings,
             UsageStep::Voices => &mut self.voices,
+            UsageStep::Naming => &mut self.naming,
         }
     }
 
@@ -132,6 +151,7 @@ impl ExamUsage {
             UsageStep::Questions => self.questions,
             UsageStep::Recording => self.recordings,
             UsageStep::Voices => self.voices,
+            UsageStep::Naming => self.naming,
         }
     }
 
@@ -184,6 +204,9 @@ mod tests {
         exam.step_mut(UsageStep::Voices).add(&spent(2));
         assert_eq!(exam.voices.micro_usd, 2);
         assert_eq!(exam.total().micro_usd, 700_003);
+        exam.step_mut(UsageStep::Naming).add(&spent(4));
+        assert_eq!(exam.naming.micro_usd, 4);
+        assert_eq!(exam.total().micro_usd, 700_007);
         assert_eq!(exam.budget_text().as_deref(), Some("$0.700"));
         assert!(!ExamUsage::default().over_budget());
     }
@@ -205,16 +228,20 @@ mod tests {
         }
         assert_eq!(UsageStep::from_key("nope"), None);
         assert_eq!(UsageStep::from_key("voices"), Some(UsageStep::Voices));
+        assert_eq!(UsageStep::from_key("naming"), Some(UsageStep::Naming));
+        assert!(UsageStep::Script.always_listed());
+        assert!(!UsageStep::Naming.always_listed());
     }
 
     #[test]
-    fn usage_saved_without_voices_still_loads() {
+    fn usage_saved_without_voices_or_naming_still_loads() {
         let empty = r#"{"requests":0,"reused":0,"input_tokens":0,"cached_tokens":0,"output_tokens":0,"thinking_tokens":0,"micro_usd":0,"unpriced":0}"#;
         let json = format!(
             r#"{{"topics":{empty},"scripts":{empty},"questions":{empty},"recordings":{empty},"budget_micro_usd":700000}}"#
         );
         let usage: ExamUsage = serde_json::from_str(&json).unwrap();
         assert!(usage.voices.is_empty());
+        assert!(usage.naming.is_empty());
         assert_eq!(usage.budget_micro_usd, 700_000);
     }
 }

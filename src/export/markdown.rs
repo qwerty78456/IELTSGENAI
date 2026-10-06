@@ -119,11 +119,6 @@ pub fn render_exam(exam: &Exam) -> String {
     out
 }
 
-/// Text file name for a download.
-pub fn file_name(prefix: &str, part: u8, extension: &str) -> String {
-    format!("{prefix}_Part{part}.{extension}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

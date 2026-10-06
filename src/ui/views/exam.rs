@@ -45,9 +45,11 @@ use crate::domain::{
     SpeakerConfig, TaskRequest, UsageStep, ValidationIssue, VoiceChoice, assign_exam_voices,
     assign_voices, has_errors, validate_exam, validate_passage, validate_task,
 };
+use crate::export::naming::test_type;
 use crate::export::{docx, markdown};
 use crate::ui::clock::local_time;
-use crate::ui::components::audio_player::{AudioPlayerSection, download_bytes, download_text};
+use crate::ui::components::audio_player::AudioPlayerSection;
+use crate::ui::components::auto_download::AutoDownloadToggle;
 use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
@@ -56,6 +58,8 @@ use crate::ui::components::voices::{
     VoiceCatalogueCtx, speaker_warnings, voices_of_others, voices_summary, with_choice,
 };
 use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, sleep_ms, wait_for_job};
+use crate::ui::naming::{Content, DraftNaming, NameRequest, download, prefetch};
+use crate::ui::prefs;
 
 /// How long after the last keystroke an edit is saved.
 const EDIT_DEBOUNCE_MS: u32 = 1_000;
@@ -139,6 +143,21 @@ pub struct ExamState {
     /// New scripts are expressive (`PassageRequest::expressive`): on for a
     /// new exam, as saved for an opened one (off for exams from before 0.8).
     pub expressive: bool,
+    /// How this exam's downloads are named (`ui::naming`); not saved, so an
+    /// opened exam's first download takes a new time.
+    pub naming: DraftNaming,
+}
+
+impl AsRef<DraftNaming> for ExamState {
+    fn as_ref(&self) -> &DraftNaming {
+        &self.naming
+    }
+}
+
+impl AsMut<DraftNaming> for ExamState {
+    fn as_mut(&mut self) -> &mut DraftNaming {
+        &mut self.naming
+    }
 }
 
 impl Default for ExamState {
@@ -167,6 +186,7 @@ impl ExamState {
             run: 0,
             editing_speaker: None,
             expressive: true,
+            naming: DraftNaming::default(),
         }
     }
 
@@ -286,6 +306,7 @@ impl ExamState {
             run: self.run + 1,
             editing_speaker: None,
             expressive,
+            naming: DraftNaming::default(),
         }
     }
 
@@ -479,8 +500,6 @@ pub fn ExamView() -> Element {
     let exam_issues = validate_exam(&current.exam);
     let has_any_script = current.scripts_done() > 0;
     let all_scripts = current.scripts_done() == part_count;
-    let id8: String = current.exam.id.to_string().chars().take(8).collect();
-    let file_prefix = format!("{}_exam_{}", current.format.key().to_uppercase(), id8);
     let audio_pct = format!("{:.0}", (current.audio.progress * 100.0).clamp(0.0, 100.0));
     let has_recording = current.audio.track.is_some();
     let recorded_differently = current.parts_recorded_differently();
@@ -526,8 +545,14 @@ pub fn ExamView() -> Element {
                         .map(|job_id| (job_id, fresh.run));
                     state.set(fresh);
                     spawn_forever(refresh_spend(state));
+                    // The summary for the download names, so the first
+                    // download does not wait for it. Nothing is downloaded.
+                    let request = exam_name(&state.peek());
+                    prefetch(state, request.source, request.exam);
                     if let Some((job_id, run)) = resume {
-                        spawn_forever(fetch_exam_audio(state, run, job_id));
+                        // Not downloaded when it finishes: opening an exam
+                        // never saves a file by itself.
+                        spawn_forever(fetch_exam_audio(state, run, job_id, false));
                     }
                 }
                 Err(e) => {
@@ -632,7 +657,7 @@ pub fn ExamView() -> Element {
             return;
         };
         let run = state.peek().run;
-        spawn_forever(fetch_exam_audio(state, run, job_id));
+        spawn_forever(fetch_exam_audio(state, run, job_id, true));
     };
 
     let audio_body = match current.audio.step.clone() {
@@ -714,6 +739,7 @@ pub fn ExamView() -> Element {
                     " Expressive delivery (sighs, laughs)"
                 }
                 p { class: "muted", "New scripts may carry a few sighs, coughs, laughs and chuckles that the voices perform. Transcripts, questions and downloads show only the words." }
+                AutoDownloadToggle {}
                 p { class: "{save_class}", "{save_text}" }
                 {spend_view(current.spend)}
                 div { class: "download-buttons",
@@ -947,8 +973,8 @@ pub fn ExamView() -> Element {
                     if let Some(track) = current.audio.track.clone() {
                         AudioPlayerSection {
                             src: audio_url(&track.location),
-                            file_name: format!("{file_prefix}.wav"),
                             duration_ms: Some(track.duration_ms),
+                            ondownload: move |_| download_exam_wav(state),
                         }
                     }
                     if current.audio.job_id.is_some() && !current.audio.step.is_running() && current.audio.track.is_none() {
@@ -969,24 +995,15 @@ pub fn ExamView() -> Element {
                         button {
                             class: "download-button primary",
                             disabled: !has_any_script,
-                            onclick: {
-                                let name = format!("{file_prefix}.docx");
-                                move |_| {
-                                    let bytes = docx::render_exam_docx(&state.peek().exam);
-                                    download_bytes(&bytes, docx::DOCX_MIME, &name);
-                                }
-                            },
+                            onclick: move |_| download_exam_docx(state),
                             if exam_issues.is_empty() { "Download exam (DOCX)" } else { "Download draft (DOCX, incomplete)" }
                         }
                         button {
                             class: "download-button info",
                             disabled: !has_any_script,
-                            onclick: {
-                                let name = format!("{file_prefix}.md");
-                                move |_| {
-                                    let document = markdown::render_exam(&state.peek().exam);
-                                    download_text(&document, &name);
-                                }
+                            onclick: move |_| {
+                                let document = markdown::render_exam(&state.peek().exam);
+                                download_exam(state, Content::Text(document), "md");
                             },
                             "Download exam (Markdown)"
                         }
@@ -1059,6 +1076,59 @@ fn StepLine(label: String, step: Step) -> Element {
     }
 }
 
+/// What the exam's downloads are named after: the format, and the theme and
+/// the topic of every part that has a script (what the files hold; typing a
+/// topic for another part changes nothing).
+fn exam_name(state: &ExamState) -> NameRequest {
+    let exam = &state.exam;
+    let topics = exam
+        .parts
+        .iter()
+        .filter_map(|part| part.passage.as_ref().map(|p| p.topic.as_str()));
+    let source = std::iter::once(exam.theme.as_str())
+        .chain(topics)
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect();
+    NameRequest {
+        test_type: test_type(&exam.format, None),
+        source,
+        exam: Some(exam.id),
+    }
+}
+
+/// Downloads one file of the exam: its content as it is now, its name once
+/// the summary is here (`ui::naming`). Runs on the root scope, like the
+/// pipelines, so it finishes on the other page too.
+fn download_exam(state: Signal<ExamState>, content: Content, extension: &'static str) {
+    let request = exam_name(&state.peek());
+    spawn_forever(async move {
+        download(state, request, content, None, extension).await;
+        // A summary asked for meanwhile is in the ledger by now.
+        refresh_spend(state).await;
+    });
+}
+
+/// Every part's paper, the key and the transcripts as DOCX.
+fn download_exam_docx(state: Signal<ExamState>) {
+    let bytes = docx::render_exam_docx(&state.peek().exam);
+    download_exam(state, Content::Bytes(bytes, docx::DOCX_MIME), "docx");
+}
+
+/// The exam recording, straight from the server.
+fn download_exam_wav(state: Signal<ExamState>) {
+    let link = state
+        .peek()
+        .audio
+        .track
+        .as_ref()
+        .map(|track| Content::Link(audio_url(&track.location)));
+    if let Some(link) = link {
+        download_exam(state, link, "wav");
+    }
+}
+
 /// True while `run` is still the run whose results the state expects.
 fn still_current(state: Signal<ExamState>, run: u32) -> bool {
     state.peek().run == run
@@ -1116,10 +1186,10 @@ fn spend_view(spend: Option<ExamUsage>) -> Element {
         total.output_tokens,
         total.thinking_tokens
     );
-    // Voices appear only once something was spent on them.
+    // Voices and file names appear only once something was spent on them.
     let steps = UsageStep::ALL
         .into_iter()
-        .filter(|step| *step != UsageStep::Voices || !spend.voices.is_empty())
+        .filter(|step| step.always_listed() || !spend.step(*step).is_empty())
         .map(|step| format!("{} {}", step.label(), spend.step(step).cost_text()))
         .collect::<Vec<_>>()
         .join(", ");
@@ -1449,6 +1519,7 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
         if s.audio.track.is_some() {
             s.audio.stale = true;
         }
+        s.naming.new_draft();
     }
     let exam_id = state.peek().exam.id;
     let outcome = generate_passage(request, Some(exam_id)).await;
@@ -1472,6 +1543,19 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
         }
     };
     auto_save(state);
+    // The summary for the download names, once the last script of a run is
+    // in: one request for the exam, not one per part.
+    let (all_written, any_script) = {
+        let s = state.peek();
+        (
+            s.work.iter().all(|w| !w.script_step.is_running()),
+            s.exam.parts.iter().any(|p| p.passage.is_some()),
+        )
+    };
+    if all_written && any_script {
+        let request = exam_name(&state.peek());
+        prefetch(state, request.source, request.exam);
+    }
     usable
 }
 
@@ -1494,6 +1578,11 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
     };
     {
         let mut s = state.write();
+        // New questions for a part get a new download name; a part's first
+        // ones keep the name the exam's files may already have.
+        if !s.exam.parts[i].tasks.is_empty() {
+            s.naming.new_draft();
+        }
         s.exam.parts[i].tasks.clear();
         s.work[i].task_issues.clear();
         s.work[i].tasks_step = Step::Running;
@@ -1526,14 +1615,28 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
     }
     state.write().work[i].tasks_step = Step::Done;
     auto_save(state);
+    // Only the last part to finish sees the exam complete.
+    if prefs::auto_download() && state.peek().exam.is_complete() {
+        download_exam_docx(state);
+    }
 }
 
 /// Starts the exam recording job and waits for it.
 async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAudioRequest) {
-    state.write().audio = AudioWork {
-        step: Step::Running,
-        ..AudioWork::default()
-    };
+    {
+        let mut s = state.write();
+        // Recording again, or a new take of a part, gets a new download name.
+        // A first recording, or one replacing a recording a new script made
+        // stale (that script started a new name already), keeps the name.
+        let current = s.audio.track.is_some() && !s.audio.stale;
+        if current || request.parts.iter().any(|p| p.fresh) {
+            s.naming.new_draft();
+        }
+        s.audio = AudioWork {
+            step: Step::Running,
+            ..AudioWork::default()
+        };
+    }
     let exam_id = state.peek().exam.id;
     let numbers: Vec<u8> = request.parts.iter().map(|p| p.passage.part).collect();
     let started = start_exam_audio(request, Some(exam_id)).await;
@@ -1563,11 +1666,13 @@ async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAud
         s.audio.job_id = Some(started.job_id.clone());
     }
     auto_save(state);
-    fetch_exam_audio(state, run, started.job_id).await;
+    fetch_exam_audio(state, run, started.job_id, true).await;
 }
 
-/// Waits for a started exam job, reporting progress; also behind "Check again".
-async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String) {
+/// Waits for a started exam job, reporting progress; also behind "Check again"
+/// and an opened exam whose recording was still running. With `auto` the
+/// finished WAV is downloaded if the teacher asked for that.
+async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String, auto: bool) {
     state.write().audio.step = Step::Running;
     let outcome = wait_for_job(
         &job_id,
@@ -1608,6 +1713,9 @@ async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String
     };
     if ready {
         auto_save(state);
+        if auto && prefs::auto_download() {
+            download_exam_wav(state);
+        }
     } else {
         // A failed recording was still billed for what it read.
         spawn_forever(refresh_spend(state));

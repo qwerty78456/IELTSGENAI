@@ -5,7 +5,9 @@ use serde::{Deserialize, Deserializer, Serialize};
 use super::format::TaskSpec;
 
 /// Reads a missing *or null* field as its default. Language models write
-/// `"shared_options": null` as often as they leave the field out.
+/// `"shared_options": null` as often as they leave the field out, and an
+/// "empty `stem`" as `"stem": null`. What is then missing is the validator's
+/// to report (an empty question or option), never a parse failure.
 pub(crate) fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
 where
     D: Deserializer<'de>,
@@ -38,6 +40,7 @@ impl Tfng {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Choice {
     pub letter: char,
+    #[serde(default, deserialize_with = "null_as_default")]
     pub text: String,
 }
 
@@ -78,6 +81,7 @@ impl Answer {
 pub struct Item {
     pub number: u8,
     /// The statement, question or sentence stem; empty for summary gaps.
+    #[serde(default, deserialize_with = "null_as_default")]
     pub stem: String,
     /// Per-item options (multiple choice). Empty when the task shares options.
     #[serde(default, deserialize_with = "null_as_default")]
@@ -133,5 +137,30 @@ mod tests {
         )
         .unwrap();
         assert!(item.options.is_empty());
+    }
+
+    #[test]
+    fn null_or_missing_stems_and_option_texts_read_as_empty() {
+        // The item gemini-3.8-flash returned for a summary gap on 2026-10-06.
+        let item: Item = serde_json::from_str(
+            r#"{"number": 31, "stem": null, "options": [],
+                "answer": {"kind": "text", "value": ["sensors"]}, "evidence": "cheap sensors"}"#,
+        )
+        .unwrap();
+        assert_eq!(item.stem, "");
+        let item: Item = serde_json::from_str(
+            r#"{"number": 31, "answer": {"kind": "text", "value": ["sensors"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(item.stem, "");
+        let choice: Choice = serde_json::from_str(r#"{"letter": "A", "text": null}"#).unwrap();
+        assert_eq!(choice.text, "");
+        let missing: Choice = serde_json::from_str(r#"{"letter": "B"}"#).unwrap();
+        assert_eq!(missing.text, "");
+        // Written back as plain strings: saved exams keep their shape.
+        assert_eq!(
+            serde_json::to_string(&choice).unwrap(),
+            r#"{"letter":"A","text":""}"#
+        );
     }
 }

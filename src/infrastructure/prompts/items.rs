@@ -57,6 +57,8 @@ pub fn task_prompt(
            never copy sentences.\n\
          - Distractors must be plausible and drawn from the script's own content.\n\
          - `evidence` is a VERBATIM quotation from the script (10-25 words) that justifies the key.\n\
+         - An empty string is \"\" and an empty list is []; never write null for `stem`, `options`, `text` \
+           or `evidence`.\n\
          - Return ONLY a JSON object with this shape:\n\
          {{\"instruction\": string or null, \"shared_options\": [{{\"letter\": \"A\", \"text\": \"...\"}}], \
          \"summary\": string or null, \"items\": [{{\"number\": {}, \"stem\": \"...\", \
@@ -170,6 +172,75 @@ mod tests {
     }
 
     #[test]
+    fn null_stems_of_summary_gaps_are_accepted() {
+        use crate::domain::{TaskKind, WordLimit, validate_task};
+
+        // The shape gemini-3.8-flash returned for an HSG Part 4 summary
+        // completion block on 2026-10-06, which used to fail to parse.
+        let draft: TaskDraftDto = serde_json::from_str(
+            r#"{
+  "instruction": "Complete the summary below. Write NO MORE THAN ONE WORD AND/OR A NUMBER from the recording for each answer.",
+  "shared_options": [],
+  "summary": "Volunteers measure street noise with (31)______ placed on balconies.",
+  "items": [
+    { "number": 31, "stem": null, "options": null,
+      "answer": { "kind": "text", "value": ["sensors"] }, "evidence": "cheap sensors on their balconies" }
+  ]
+}"#,
+        )
+        .unwrap();
+        let spec = TaskSpec::new(
+            TaskKind::SummaryCompletion(WordLimit::words_or_number(1)),
+            31,
+            31,
+        );
+        let task = draft.into_task(spec);
+        assert_eq!(task.items[0].stem, "");
+        let issues = validate_task(&task, None);
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn a_null_stem_where_one_is_needed_is_an_issue_not_a_failure() {
+        use crate::domain::{TaskKind, WordLimit, has_errors, validate_task};
+
+        let draft: TaskDraftDto = serde_json::from_str(
+            r#"{"instruction": null, "shared_options": null, "summary": null,
+                "items": [{"number": 21, "stem": null, "options": [],
+                           "answer": {"kind": "text", "value": ["knee pain"]}, "evidence": "x"}]}"#,
+        )
+        .unwrap();
+        let spec = TaskSpec::new(TaskKind::ShortAnswer(WordLimit::words(2)), 21, 21);
+        let issues = validate_task(&draft.into_task(spec), None);
+        assert!(has_errors(&issues), "{issues:?}");
+        assert!(
+            issues.iter().any(|i| i.message.contains("Empty question")),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn a_null_option_text_is_an_issue_not_a_failure() {
+        use crate::domain::{TaskKind, has_errors, validate_task};
+
+        let draft: TaskDraftDto = serde_json::from_str(
+            r#"{"instruction": null, "summary": null,
+                "shared_options": [{"letter": "A", "text": null}, {"letter": "B", "text": "a park"},
+                                   {"letter": "C", "text": "a bridge"}],
+                "items": [{"number": 1, "stem": "The new path", "options": null,
+                           "answer": {"kind": "letters", "value": ["B"]}, "evidence": "x"}]}"#,
+        )
+        .unwrap();
+        let spec = TaskSpec::new(TaskKind::Matching { options: 3 }, 1, 1);
+        let issues = validate_task(&draft.into_task(spec), None);
+        assert!(has_errors(&issues), "{issues:?}");
+        assert!(
+            issues.iter().any(|i| i.message == "Option A is empty"),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
     fn question_prompts_quote_the_transcript() {
         use crate::domain::FormatId;
 
@@ -198,5 +269,6 @@ Speaker B: I'd like to |mhm| book a room.",
             "{prompt}"
         );
         assert!(!prompt.contains("<laugh>") && !prompt.contains("|mhm|"));
+        assert!(prompt.contains("never write null for `stem`"), "{prompt}");
     }
 }

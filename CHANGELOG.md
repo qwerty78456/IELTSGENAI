@@ -93,11 +93,11 @@ write it.***
 | `cargo test --features server --no-default-features` | **198/198**, 4 test chạy tay · 4 manual (0.8.1: 194; +4 cho `null` · for `null`) |
 | Bỏ phần sửa, chạy lại 4 test mới · New tests without the fix | **4/4 hỏng · fail**, như mong đợi · as they should |
 | Part 4 HSG thật trên server dev, cùng chủ đề đã hỏng · Real HSG Part 4 on the dev server, the topic that failed | script 562 từ · words, khối điền tóm tắt (26)–(35) đọc được · summary completion block parsed; 3 lỗi giới hạn từ của chính phần kiểm tra · 3 word-limit issues from the validator itself; **0,009 USD** |
-| Bản Windows 0.8.2 · Windows build | (sau khi build · after the build) |
-| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | (sau khi build · after the build) |
-| Bản Linux 0.8.2 · Linux build | (sau khi build · after the build) |
-| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | (sau khi build · after the build) |
-| Tiền Gemini tốn cho 0.8.2 · Gemini spend for 0.8.2 | (sau khi build · after the build) |
+| Bản Windows 0.8.2 · Windows build | `.exe` **9,4 MB** (9.393.152 byte, 0.8.1: 9.394.688); chỉ gọi DLL hệ thống của Windows · Windows system DLLs only |
+| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | ✅ đạt · passed; "không có key ở đâu" vẫn **không chạy được** trên máy build · "no key anywhere" still **not run** on the build host. Khối điền tóm tắt Part 4 HSG trên chính `.exe` đó · An HSG Part 4 summary-completion block on that EXE: đủ 10 ô (26)–(35), 0 lỗi · all 10 gaps (26)–(35), 0 issues, **0,0082 USD** |
+| Bản Linux 0.8.2 · Linux build | `.AppImage` **13,2 MB** (13.224.440 byte), build trong container Ubuntu 22.04 · built in an Ubuntu 22.04 container; fmt, check và · and 198 test chạy lại trong đó · re-run inside |
+| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | ✅ đạt cả hai · passed on both, user `nobody`, kể cả · including **khởi động khi không có key ở đâu · starting with no key anywhere** |
+| Tiền Gemini tốn cho 0.8.2 · Gemini spend for 0.8.2 | **0,017 USD**: hai lần sinh khối câu hỏi Part 4 HSG · two HSG Part 4 question runs (server dev · dev server 0,0088, `.exe` phát hành · release EXE 0,0082) (`docs/portable-verification-v0.8.2.md`) |
 
 ## [0.8.1] – 2026-10-06 — 📁 "Tên file nói lên nội dung, và tự tải về." · "File names that say what's inside, and save themselves."
 

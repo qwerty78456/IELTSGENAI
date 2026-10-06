@@ -170,11 +170,12 @@ ready.***
 | Từng bước: Script only → câu hỏi → ghi âm · Step by step: script → questions → recording | DOCX và WAV **cùng tên** · **same name** (sau khi sửa · after the fix) |
 | Trang Whole exam, HSG, 4 part, bật tự tải · Exam page, HSG, 4 parts, auto on | Part 4 lỗi câu hỏi → **0** file; "Regenerate questions" xong → **đúng 1** DOCX · Part 4 questions failed → **0** files; once regenerated → **exactly 1** DOCX |
 | Mở đề đã lưu, bật tự tải · Opening a saved exam, auto on | **0** file tự tải · auto downloads; tóm tắt hỏi sẵn nên DOCX tải tay ra trong < 150 ms · summary fetched on open, manual DOCX in < 150 ms |
-| Bản Windows 0.8.1 · Windows build | (sau khi build · after the build) |
-| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | (sau khi build · after the build) |
-| Bản Linux 0.8.1 · Linux build | (sau khi build · after the build) |
-| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | (sau khi build · after the build) |
-| Tiền Gemini tốn cho 0.8.1 · Gemini spend for 0.8.1 | (sau khi build · after the build) |
+| Bản Windows 0.8.1 · Windows build | `.exe` **9,4 MB** (9.394.688 byte, 0.8.0: 9.335.808); chỉ gọi DLL hệ thống của Windows, như 0.8.0 · Windows system DLLs only, as in 0.8.0 |
+| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | ✅ đạt · passed; "không có key ở đâu" vẫn **không chạy được** trên máy build (key nằm trong môi trường Windows) · "no key anywhere" still **not run** on the build host (the key is in the Windows environment). Tên file trên chính `.exe` đó · Names on that EXE: `HSG-Quoc-gia-Listening-Part1_Hanoi-Weekend-Trip-Student-Discussion_06-10-2026_16-34-16_script.txt`, 0,0039 USD |
+| Bản Linux 0.8.1 · Linux build | `.AppImage` **13,2 MB** (13.224.440 byte, 0.8.0: 13.183.480), build trong container Ubuntu 22.04 · built in an Ubuntu 22.04 container; fmt, check và · and 194 test chạy lại trong đó · re-run inside |
+| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | ✅ đạt cả hai · passed on both, user `nobody`, kể cả · including **khởi động khi không có key ở đâu · starting with no key anywhere** |
+| WASM release (chưa qua wasm-opt, vẫn crash trên Windows · not wasm-opt'd, it still crashes on Windows) | **4,21 MB** (0.8.0: 4,17 MB) |
+| Tiền Gemini tốn cho 0.8.1 · Gemini spend for 0.8.1 | **khoảng 0,19 USD · about $0.19**: thử đầu-cuối trên server dev 0,186 USD (ba bản ghi ngắn là phần lớn · three short recordings are most of it), `.exe` phát hành 0,0039 USD, probe 0,00005 USD; bảy lần tóm tắt Flash-Lite tổng cộng 0,0004 USD · seven Flash-Lite summaries $0.0004 in all (`docs/portable-verification-v0.8.1.md`) |
 
 ## [0.8.0] – 2026-10-05 — 🎙️ "Mỗi người một giọng, đúng giọng vùng miền."
 

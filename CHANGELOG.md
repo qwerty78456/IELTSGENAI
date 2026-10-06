@@ -3,6 +3,102 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.8.2] – 2026-10-06 — 🧩 "Một chữ `null` không còn làm hỏng cả khối câu hỏi." · "One `null` no longer sinks a whole question block."
+
+Khi thử 0.8.1, Part 4 của một đề HSG báo "Question generation failed" chỉ
+vì Gemini viết câu hỏi rỗng của một ô trống thành `null` thay vì `""`.
+**0.8.2 đọc được câu trả lời đó, và dặn Gemini đừng viết như vậy nữa.**
+*While 0.8.1 was being tested, Part 4 of an HSG exam reported "Question
+generation failed" only because Gemini wrote the empty stem of a gap as
+`null` instead of `""`. **0.8.2 reads that reply, and tells Gemini not to
+write it.***
+
+### English
+
+#### Fixed
+
+- **Gap questions no longer fail on `"stem": null`.** For summary
+  completion, note completion and multiple selection the items have no
+  question of their own, and Gemini sometimes wrote that empty stem as
+  `null`; the whole block then failed with "Question generation failed: …
+  invalid type: null, expected a string". A null or missing stem or option
+  text now reads as empty, the way empty option lists and evidence already
+  did. Nothing slips through: the validator still reports "Empty question"
+  where a question type needs a stem and "Option A is empty" for an option
+  without text, as issues beside the draft.
+- The question prompt gains one rule: an empty string is `""`, an empty list
+  is `[]`, never `null`.
+
+#### Inside
+
+- `Item.stem` and `Choice.text` (`src/domain/task.rs`) use the existing
+  `null_as_default`; saved exams read and write exactly as before.
+- Four tests: the reply that failed (an HSG Part 4 summary completion with
+  `"stem": null`), a short answer whose null stem becomes an "Empty question"
+  issue, a matching task whose null option text becomes "Option A is empty",
+  and stems and option texts that are missing altogether. Without the fix
+  all four fail.
+
+#### Known, for a later release
+
+- The validator does not check that note-completion notes contain every gap,
+  and options on question types that take none are printed but not checked.
+  Both are older than this release.
+
+#### Upgrading
+
+- Nothing to migrate.
+
+### Tiếng Việt
+
+#### Sửa lỗi
+
+- **Câu hỏi có ô trống không còn hỏng vì `"stem": null`.** Với dạng điền tóm
+  tắt, điền ghi chú và chọn nhiều đáp án, mỗi câu không có lời hỏi riêng, và
+  Gemini đôi khi viết lời hỏi rỗng đó thành `null`; cả khối câu hỏi khi đó báo
+  "Question generation failed: … invalid type: null, expected a string". Giờ
+  lời hỏi hay nội dung lựa chọn là `null` hoặc thiếu hẳn đều được đọc là rỗng,
+  như danh sách lựa chọn rỗng và trích dẫn đã được đọc từ trước. Không gì lọt
+  qua: phần kiểm tra vẫn báo "Empty question" ở dạng bài cần lời hỏi và
+  "Option A is empty" cho lựa chọn không có nội dung, thành lỗi hiện bên bản
+  nháp.
+- Prompt câu hỏi thêm một quy tắc: chuỗi rỗng là `""`, danh sách rỗng là
+  `[]`, không bao giờ `null`.
+
+#### 🧰 Bên trong
+
+- `Item.stem` và `Choice.text` (`src/domain/task.rs`) dùng `null_as_default`
+  sẵn có; đề đã lưu đọc và ghi đúng như cũ.
+- Bốn test: đúng câu trả lời đã hỏng (khối điền tóm tắt Part 4 HSG có
+  `"stem": null`), một câu trả lời ngắn có lời hỏi `null` thành lỗi "Empty
+  question", một bài nối có lựa chọn `null` thành lỗi "Option A is empty", và
+  lời hỏi, nội dung lựa chọn thiếu hẳn. Bỏ phần sửa đi thì cả bốn đều hỏng.
+
+#### Biết rồi, để bản sau
+
+- Phần kiểm tra chưa xem ghi chú của dạng điền ghi chú có đủ mọi ô trống
+  không, và lựa chọn ở dạng bài không cần lựa chọn được in ra mà không được
+  kiểm tra. Cả hai có từ trước bản này.
+
+#### ⚠️ Cần biết khi nâng cấp
+
+- Không cần chuyển đổi gì.
+
+### 📊 Con số biết nói · Numbers
+
+| Kiểm tra · Check | Kết quả · Result |
+|---|---|
+| `cargo fmt --check` app và launcher · app and launcher | sạch · clean |
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba · clean, **0 warnings** on all three |
+| `cargo test --features server --no-default-features` | **198/198**, 4 test chạy tay · 4 manual (0.8.1: 194; +4 cho `null` · for `null`) |
+| Bỏ phần sửa, chạy lại 4 test mới · New tests without the fix | **4/4 hỏng · fail**, như mong đợi · as they should |
+| Part 4 HSG thật trên server dev, cùng chủ đề đã hỏng · Real HSG Part 4 on the dev server, the topic that failed | script 562 từ · words, khối điền tóm tắt (26)–(35) đọc được · summary completion block parsed; 3 lỗi giới hạn từ của chính phần kiểm tra · 3 word-limit issues from the validator itself; **0,009 USD** |
+| Bản Windows 0.8.2 · Windows build | (sau khi build · after the build) |
+| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | (sau khi build · after the build) |
+| Bản Linux 0.8.2 · Linux build | (sau khi build · after the build) |
+| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | (sau khi build · after the build) |
+| Tiền Gemini tốn cho 0.8.2 · Gemini spend for 0.8.2 | (sau khi build · after the build) |
+
 ## [0.8.1] – 2026-10-06 — 📁 "Tên file nói lên nội dung, và tự tải về." · "File names that say what's inside, and save themselves."
 
 Ở 0.8.0, mỗi lần tải về giáo viên nhận `IELTS_Part1_paper.docx`,

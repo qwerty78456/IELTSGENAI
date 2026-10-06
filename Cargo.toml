@@ -1,6 +1,6 @@
 [package]
 name = "vmq_mvp"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["Trong-Nghia Be <benghia1st@gmail.com> & Vũ Mạnh Quân <taladinhcao@gmail.com>"]
 edition = "2024"
 

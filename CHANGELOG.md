@@ -3,6 +3,179 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.8.1] – 2026-10-06 — 📁 "Tên file nói lên nội dung, và tự tải về." · "File names that say what's inside, and save themselves."
+
+Ở 0.8.0, mỗi lần tải về giáo viên nhận `IELTS_Part1_paper.docx`,
+`HSG_exam_1a2b3c4d.wav`: mười file trong thư mục Downloads là mười cái tên
+không ai nhớ là đề nào. **Từ 0.8.1, tên file cho biết loại đề, nội dung và
+lúc tải, và có thể tự tải DOCX lẫn WAV ngay khi xong.**
+*In 0.8.0 every download was called `IELTS_Part1_paper.docx` or
+`HSG_exam_1a2b3c4d.wav`, so ten files in Downloads were ten names nobody could
+place. **From 0.8.1 a file's name tells the test, what it is about and when it
+was saved, and the DOCX and the WAV can save themselves as soon as they are
+ready.***
+
+### English
+
+#### What's new
+
+- **Download names that say what is inside.** Every DOCX, WAV and Markdown
+  download is named `<test type>_<five-word summary>_<DD-MM-YYYY_HH-MM-SS>`,
+  for example
+  `IELTS-Listening-Part2_Riverside-Community-Garden-Volunteer-Orientation_06-10-2026_16-18-29.docx`
+  (the Whole exam page leaves the part out:
+  `HSG-Quoc-gia-Listening_Urban-Environment-And-City-Life_06-10-2026_16-25-18.docx`).
+  The five words are written by `gemini-3.5-flash-lite` right after a script
+  is written, from the exam's theme and the topics of the parts that have a
+  script; they cost about $0.00005 a draft and show as "file names" in the
+  exam's spend line. The time is the browser's clock, day first. The DOCX and
+  the WAV of one draft share a name; new questions, a new recording or a new
+  take of something already made get a new time, a first recording keeps the
+  questions' name. Vietnamese letters lose their accents (`Hà Nội` becomes
+  `Ha-Noi`) and names are valid on Windows, macOS and Linux. If Gemini has not
+  answered within ten seconds, the file is named after the topics themselves.
+- **Download the DOCX and WAV automatically.** A tick box on both pages, off
+  by default and remembered by the browser (every tab follows it within two
+  seconds). With it on, the DOCX downloads as soon as the last question block
+  is written (of the part, or of the exam's last part, so exactly once per
+  exam) and the WAV as soon as the recording is ready, including after
+  "Check again". It can be ticked mid-run. Opening a saved exam never
+  downloads anything, not even a recording that finishes after it was opened.
+  Chrome and Edge ask once whether the site may download several files:
+  choose Allow.
+- New setting `GEMINI_SUMMARY_MODEL` (default `gemini-3.5-flash-lite`). The
+  summary request sends no `thinking_level`, so each model thinks at its own
+  default (minimal on Flash-Lite, a level 3.8 Flash refuses).
+
+#### Inside
+
+- `export/naming.rs` (pure: time stamp, accent folding, test type, summary
+  and fallback words, stem, file name), `ui/naming.rs` (one `DraftNaming` per
+  page: summaries kept with the topics they sum up, the stem fixed at a
+  draft's first download, a draft token so a late download never names a
+  newer draft, one download per file while it waits), `ui/prefs.rs`
+  (`localStorage`), `components/auto_download.rs`.
+- Server: `application::naming::summarize_topics`, `GeminiClient::generate_brief`
+  (the model named per call, no thinking level, 20 s, 1,024 output tokens,
+  same retries and meter), `prompts/summary.rs` (topics quoted as data and
+  capped), `UsageStep::Naming`, `Bucket::Naming` (30 a minute), a price for
+  3.5 Flash-Lite ($0.30 / $0.03 / $2.50 per million tokens, the same after
+  2027), ignored test `brief_live_probe`.
+- Downloads: the temporary link is attached to the page while it is clicked
+  and blob URLs are revoked after a minute, not at once; the WAV still goes
+  straight from `/audio/{job_id}` to disk. The player's WAV link became a
+  button that names the file first.
+
+#### Found while testing
+
+- The first real run on the part page stopped with a borrow panic: an
+  `if let` kept a read of the page state alive while the summary request
+  wrote to it. Fixed before release, and noted in `CLAUDE.md`.
+- A review of the change found that a first recording started a new name
+  (so the step-by-step DOCX and WAV differed), that a late summary for an
+  older exam could push out the current one, that the first download after
+  opening an exam waited for its summary, and that the exam's spend line was
+  not refreshed after a summary. All four fixed and checked in the browser.
+- Not fixed here: a summary-completion question block can come back with
+  `"stem": null` on an item, and that block then fails to parse ("Question
+  generation failed: … invalid type: null, expected a string"). Seen once on
+  HSG Part 4; "Regenerate questions" worked.
+
+#### Upgrading
+
+- Nothing to migrate. Saved exams open unchanged; "file names" appears in an
+  exam's spend line only once a summary has been made for it.
+- File names no longer carry the exam id; two downloads of the same draft in
+  the same second get the same name and the browser numbers the second.
+
+### Tiếng Việt
+
+#### Có gì mới
+
+- **Tên file tải về nói lên nội dung.** Mọi file DOCX, WAV và Markdown mang
+  tên `<loại đề>_<năm chữ tóm tắt>_<ngày-tháng-năm_giờ-phút-giây>`, ví dụ
+  `IELTS-Listening-Part2_Riverside-Community-Garden-Volunteer-Orientation_06-10-2026_16-18-29.docx`
+  (trang Whole exam bỏ phần Part:
+  `HSG-Quoc-gia-Listening_Urban-Environment-And-City-Life_06-10-2026_16-25-18.docx`).
+  Năm chữ do `gemini-3.5-flash-lite` viết ngay sau khi có script, từ chủ đề
+  chung của đề và chủ đề các part đã có script; mỗi bản nháp tốn khoảng
+  0,00005 USD, hiện ở mục "file names" trong dòng chi phí của đề. Thời gian
+  lấy theo đồng hồ của trình duyệt, ngày đứng trước. DOCX và WAV của cùng một
+  bản nháp có chung tên; viết lại câu hỏi, ghi âm lại hay New take thì có thời
+  gian mới, còn bản ghi đầu tiên giữ tên của bộ câu hỏi. Chữ tiếng Việt được
+  bỏ dấu (`Hà Nội` thành `Ha-Noi`), tên hợp lệ trên Windows, macOS và Linux.
+  Nếu sau 10 giây Gemini chưa trả lời, file được đặt tên theo chính các chủ đề.
+- **Tự động tải DOCX và WAV.** Ô **Download the DOCX and WAV automatically**
+  trên cả hai trang, mặc định tắt, trình duyệt nhớ lựa chọn (mọi tab theo
+  trong vòng 2 giây). Bật lên thì DOCX được tải ngay khi viết xong khối câu
+  hỏi cuối cùng (của part, hoặc của part cuối cùng trong đề, nên mỗi đề đúng
+  một lần), WAV được tải ngay khi bản ghi xong, kể cả sau "Check again". Có thể
+  bật giữa chừng. Mở một đề đã lưu không bao giờ tự tải gì, kể cả bản ghi xong
+  sau khi mở. Chrome và Edge hỏi một lần có cho trang tải nhiều file không:
+  chọn Cho phép.
+- Biến cấu hình mới `GEMINI_SUMMARY_MODEL` (mặc định `gemini-3.5-flash-lite`).
+  Yêu cầu tóm tắt không gửi `thinking_level`, nên model nghĩ ở mức mặc định
+  của nó (minimal với Flash-Lite, mức mà 3.8 Flash không nhận).
+
+#### 🧰 Bên trong
+
+- `export/naming.rs` (thuần: thời gian, bỏ dấu, loại đề, chữ tóm tắt và chữ dự
+  phòng, phần tên chung, tên file), `ui/naming.rs` (mỗi trang một
+  `DraftNaming`: bản tóm tắt đi kèm chủ đề nó tóm tắt, phần tên chung cố định
+  từ lần tải đầu của bản nháp, mã bản nháp để lượt tải muộn không đặt tên cho
+  bản nháp mới hơn, mỗi file chỉ tải một lần khi đang chờ tên),
+  `ui/prefs.rs` (`localStorage`), `components/auto_download.rs`.
+- Phía server: `application::naming::summarize_topics`,
+  `GeminiClient::generate_brief` (model chỉ định theo từng lần gọi, không
+  thinking level, 20 giây, 1.024 token ra, cùng cơ chế thử lại và đồng hồ chi
+  phí), `prompts/summary.rs` (chủ đề được trích như dữ liệu, có giới hạn),
+  `UsageStep::Naming`, `Bucket::Naming` (30 lần mỗi phút), giá cho 3.5
+  Flash-Lite (0,30 / 0,03 / 2,50 USD mỗi triệu token, không đổi sau 2027),
+  test chạy tay `brief_live_probe`.
+- Tải về: đường link tạm được gắn vào trang lúc bấm, blob URL được thu hồi sau
+  một phút thay vì ngay lập tức; WAV vẫn đi thẳng từ `/audio/{job_id}` xuống
+  đĩa. Link WAV của trình phát thành nút bấm để đặt tên trước khi tải.
+
+#### 🕵️ Hậu trường
+
+- Lần chạy thật đầu tiên trên trang part dừng vì lỗi mượn (borrow panic): một
+  `if let` giữ lượt đọc trạng thái trang trong khi yêu cầu tóm tắt ghi vào đó.
+  Đã sửa trước khi phát hành và ghi vào `CLAUDE.md`.
+- Một vòng review tìm ra: bản ghi đầu tiên tạo tên mới (nên DOCX và WAV làm
+  từng bước bị lệch tên), bản tóm tắt đến muộn của đề cũ có thể đẩy bản đang
+  dùng ra, lần tải đầu sau khi mở đề phải chờ tóm tắt, và dòng chi phí của đề
+  không cập nhật sau khi tóm tắt. Cả bốn đã sửa và thử lại trên trình duyệt.
+- Chưa sửa ở bản này: khối câu hỏi dạng điền tóm tắt (summary completion) đôi
+  khi trả về `"stem": null` cho một câu, khối đó không đọc được ("Question
+  generation failed: … invalid type: null, expected a string"). Gặp một lần ở
+  Part 4 HSG; bấm "Regenerate questions" là được.
+
+#### ⚠️ Cần biết khi nâng cấp
+
+- Không cần chuyển đổi gì. Đề đã lưu mở như cũ; mục "file names" chỉ hiện
+  trong dòng chi phí của đề khi đề đó đã có bản tóm tắt.
+- Tên file không còn chứa mã đề; hai lần tải cùng một file của cùng bản nháp
+  trong cùng một giây có cùng tên, trình duyệt tự đánh số file thứ hai.
+
+### 📊 Con số biết nói · Numbers
+
+| Kiểm tra · Check | Kết quả · Result |
+|---|---|
+| `cargo fmt --check` app và launcher · app and launcher | sạch · clean |
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba · clean, **0 warnings** on all three |
+| `cargo test --features server --no-default-features` | **194/194**, 4 test chạy tay · 4 manual (0.8.0: 181; +13: tên file, bỏ dấu, tem thời gian, giá Flash-Lite, prompt tóm tắt, yêu cầu không thinking level · names, accents, time stamp, Flash-Lite price, summary prompt, request without thinking level) |
+| `brief_live_probe` (key thật · real key) | `gemini-3.5-flash-lite`: 1,2 s, 120 token vào · in, 5 ra · out, 0 thinking, ≈ 0,00005 USD → "Cities Hotel And Science Museum" |
+| Trang part, IELTS Part 2, bật tự tải · Part page, IELTS Part 2, auto on | DOCX tự tải khi xong câu hỏi, WAV 9,4 MB tự tải khi xong bản ghi, **cùng tên** · DOCX on questions, 9.4 MB WAV on recording, **same name**; 5 nút tải tay dùng lại tên đó · 5 manual buttons reuse it; **1** yêu cầu Flash-Lite · Flash-Lite request (113 vào · in, 6 ra · out, 0,8 s) |
+| Tắt tự tải, viết lại câu hỏi · Auto off, new questions | 0 file tự tải · auto downloads; DOCX tải tay có thời gian mới, giữ năm chữ, không gọi Gemini thêm · manual DOCX gets a new time, same words, no new call |
+| Từng bước: Script only → câu hỏi → ghi âm · Step by step: script → questions → recording | DOCX và WAV **cùng tên** · **same name** (sau khi sửa · after the fix) |
+| Trang Whole exam, HSG, 4 part, bật tự tải · Exam page, HSG, 4 parts, auto on | Part 4 lỗi câu hỏi → **0** file; "Regenerate questions" xong → **đúng 1** DOCX · Part 4 questions failed → **0** files; once regenerated → **exactly 1** DOCX |
+| Mở đề đã lưu, bật tự tải · Opening a saved exam, auto on | **0** file tự tải · auto downloads; tóm tắt hỏi sẵn nên DOCX tải tay ra trong < 150 ms · summary fetched on open, manual DOCX in < 150 ms |
+| Bản Windows 0.8.1 · Windows build | (sau khi build · after the build) |
+| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | (sau khi build · after the build) |
+| Bản Linux 0.8.1 · Linux build | (sau khi build · after the build) |
+| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | (sau khi build · after the build) |
+| Tiền Gemini tốn cho 0.8.1 · Gemini spend for 0.8.1 | (sau khi build · after the build) |
+
 ## [0.8.0] – 2026-10-05 — 🎙️ "Mỗi người một giọng, đúng giọng vùng miền."
 
 Ở 0.7.1, giáo viên đặt ba người nói của Part 1 HSG là *Female, British

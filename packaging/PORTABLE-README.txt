@@ -1,4 +1,4 @@
-Listening Exam Generator 0.8.0
+Listening Exam Generator 0.8.1
 
 Windows 10/11 x64: run the EXE from a writable folder.
 Linux x86-64 (Ubuntu 22.04 or newer baseline): chmod +x the AppImage, then run it.
@@ -68,7 +68,7 @@ Missing configuration files are recreated; invalid files are never overwritten.
 Invalid ports/paths/settings stop startup; a missing key does not.
 
 If Linux FUSE is unavailable:
-APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.8.0-linux-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.8.1-linux-x86_64.AppImage
 Ctrl+C in this mode may return shell status 130 from the AppImage runtime,
 even after "Server stopped cleanly.", and may leave its temporary extraction.
 Alternatively, run the AppImage with --appimage-extract once, then run

@@ -240,13 +240,13 @@ minutes and then blocks new recordings.*
 | Review · Review | 4 agent phản biện thiết kế; mỗi phần code có agent soát riêng; review cuối 6 góc nhìn × 3 phiếu: **11 lỗi xác nhận, đã sửa cả 11** · 4 design critics; every unit reviewed by a separate agent; final review over 6 dimensions × 3 votes: **11 confirmed findings, all fixed** |
 | `dx serve` (proxy dev · dev proxy) | không thêm header chuyển tiếp: `/instance` 200, request là Local; `POST /instance/stop` từ chính trang bị chặn **403** · adds no forwarding header: `/instance` 200, Local; `POST /instance/stop` from the page itself **403** |
 | Server nhàn rỗi · Idle server (0.8.2, đo cho câu hỏi VPS · measured for the VPS question) | **17 MB** RAM; 400 trang SSR · SSR pages trong · in 0,41 s, **0,7 ms CPU/trang · per page** |
-| Bản Windows 0.9.0 · Windows build | (sau khi build · after the build) |
-| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | (sau khi build · after the build) |
-| Takeover thật trên `.exe` phát hành · Live takeover on the release EXE | (sau khi build · after the build) |
-| Bản Linux 0.9.0 · Linux build | (sau khi build · after the build) |
-| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | (sau khi build · after the build) |
-| Ô nhập key che `*` trên terminal Linux · Masked key prompt at a Linux terminal | (sau khi build · after the build) |
-| Tiền Gemini tốn cho 0.9.0 · Gemini spend for 0.9.0 | (sau khi build · after the build) |
+| Bản Windows 0.9.0 · Windows build | `.exe` **9,6 MB** (9.627.136 byte, 0.8.2: 9.393.152); chỉ gọi DLL hệ thống của Windows, thêm `iphlpapi` để biết tiến trình nào giữ cổng · Windows system DLLs only, plus `iphlpapi` to tell which process holds a port; vẫn không có · still no `user32`/`shell32` |
+| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | ✅ đạt, kể cả các kiểm tra mới · passed, new checks included (`/instance`, cổng tunnel · tunnel port, bản thứ hai · second copies, `POST /instance/stop`, cache, bản ghi dở dang · interrupted recordings); "không có key ở đâu" vẫn **không chạy được** trên máy build · "no key anywhere" still **not run** on the build host |
+| Takeover thật trên `.exe` phát hành · Live takeover on the release EXE | ✅ **4/4** trường hợp · cases: `y` dừng êm bản cũ · stops the old copy cleanly, Enter (N) thoát 0 · exits 0, bản không tương tác bị từ chối · a non-interactive copy is refused, takeover theo thư mục dữ liệu · data-folder takeover |
+| Bản Linux 0.9.0 · Linux build | `.AppImage` **13,4 MB** (13.412.856 byte, 0.8.2: 13.224.440), build trong container Ubuntu 22.04 · built in an Ubuntu 22.04 container; fmt, check và · and **264** test chạy lại trong đó · re-run inside (test chỉ cho Windows không biên dịch ở đó · Windows-only tests are not compiled there) |
+| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | ✅ đạt cả hai · passed on both, user `nobody`, kể cả · including **khởi động khi không có key ở đâu · starting with no key anywhere** |
+| Ô nhập key che `*` trên terminal Linux · Masked key prompt at a Linux terminal | ✅ **11/11** trên pseudo-terminal, Ubuntu 24.04 · on a pseudo-terminal: tắt echo, hiện `*`, key không lộ · echo off, `*` shown, key never shown; Enter để nhập sau · Enter defers to the browser; Ctrl+C thoát 130 và trả terminal về như cũ · Ctrl+C exits 130 and restores the terminal |
+| Tiền Gemini tốn cho 0.9.0 · Gemini spend for 0.9.0 | **0 USD**: không có lần gọi trả phí nào · no paid request (`docs/portable-verification-v0.9.0.md`) |
 
 ## [0.8.2] – 2026-10-06 — 🧩 "Một chữ `null` không còn làm hỏng cả khối câu hỏi." · "One `null` no longer sinks a whole question block."
 

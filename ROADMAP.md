@@ -1,9 +1,10 @@
 # ROADMAP — Máy chủ Windows luôn bật, mở ra Internet qua Cloudflare Tunnel
 
-Kế hoạch triển khai (dự kiến phát hành **0.9.0**): chạy app thành Windows
-service bằng NSSM, tự chạy lại sau khi khởi động lại máy, mất điện hay crash;
-mở cho giáo viên ngoài mạng qua Cloudflare Tunnel với domain
-`ielts-ai-master.co.uk`, có Cloudflare Access đứng trước.
+Kế hoạch triển khai: chạy app thành Windows service bằng NSSM, tự chạy lại sau
+khi khởi động lại máy, mất điện hay crash; mở cho giáo viên ngoài mạng qua
+Cloudflare Tunnel với domain `ielts-ai-master.co.uk`, có Cloudflare Access đứng
+trước. **0.9.0 (2026-10-07) phát hành phần sửa app (G1)**; installer service,
+gia cố `cloudflared` và lên sóng (G2–G5) đi ở bản sau.
 
 Lộ trình **sản phẩm** (MP3, đăng nhập, tạo lại một câu…) vẫn ở
 [`docs/architecture.md`](docs/architecture.md#roadmap-in-order). File này chỉ
@@ -11,7 +12,7 @@ theo dõi việc triển khai. Khi xong, mục 2 của lộ trình đó ("Authen
 or Cloudflare Access") được giải quyết một nửa: Access chặn người lạ, app vẫn
 chưa biết từng người dùng (xem B4).
 
-Cập nhật lần cuối: **2026-10-05**.
+Cập nhật lần cuối: **2026-10-07**.
 
 ---
 
@@ -23,13 +24,13 @@ cần tài khoản hoặc máy thật của bạn (dashboard Cloudflare, BIOS, q
 
 | Giai đoạn | Nội dung | Xong / Tổng | Trạng thái |
 |---|---|---|---|
-| G0 | Quyết định trước khi làm | 0 / 6 | ❓ |
-| G1 | Sửa app (bắt buộc trước khi mở ra Internet) | 0 / 4 | ⬜ |
+| G0 | Quyết định trước khi làm | 6 / 6 | ✅ |
+| G1 | Sửa app (bắt buộc trước khi mở ra Internet) | 7 / 8 | ✅ (A4 đo sau khi lên sóng) |
 | G2 | Đóng gói và cài Windows service (NSSM) | 0 / 7 | ⬜ |
 | G3 | Gia cố `cloudflared` đang chạy | 0 / 5 | ⬜ |
 | G4 | Mở app qua Tunnel + Access | 0 / 7 | ⬜ |
 | G5 | Máy luôn bật | 1 / 5 | 🔄 |
-| G6 | Phát hành 0.9.0 | 0 / 5 | ⬜ |
+| G6 | Phát hành 0.9.0 (phần app) | 5 / 5 | ✅ |
 
 Thứ tự bắt buộc: **G1 → G2 → G4**. Không bật route ở G4 khi G1-A1 chưa xong
 (xem lý do ở A1). G3 và G5 làm song song lúc nào cũng được, nhưng G3 nên xong
@@ -39,23 +40,28 @@ trước G4.
 
 | ID | Việc | Người | Phụ thuộc | Trạng thái | Ghi chú |
 |---|---|---|---|---|---|
-| Q1 | Chọn hostname cho app | PO | — | ❓ | `app.ielts-ai-master.co.uk` hay domain gốc |
-| Q2 | Danh sách email được vào, cách đăng nhập | PO | — | ❓ | One-time PIN và/hoặc Google |
-| Q3 | Dữ liệu nào mang sang service | PO | — | ❓ | `D:\IELTSGENAI\data`, `dist\data` hay bắt đầu trống |
-| Q4 | Giáo viên ở xa có cần Voice Design không | PO | — | ❓ | Mặc định: không (chỉ tại máy chủ). Nếu cần: B6 |
-| Q5 | Số phiên bản | PO | — | ❓ | Đề xuất 0.9.0 |
-| Q6 | Hãng/model bo mạch chủ | PO | — | ❓ | Để tìm đúng mục AC Power Recovery (M1) |
-| A1 | Quy tắc "máy cục bộ" theo từng request + cổng riêng cho tunnel | Dev | — | ⬜ | **Chặn G4** |
-| A2 | Job ghi âm bị bỏ dở khi server khởi động lại | Dev | — | ⬜ | |
-| A3 | `Cache-Control: private, no-store` cho audio và mẫu giọng | Dev | — | ⬜ | |
-| A4 | Theo dõi giới hạn 125 giây (lỗi 524) | Dev | A1 | ⬜ | Đo trước, sửa sau (B2) |
-| S1 | `packaging/install-service.ps1` (cài, nâng cấp, gỡ) | Dev | A1 | ⬜ | |
+| Q1 | Chọn hostname cho app | PO | — | ✅ | `app.ielts-ai-master.co.uk`. CNAME do route tunnel tự tạo (P3), không tạo tay |
+| Q2 | Danh sách email được vào, cách đăng nhập | PO | — | ✅ | Chỉ Cloudflare Access (One-time PIN), chưa làm đăng nhập trong app (B4) |
+| Q3 | Dữ liệu nào mang sang service | PO | — | ✅ | Bắt đầu trống (bỏ S5). Thiếu key thì hỏi người dùng (N1); đụng instance khác thì hỏi có tắt không (N2) |
+| Q4 | Giáo viên ở xa có cần Voice Design không | PO | — | ✅ | Có: tạo giọng mở cho người vào qua tunnel; xoá giọng vẫn chỉ tại máy (V1) |
+| Q5 | Số phiên bản | PO | — | ✅ | Chốt lúc phát hành |
+| Q6 | Hãng/model bo mạch chủ | PO | — | ✅ | Installer tự đọc và ghi comment vào `.env`; máy ở nhà là bo Gigabyte; VPS bỏ qua M1 |
+| A1 | Quy tắc "máy cục bộ" theo từng request + cổng riêng cho tunnel | Dev | — | ✅ | 0.9.0: `ingress` (Local / Published / Remote), `PUBLIC_PORT` + `PUBLIC_HOST` |
+| A2 | Job ghi âm bị bỏ dở khi server khởi động lại | Dev | — | ✅ | 0.9.0: thành failed lúc khởi động, chỉ khi giữ khoá thư mục dữ liệu |
+| A3 | `Cache-Control` cho audio và mẫu giọng | Dev | — | ✅ | 0.9.0: `private, no-cache` (không phải `no-store`: trình duyệt vẫn hỏi lại bằng 304, khỏi tải lại 87 MB) |
+| A4 | Theo dõi giới hạn 125 giây (lỗi 524) | Dev | P7 | ⬜ | Đo 2 tuần sau khi lên sóng, sửa sau (B2) |
+| V1 | Tạo giọng (Voice Design) cho người vào qua tunnel; xoá giọng chỉ tại máy | Dev | A1 | ✅ | 0.9.0; xoá giọng có bucket riêng `VoiceDelete` |
+| F1 | Cờ khởi động `--service NAME` (không hỏi, không mở trình duyệt) | Dev | — | ✅ | 0.9.0; dùng trong lệnh NSSM |
+| N1 | Thiếu key thì hỏi ngay trên console, ẩn ký tự, kiểm tra với Google, ghi `.env` | Dev | F1 | ✅ | 0.9.0: che `*`, tối đa 3 lần; không hỏi với `--service`, `--non-interactive`, session 0, `dx serve`; `.env` chỉ chủ file đọc được (NTFS) |
+| N2 | Cổng bị app khác của mình chiếm: hỏi [y/N] có tắt không; tắt service thì tự bật lại khi bản chạy tay thoát | Dev | A1, F1 | ✅ | 0.9.0; nhánh service chưa chạy thật (kiểm ở S6); bật lại chỉ khi người dùng chưa đăng xuất (B12) |
+| S1 | `packaging/install-service.ps1` (cài, nâng cấp, gỡ) | Dev | A1, F1 | ⬜ | Hỏi key ẩn ký tự, đọc phần cứng vào `.env`, cho người dùng tương tác quyền start/stop service (N2), ghi `PUBLIC_PORT` + `PUBLIC_HOST`, kiểm dải cổng bị Windows giữ (S8) |
 | S2 | `packaging/service-smoke.ps1` kiểm thử service thật | Dev | S1 | ⬜ | |
 | S3 | `docs/windows-service.md` | Dev | S1 | ⬜ | Tiếng Anh như các docs khác |
 | S4 | Xoá service cũ `VMQ-MVP` | PO | — | ⬜ | Cần quyền admin |
-| S5 | Chuyển dữ liệu sang `C:\ProgramData\ListeningExamGenerator` | PO + Dev | Q3, S1 | ⬜ | |
-| S6 | Cài service trên máy này và chạy S2 | PO + Dev | S1–S5 | ⬜ | |
-| S7 | Ghi kết quả vào `docs/service-verification-v0.9.0.md` | Dev | S6 | ⬜ | |
+| S5 | Chuyển dữ liệu sang `C:\ProgramData\ListeningExamGenerator` | PO + Dev | Q3, S1 | ⏸️ | Bỏ: service bắt đầu trống (Q3) |
+| S6 | Cài service trên máy này và chạy S2 | PO + Dev | S1–S4 | ⬜ | |
+| S7 | Ghi kết quả vào `docs/service-verification-v<bản>.md` | Dev | S6 | ⬜ | |
+| S8 | Đưa dải cổng động TCP về mặc định 49152–65535 | PO | — | ⬜ | **Chặn S6.** Máy này đang để từ 1024, nên Hyper-V/WinNAT giữ 7610–8109, gồm cả 8080 và 8081. Cần quyền admin và khởi động lại (lệnh ở G2) |
 | C1 | Cập nhật `cloudflared` ≥ 2026.7.3 | PO | — | ⬜ | Bản đang cài cũ hơn |
 | C2 | Đổi (rotate) token tunnel | PO | C1 | ⬜ | Token mới chỉ nằm trong file có ACL chặt |
 | C3 | Cài lại service `cloudflared` với token mới (token-file) | PO | C2 | ⬜ | |
@@ -63,21 +69,21 @@ trước G4.
 | C5 | (Tuỳ chọn) Ghi log `cloudflared` ra file | PO | C3 | ⬜ | |
 | P1 | Bật One-time PIN / Google trong Identity providers | PO | Q2 | ⬜ | |
 | P2 | Tạo Access application cho hostname | PO | Q1, Q2, P1 | ⬜ | **Trước P3** |
-| P3 | Thêm route Published application → `http://127.0.0.1:8081` | PO | A1, S6, P2 | ⬜ | Bật "Protect with Access" |
+| P3 | Thêm route Published application → `http://127.0.0.1:8081` | PO | A1, S6, P2 | ⬜ | Bật "Protect with Access"; `.env` có `PUBLIC_PORT=8081`, `PUBLIC_HOST=app.ielts-ai-master.co.uk` |
 | P4 | Chỉnh cài đặt zone | PO | — | ⬜ | Tắt Email Obfuscation, Rocket Loader, Bot Fight Mode |
 | P5 | Bật DNSSEC | PO | — | ⬜ | Có hiệu lực sau 1–2 ngày |
 | P6 | Bật cảnh báo Tunnel Health Alert | PO | — | ⬜ | Miễn phí |
 | P7 | Kiểm thử đầu-cuối từ điện thoại 4G | PO + Dev | P3, P4 | ⬜ | |
-| M1 | BIOS: Restore on AC Power Loss = Power On | PO | Q6 | ⬜ | |
+| M1 | BIOS: Restore on AC Power Loss = Power On | PO | Q6 | ⬜ | Bo Gigabyte: Settings → Platform Power → **AC BACK = Always On** (xem lại tên mục trên BIOS) |
 | M2 | Windows Update: Active hours trùng giờ dạy | PO | — | ⬜ | |
 | M3 | Thử Restart máy, không đăng nhập | PO + Dev | S6, C3 | ⬜ | |
 | M4 | Thử rút điện rồi cắm lại | PO | M1, M3 | ⬜ | |
 | M5 | Kiểm tra lại cài đặt nguồn | Dev | — | ✅ | Fast Startup tắt, sleep/hibernate = never (2026-10-05) |
-| R1 | Cập nhật tài liệu (README, `.env.example`, CLAUDE.md, AGENTS.md, architecture.md, portable.md) | Dev | A1–A3, S3 | ⬜ | |
-| R2 | CHANGELOG 0.9.0 với bảng "Con số biết nói" | Dev | M3, P7 | ⬜ | Tiếng Việt |
-| R3 | Kiểm tra phát hành (fmt, hai `cargo check`, tests, smoke portable) | Dev | A1–A3 | ⬜ | |
-| R4 | Nâng phiên bản trong `Cargo.toml` | Dev | Q5 | ⬜ | |
-| R5 | Commit / tag | Dev | R1–R4 | ⬜ | Chỉ khi PO đồng ý |
+| R1 | Cập nhật tài liệu (README, `.env.example`, CLAUDE.md, AGENTS.md, architecture.md, portable.md) | Dev | A1–A3 | ✅ | 0.9.0; phần service (S3) đi cùng installer |
+| R2 | CHANGELOG 0.9.0 với bảng "Con số biết nói" | Dev | R3 | ✅ | Song ngữ như các bản trước |
+| R3 | Kiểm tra phát hành (fmt, hai `cargo check`, tests, smoke portable) | Dev | A1–A3 | ✅ | `docs/portable-verification-v0.9.0.md` |
+| R4 | Nâng phiên bản trong `Cargo.toml` | Dev | Q5 | ✅ | 0.9.0 |
+| R5 | Commit / tag / GitHub release | Dev | R1–R4 | ✅ | PO yêu cầu 2026-10-07 |
 
 ---
 
@@ -144,6 +150,10 @@ Máy: **Windows 11 IoT Enterprise LTSC 2024**, build 26100. Không có sản ph�
 | D7 | **Access đứng trước app**, tạo Access application **trước** khi thêm route | App chưa có đăng nhập; mọi request đều tiêu tiền Gemini | Mở công khai rồi dựa vào rate limit |
 | D8 | Bật **"Protect with Access"** ở route | `cloudflared` tự kiểm JWT của Access trước khi chuyển request vào app: lớp bảo vệ thứ hai mà không cần code | Kiểm JWT trong app (để sau: B4) |
 | D9 | Service start type **Automatic** (không Delayed) | Lúc khởi động app không cần mạng, không gọi Google | Delayed auto start |
+| D10 | Mỗi request được xếp **Local / Published / Remote** (`infrastructure::ingress`); Published phải mang đúng `Host` trong `PUBLIC_HOST` | Bind loopback không còn nghĩa là "người ngồi tại máy" khi có tunnel; `Host`/`Origin`/`Sec-Fetch-Site` chặn trang web lạ và DNS rebinding | Chỉ dựa vào địa chỉ bind; chỉ dựa vào header của Cloudflare (trang web tự đặt được) |
+| D11 | Không có bước nâng quyền (UAC) để dừng service; thiếu quyền thì báo và dùng bản đang chạy | Bước nâng quyền làm ẩn cửa sổ console và khó đúng; installer (S1) sẽ cấp quyền start/stop | `ShellExecuteExW runas` (kéo user32/shell32 vào server.exe), PowerShell `-Verb RunAs` |
+| D12 | Bản chạy tay dừng service thì một PowerShell ẩn chờ nó thoát rồi bật lại service | Bật lại được cả khi bản chạy tay bị kill hay đóng cửa sổ | Bật lại trong chính app (đóng cửa sổ thì không kịp chạy) |
+| D13 | VPS nhỏ (1 vCPU / 2 GB) chạy Linux, không chạy Windows | Riêng Windows Server có giao diện đã cần 2 GB; app nhàn rỗi chỉ ~17 MB nhưng ghép bản ghi cả đề ước 250–350 MB | VPS Windows 2 GB |
 
 Khi nào xem lại D1: khi cài cho máy/trường khác, hoặc khi Defender/EDR chặn
 NSSM (Defender có mục `PUA:Win32/NSSM` từ 2023-08; NSSM không còn được bảo trì
@@ -152,6 +162,14 @@ từ 2017, file không được ký). Lúc đó làm B1.
 ---
 
 ## G1 — Sửa app
+
+**Đã làm trong 0.9.0.** Thiết kế cuối cùng nằm trong `docs/architecture.md`
+(mục *Request origin* và *Instances and takeover*) và CHANGELOG 0.9.0. Phần
+dưới là kế hoạch ban đầu; khác biệt chính sau hai vòng review: thêm luật
+`Host`/`Origin`/`Sec-Fetch-Site` cho request cục bộ; `PUBLIC_HOST` bắt buộc đi
+cùng `PUBLIC_PORT`; `Cache-Control: private, no-cache`; khoá thư mục dữ liệu
+(`instance.lock`) và `instance.json` có stop-token; PID của bản đang chạy phải
+đúng là tiến trình đang giữ cổng; không có bước nâng quyền (D11).
 
 ### A1. Quy tắc "máy cục bộ" theo từng request, cổng riêng cho tunnel
 
@@ -255,14 +273,31 @@ Việc ở 0.9.0: chỉ **đo**. Sau P7, theo dõi 2 tuần trong Cloudflare Ana
 
 ## G2 — Windows service
 
+### S8. Dải cổng động (làm trước khi cài service)
+
+Ngày 2026-10-07 máy này không bind được cổng 8080: dải cổng động TCP đang bắt
+đầu từ 1024 (mặc định của Windows là 49152), nên Hyper-V/WinNAT giữ các dải
+7610–8109 lúc khởi động, trong đó có 8080 và 8081. Kiểm tra bằng
+`netsh interface ipv4 show excludedportrange protocol=tcp` và
+`netsh int ipv4 show dynamicport tcp`. Sửa (PowerShell quyền admin, rồi khởi
+động lại máy):
+
+```powershell
+netsh int ipv4 set dynamic tcp start=49152 num=16384
+netsh int ipv6 set dynamic tcp start=49152 num=16384
+```
+
+Nếu không muốn đổi, chọn `PORT`/`PUBLIC_PORT` ngoài mọi dải đang bị giữ và để
+installer (S1) kiểm tra lại mỗi lần cài.
+
 ### Bố trí
 
 | Thứ | Vị trí / giá trị |
 |---|---|
 | Chương trình | `C:\Program Files\ListeningExamGenerator\server.exe`, `public\`, `RUST-DEPENDENCIES.txt`, lấy từ `target\dx\vmq_mvp\release\web\` do `packaging/build-windows.ps1` build (CRT tĩnh, console subsystem) |
 | Cấu hình và dữ liệu | `C:\ProgramData\ListeningExamGenerator\` gồm `.env`, `data\` (`jobs.db`, `audio\`, `logs\`, `voices.json`) |
-| Lệnh | `server.exe --config-dir C:\ProgramData\ListeningExamGenerator` (không `--portable`) |
-| `.env` | `IP=127.0.0.1`, `PORT=8080`, `PUBLIC_PORT=8081`, `DATA_DIR=./data`, `GEMINI_API_KEY=…`, `RUST_LOG=info` |
+| Lệnh | `server.exe --config-dir C:\ProgramData\ListeningExamGenerator --service ListeningExamGenerator` (không `--portable`) |
+| `.env` | `IP=127.0.0.1`, `PORT=8080`, `PUBLIC_PORT=8081`, `PUBLIC_HOST=app.ielts-ai-master.co.uk`, `DATA_DIR=./data`, `GEMINI_API_KEY=…`, `RUST_LOG=info` |
 | Tên service | `ListeningExamGenerator`, hiển thị "Listening Exam Generator" |
 | Tài khoản | `NT SERVICE\ListeningExamGenerator` |
 
@@ -407,6 +442,10 @@ Từ điện thoại dùng 4G (không chung mạng với máy chủ), trừ khi 
 
 ## G6 — Phát hành 0.9.0
 
+**Đã phát hành 2026-10-07** với phần sửa app (G1); xem CHANGELOG và
+`docs/portable-verification-v0.9.0.md`. Các bảng số về service, tunnel và tải
+WAV qua mạng (R2 ban đầu) chuyển sang bản có installer.
+
 - **R1 Tài liệu:**
   - `.env.example` và bảng cấu hình trong README: thêm `PUBLIC_PORT`.
   - README: mục "Run as a Windows service" và "Publish with Cloudflare Tunnel".
@@ -438,6 +477,11 @@ Từ điện thoại dùng 4G (không chung mạng với máy chủ), trừ khi 
 | B5 | UI nhận ra phiên Access hết hạn và bảo giáo viên tải lại trang | Giáo viên gặp lỗi khó hiểu sau P7-9 |
 | B6 | Cho một số email (admin, qua B4) được Voice Design từ xa | Q4 trả lời "có" |
 | B7 | Sao lưu hằng ngày `jobs.db` + `audio\` sang ổ khác hoặc đám mây (Task Scheduler + `sqlite3 .backup` hoặc dừng ngắn) | Ngay khi có đề quan trọng trên máy chủ: chỉ có một máy, hỏng ổ là mất hết |
+| B8 | Chế độ dev và prod tách bạch | PO nêu 2026-10-07 |
+| B9 | Ghép bản ghi cả đề thẳng ra file thay vì giữ cả trong RAM (đỉnh ước 250–350 MB mỗi bản ghi đề, `MAX_ACTIVE_JOBS = 10`) | Trước khi chạy trên VPS 2 GB |
+| B10 | Chạy `wasm-opt` trong container Linux (WASM 4,1 MB chưa tối ưu vì `wasm-opt` crash trên Windows) | Khi giáo viên mở lần đầu qua 4G thấy chậm |
+| B11 | Đo thật trên container 1 vCPU / 2 GB: RAM đỉnh và thời gian khi ghi một đề đầy đủ (khoảng 0,36 USD) | Chờ PO đồng ý |
+| B12 | Service tự bật lại cả khi người dùng đăng xuất sau khi đã dừng nó (watcher hiện là PowerShell trong phiên người dùng) | Nếu chuyện này xảy ra thật |
 
 ---
 
@@ -453,6 +497,9 @@ Từ điện thoại dùng 4G (không chung mạng với máy chủ), trừ khi 
 | Ổ đĩa đầy do audio | Thấp | Ghi âm lỗi | `AUDIO_RETENTION_HOURS`, `SPEECH_CACHE_HOURS`; theo dõi dung lượng `data\audio` |
 | Hỏng máy hoặc ổ | Thấp | Mất đề đã lưu | B7 |
 | Giới hạn Zero Trust Free (nghe nói 50 người, **chưa xác minh** trên tài liệu chính thức) | Thấp | Không thêm được người | Kiểm tra trước khi mời quá 40 người |
+| Windows giữ đúng cổng của app sau khi khởi động lại (dải cổng động từ 1024) | Đã xảy ra trên máy này | Service không bind được, NSSM thử lại mãi | S8 |
+| Người qua tunnel tạo giọng tốn tiền và chiếm chỗ trong 200 giọng của project | Thấp (đã có Access) | Tiền và chỗ | `Bucket::VoiceDesign` 5/phút; chỉ máy chủ xoá được |
+| Bản 0.8.x dùng chung thư mục dữ liệu với 0.9 | Thấp | 0.9 đánh dấu failed bản ghi đang làm của 0.8 | Tắt bản cũ trước khi chạy 0.9 trên cùng thư mục (ghi trong CHANGELOG) |
 
 ---
 
@@ -461,6 +508,8 @@ Từ điện thoại dùng 4G (không chung mạng với máy chủ), trừ khi 
 | Ngày | Việc | Kết quả |
 |---|---|---|
 | 2026-10-05 | Khảo sát máy (NSSM, `cloudflared`, service cũ, nguồn điện) và code (khởi động, cấu hình, quy tắc loopback, job ghi âm); tra tài liệu NSSM, Cloudflare Tunnel và Access | Ra kế hoạch này; tìm ra A1 (bắt buộc), A2, cần cập nhật `cloudflared` (C1–C3) |
+| 2026-10-06 | PO trả lời Q1–Q6; phân tích chạy trên VPS 1 vCPU / 2 GB (app nhàn rỗi 17 MB RAM, 0,7 ms CPU mỗi trang) | Hostname `app.`, chỉ Access, bắt đầu trống; thêm N1, N2, V1; VPS nhỏ nên chạy Linux (D13, B9–B11) |
+| 2026-10-07 | Thiết kế bước 1, 4 agent phản biện; cài đặt 6 phần, mỗi phần có agent soát riêng; review cuối 6 góc nhìn × 3 phiếu (11 lỗi xác nhận, đã sửa); smoke Windows và Linux, takeover thật trên EXE portable, `dx serve`; phát hiện dải cổng động (S8) | Phát hành 0.9.0 (G1) |
 
 ---
 

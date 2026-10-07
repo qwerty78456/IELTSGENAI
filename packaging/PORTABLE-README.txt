@@ -1,4 +1,4 @@
-Listening Exam Generator 0.8.2
+Listening Exam Generator 0.9.0
 
 Windows 10/11 x64: run the EXE from a writable folder.
 Linux x86-64 (Ubuntu 22.04 or newer baseline): chmod +x the AppImage, then run it.
@@ -100,7 +100,7 @@ asks for it, or the browser does). PUBLIC_PORT without PUBLIC_HOST stops
 startup.
 
 If Linux FUSE is unavailable:
-APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.8.2-linux-x86_64.AppImage
+APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.9.0-linux-x86_64.AppImage
 Ctrl+C in this mode may return shell status 130 from the AppImage runtime,
 even after "Server stopped cleanly.", and may leave its temporary extraction.
 Alternatively, run the AppImage with --appimage-extract once, then run

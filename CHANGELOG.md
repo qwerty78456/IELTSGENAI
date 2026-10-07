@@ -3,6 +3,251 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.9.0] – 2026-10-07 — 🌐 "Sẵn sàng ra Internet qua Cloudflare Tunnel, và biết mình đang chạy ở đâu." · "Ready for the internet through Cloudflare Tunnel, and aware of the copy already running."
+
+Đến 0.8.2, app coi "server bind vào 127.0.0.1" là "người dùng đang ngồi tại
+máy". Đặt Cloudflare Tunnel trước nó thì `cloudflared` cũng gọi vào
+127.0.0.1, nên ai trên Internet cũng được nhập API key, tạo và xoá giọng trong
+project Google của chủ máy. **Từ 0.9.0, app xét từng request: máy này, qua
+tunnel, hay nơi khác; có cổng riêng cho tunnel; hỏi key ngay trên console khi
+thiếu; và khi mở thêm một bản thì hỏi có tắt bản đang chạy (kể cả Windows
+service) hay dùng luôn bản đó.** Bản ghi âm bị cắt ngang vì tắt server không
+còn treo 45 phút rồi chặn luôn việc ghi âm mới.
+*Up to 0.8.2 the app took "the server listens on 127.0.0.1" to mean "the user
+sits at this computer". With Cloudflare Tunnel in front, `cloudflared` also
+connects to 127.0.0.1, so anyone on the internet could enter an API key and
+design or delete voices in the owner's Google project. **From 0.9.0 the app
+judges every request (this computer, the tunnel, or elsewhere), has a port of
+its own for the tunnel, asks for a missing key at the console, and when a
+second copy starts it asks whether to stop the running one (a Windows service
+included) or use it.** A recording cut off by a stop no longer hangs for 45
+minutes and then blocks new recordings.*
+
+### English
+
+#### What's new
+
+- **Who may do what, decided per request.** A request is *Local* (this
+  computer, on the main port), *Published* (through Cloudflare Tunnel, on
+  `PUBLIC_PORT` with a `Host` named in `PUBLIC_HOST`) or *Remote* (anything
+  else). Entering an API key in the browser and deleting designed voices need
+  a Local request; designing a voice works for Local and Published. A request
+  is never Local when it carries forwarding headers (`cf-connecting-ip`,
+  `x-forwarded-for`, `forwarded`, `via`, …), a `Host` or `Origin` that is not
+  this computer, or `Sec-Fetch-Site: cross-site`, so web pages, DNS rebinding
+  and a misrouted proxy cannot borrow the owner's rights. On a `0.0.0.0` or LAN
+  bind every request is Remote, as before.
+- **A port for Cloudflare Tunnel.** `PUBLIC_PORT=8081` opens a second listener
+  on the same address; `PUBLIC_HOST=app.example.com` (required with it) names
+  the tunnel hostname, so only requests for that name count as Published. The
+  route in Cloudflare points to `http://127.0.0.1:8081`; any other reverse
+  proxy must use `PUBLIC_PORT` too, never the main port.
+- **The console asks for a missing key.** When no `GEMINI_API_KEY` is in the
+  environment, the Windows environment or `.env`, an interactive run asks
+  "Paste your Gemini API key (shown as *)", checks it with Google for free and
+  saves it in `.env`, readable by its owner only (0600 on Linux, an
+  owner/SYSTEM/Administrators ACL on NTFS). Three tries; Enter alone leaves it
+  to the browser form on this computer. Never asked with `--service`,
+  `--non-interactive`, in Windows session 0 or under `dx serve`.
+- **A second copy asks before it fights for the port.** If this app already
+  holds the port or the data folder, an interactive run says so and asks
+  "Stop it and start this copy instead? [y/N]". *N* (the default) opens the
+  browser to the running copy and exits. *y* asks a console copy to stop
+  (`POST /instance/stop` with the token from its `instance.json`) and ends it
+  after 10 s if it does not; a Windows service is stopped through the service
+  manager and started again by a hidden watcher as soon as this copy exits,
+  while the user stays signed in. Nothing is stopped unless the process is the
+  one listening on that port and runs the same program. Non-interactive runs
+  still fail, now naming the running copy ("Cannot listen … already running
+  there").
+- **`--service NAME`** for running under NSSM: no prompts, no browser, and the
+  copy reports itself as that Windows service.
+- **`GET /instance`** answers Local requests with the app, version, PID and
+  folders of the running copy (no secret); every other request gets 404.
+- **Recordings cut off by a stop fail at the next start** with "The server
+  stopped before this recording was finished. Make the recording again.",
+  so the page stops waiting at once.
+
+#### Fixed
+
+- Behind a tunnel or another reverse proxy on 127.0.0.1, internet users were
+  treated as this computer (browser key entry, voice design and deletion).
+- A recording interrupted by a stop stayed "running" for up to 45 minutes,
+  counted towards the limit of 10 recordings at a time until it was purged
+  (forever with `AUDIO_RETENTION_HOURS=0` or for a saved exam), and the
+  library showed it as running.
+- A web page open in the teacher's browser could send a plain POST to
+  `127.0.0.1:8080` and act as this computer.
+- A refused key entry, design or deletion no longer uses up the rate limit
+  first; deleting has its own limit (`Bucket::VoiceDelete`), so designs made
+  through the tunnel cannot block it.
+- `docker compose stop` (SIGTERM) now stops the server cleanly instead of
+  waiting 10 s for a kill; open downloads get at most 5 s.
+- A key saved with "Remember" was readable by other users of the computer
+  when the folder allowed it.
+
+#### Inside
+
+- New `infrastructure::ingress` (the classification), `listeners` (bind,
+  serve two listeners, one shutdown signal), `instance` (lock, `instance.json`,
+  routes, probe, takeover, Windows and `/proc` helpers) and `console` (masked
+  input, [y/N], Ctrl+C restores the console). `bootstrap` became `prepare` and
+  `finish`, so the lock and the ports are taken before the key is asked for.
+- `DATA_DIR/instance.lock` is held for the whole process (`File::try_lock`,
+  Rust **1.89+**); the interrupted-job sweep runs only while holding it.
+- `/audio` and `/voice-sample` answer with `Cache-Control: private, no-cache`.
+- New dependencies: `rpassword` (masked input), `windows-sys` features for the
+  service manager, the TCP listener table and process control, `libc` on Unix.
+  server.exe still imports no user32, shell32 or gdi32.
+- 271 unit tests (0.8.2: 198); `smoke.py` adds `/instance`, the published
+  port, second copies, the stop request, caching and interrupted recordings.
+
+#### Known, for a later release
+
+- The installer for the Windows service (`install-service.ps1`), giving
+  teachers the right to stop and start it, and the tunnel go-live are the next
+  steps (see `ROADMAP.md`). Stopping a real service from a manual copy has
+  only been tested with unit tests and the watcher script.
+- The restart watcher lives in the user's session: after signing out, a
+  stopped service starts again only at the next boot.
+- On FAT/exFAT drives `.env` cannot be restricted; a note is printed.
+- The masked prompt was tested at a Linux terminal; on Windows only through
+  tests, because the build machine has a key in its Windows environment.
+- Text steps behind the tunnel may hit Cloudflare's 125-second limit (524)
+  when Google is slow; to be measured after going live.
+
+#### Upgrading
+
+- `.env.example` now uses `IP=127.0.0.1`; Docker still sets `0.0.0.0` itself.
+- `PUBLIC_PORT` without `PUBLIC_HOST` stops startup with a clear message.
+- Stop copies of 0.8.2 or earlier that use the same data folder before
+  starting 0.9.0: they take no lock, so their unfinished recordings would be
+  marked failed.
+- Scheduled tasks and other unattended starts should pass
+  `--non-interactive --no-open` (session 0 is detected on its own).
+- Building from source needs Rust 1.89 or newer.
+
+### Tiếng Việt
+
+#### Có gì mới
+
+- **Ai được làm gì, xét theo từng request.** Request là *Local* (chính máy
+  này, cổng chính), *Published* (qua Cloudflare Tunnel, vào `PUBLIC_PORT` với
+  `Host` có trong `PUBLIC_HOST`) hoặc *Remote* (mọi trường hợp khác). Nhập API
+  key trên trình duyệt và xoá giọng thiết kế chỉ được với request Local; tạo
+  giọng được cả Local và Published. Request không bao giờ là Local khi mang
+  header chuyển tiếp (`cf-connecting-ip`, `x-forwarded-for`, `forwarded`,
+  `via`…), có `Host` hoặc `Origin` không phải máy này, hay
+  `Sec-Fetch-Site: cross-site`; nhờ vậy trang web lạ, DNS rebinding hay proxy
+  trỏ nhầm không mượn được quyền của chủ máy. Bind `0.0.0.0` hoặc IP mạng LAN
+  thì mọi request là Remote, như trước.
+- **Cổng riêng cho Cloudflare Tunnel.** `PUBLIC_PORT=8081` mở thêm một cổng
+  trên cùng địa chỉ; `PUBLIC_HOST=app.example.com` (bắt buộc đi kèm) là tên
+  miền của tunnel, chỉ request mang đúng tên đó mới là Published. Route trên
+  Cloudflare trỏ vào `http://127.0.0.1:8081`; reverse proxy khác cũng phải
+  dùng `PUBLIC_PORT`, không bao giờ cổng chính.
+- **Thiếu key thì console hỏi.** Không có `GEMINI_API_KEY` trong biến môi
+  trường, môi trường Windows hay `.env` thì lần chạy có console hỏi "Paste your
+  Gemini API key (shown as *)", kiểm tra miễn phí với Google rồi lưu vào `.env`
+  chỉ chủ file đọc được (0600 trên Linux, ACL chủ file/SYSTEM/Administrators
+  trên NTFS). Ba lần thử; bấm Enter để nhập sau trên trình duyệt của máy này.
+  Không bao giờ hỏi khi có `--service`, `--non-interactive`, ở session 0 của
+  Windows hay dưới `dx serve`.
+- **Mở thêm một bản thì hỏi trước.** App đã chạy và giữ cổng hoặc thư mục dữ
+  liệu thì lần chạy có console báo và hỏi "Stop it and start this copy
+  instead? [y/N]". *N* (mặc định) mở trình duyệt vào bản đang chạy rồi thoát.
+  *y* thì nhờ bản chạy bằng console tự dừng (`POST /instance/stop` với token
+  trong `instance.json` của nó), quá 10 giây thì kết thúc nó; với Windows
+  service thì dừng qua Service Manager, và một tiến trình ẩn bật lại service
+  ngay khi bản chạy tay thoát (nếu người dùng chưa đăng xuất). Không dừng gì
+  nếu tiến trình kia không đúng là chương trình này và không đúng là tiến
+  trình đang giữ cổng. Lần chạy không có console vẫn thất bại, nhưng giờ nói
+  rõ bản nào đang chạy ("Cannot listen … already running there").
+- **`--service NAME`** để chạy dưới NSSM: không hỏi, không mở trình duyệt, tự
+  khai là Windows service tên đó.
+- **`GET /instance`** chỉ trả lời request Local: app, phiên bản, PID và thư mục
+  của bản đang chạy (không có gì bí mật); request khác nhận 404.
+- **Bản ghi bị cắt vì tắt server thành lỗi ở lần khởi động sau**: "The server
+  stopped before this recording was finished. Make the recording again.", nên
+  trang thôi chờ ngay.
+
+#### Sửa lỗi
+
+- Sau tunnel hay reverse proxy khác trên 127.0.0.1, người dùng Internet được
+  coi là chính máy này (nhập key, tạo và xoá giọng).
+- Bản ghi bị tắt ngang ở trạng thái "đang chạy" tới 45 phút, chiếm chỗ trong
+  giới hạn 10 bản ghi cùng lúc cho tới khi bị dọn (không bao giờ nếu
+  `AUDIO_RETENTION_HOURS=0` hoặc là đề đã lưu), và thư viện đề vẫn ghi "đang
+  chạy".
+- Một trang web mở trong trình duyệt của giáo viên có thể gửi POST tới
+  `127.0.0.1:8080` và được coi như chính máy này.
+- Nhập key, tạo hay xoá giọng bị từ chối không còn tiêu lượt giới hạn trước;
+  xoá giọng có giới hạn riêng (`Bucket::VoiceDelete`), nên tạo giọng qua tunnel
+  không chặn được việc xoá.
+- `docker compose stop` (SIGTERM) giờ dừng server êm thay vì chờ 10 giây rồi
+  bị kill; tải file đang dở được chờ tối đa 5 giây.
+- Key lưu bằng "Remember" có thể bị người dùng khác trên máy đọc nếu thư mục
+  cho phép.
+
+#### 🧰 Bên trong
+
+- Module mới `infrastructure::ingress` (phân loại request), `listeners` (bind,
+  chạy hai cổng, một tín hiệu tắt), `instance` (khoá, `instance.json`, route,
+  dò bản đang chạy, takeover, phần Windows và `/proc`) và `console` (nhập che
+  ký tự, [y/N], Ctrl+C trả console về như cũ). `bootstrap` tách thành
+  `prepare` và `finish`, để khoá và cổng được giữ trước khi hỏi key.
+- `DATA_DIR/instance.lock` được giữ suốt đời tiến trình (`File::try_lock`, Rust
+  **1.89+**); việc đánh dấu bản ghi dở dang chỉ chạy khi đang giữ khoá đó.
+- `/audio` và `/voice-sample` trả `Cache-Control: private, no-cache`.
+- Dependency mới: `rpassword` (nhập che ký tự), các feature `windows-sys` cho
+  Service Manager, bảng cổng TCP đang nghe và điều khiển tiến trình, `libc`
+  trên Unix. server.exe vẫn không gọi user32, shell32 hay gdi32.
+- 271 unit test (0.8.2: 198); `smoke.py` thêm `/instance`, cổng tunnel, bản
+  thứ hai, yêu cầu dừng, cache và bản ghi dở dang.
+
+#### Biết rồi, để bản sau
+
+- Installer cho Windows service (`install-service.ps1`), cấp cho giáo viên
+  quyền dừng và bật service, và việc đưa tunnel lên sóng là bước tiếp theo
+  (xem `ROADMAP.md`). Dừng một service thật từ bản chạy tay mới chỉ được kiểm
+  bằng unit test và script của tiến trình bật lại.
+- Tiến trình bật lại service sống trong phiên của người dùng: đăng xuất rồi
+  thì service đã dừng chỉ chạy lại ở lần khởi động máy sau.
+- Trên ổ FAT/exFAT không giới hạn được quyền đọc `.env`; app in một dòng nhắc.
+- Ô nhập key che ký tự đã được thử ở terminal Linux; trên Windows chỉ qua
+  test, vì máy build có key trong môi trường Windows.
+- Qua tunnel, bước sinh chữ có thể chạm giới hạn 125 giây của Cloudflare (lỗi
+  524) khi Google chậm; sẽ đo sau khi lên sóng.
+
+#### ⚠️ Cần biết khi nâng cấp
+
+- `.env.example` giờ dùng `IP=127.0.0.1`; Docker vẫn tự đặt `0.0.0.0`.
+- Có `PUBLIC_PORT` mà thiếu `PUBLIC_HOST` thì app báo rõ và không khởi động.
+- Tắt các bản 0.8.2 trở về trước đang dùng cùng thư mục dữ liệu trước khi chạy
+  0.9.0: chúng không giữ khoá, nên bản ghi đang làm dở của chúng sẽ bị đánh
+  dấu lỗi.
+- Task Scheduler và các kiểu khởi động không người trông nên thêm
+  `--non-interactive --no-open` (session 0 thì app tự nhận ra).
+- Build từ mã nguồn cần Rust 1.89 trở lên.
+
+### 📊 Con số biết nói · Numbers
+
+| Kiểm tra · Check | Kết quả · Result |
+|---|---|
+| `cargo fmt --check` app và launcher · app and launcher | sạch · clean |
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba · clean, **0 warnings** on all three |
+| `cargo test --features server --no-default-features` | **271/271** trên Windows, 5 test chạy tay · 5 manual (0.8.2: 198) |
+| Review · Review | 4 agent phản biện thiết kế; mỗi phần code có agent soát riêng; review cuối 6 góc nhìn × 3 phiếu: **11 lỗi xác nhận, đã sửa cả 11** · 4 design critics; every unit reviewed by a separate agent; final review over 6 dimensions × 3 votes: **11 confirmed findings, all fixed** |
+| `dx serve` (proxy dev · dev proxy) | không thêm header chuyển tiếp: `/instance` 200, request là Local; `POST /instance/stop` từ chính trang bị chặn **403** · adds no forwarding header: `/instance` 200, Local; `POST /instance/stop` from the page itself **403** |
+| Server nhàn rỗi · Idle server (0.8.2, đo cho câu hỏi VPS · measured for the VPS question) | **17 MB** RAM; 400 trang SSR · SSR pages trong · in 0,41 s, **0,7 ms CPU/trang · per page** |
+| Bản Windows 0.9.0 · Windows build | (sau khi build · after the build) |
+| `smoke.py` trên chính file `.exe` phát hành · on the release EXE | (sau khi build · after the build) |
+| Takeover thật trên `.exe` phát hành · Live takeover on the release EXE | (sau khi build · after the build) |
+| Bản Linux 0.9.0 · Linux build | (sau khi build · after the build) |
+| `smoke.py` trên AppImage, Ubuntu 22.04 và 24.04 sạch · on the AppImage, clean Ubuntu 22.04 and 24.04 | (sau khi build · after the build) |
+| Ô nhập key che `*` trên terminal Linux · Masked key prompt at a Linux terminal | (sau khi build · after the build) |
+| Tiền Gemini tốn cho 0.9.0 · Gemini spend for 0.9.0 | (sau khi build · after the build) |
+
 ## [0.8.2] – 2026-10-06 — 🧩 "Một chữ `null` không còn làm hỏng cả khối câu hỏi." · "One `null` no longer sinks a whole question block."
 
 Khi thử 0.8.1, Part 4 của một đề HSG báo "Question generation failed" chỉ

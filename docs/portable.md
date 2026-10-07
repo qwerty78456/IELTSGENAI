@@ -98,7 +98,7 @@ Use Rust 1.92.0, wasm32-unknown-unknown, Dioxus CLI 0.7.9, and Python 3.
 Windows (MSVC build tools installed):
 
     pwsh -NoProfile -File packaging/build-windows.ps1
-    python packaging/smoke.py dist/listening-exam-generator-0.8.2-windows-x64.exe
+    python packaging/smoke.py dist/listening-exam-generator-0.9.0-windows-x64.exe
 
 The Windows server and packaging launcher statically link the C runtime.
 The launcher embeds only the server, public assets, and dependency notices,

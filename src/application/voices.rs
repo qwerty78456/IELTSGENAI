@@ -8,9 +8,11 @@
 //! server no longer has) still records with distinct, fitting voices.
 //!
 //! Designed voices live in the Google project of the API key. Anyone who
-//! reaches the server may list and use them; creating or deleting one changes
-//! the operator's project, so it is allowed only on a loopback bind (the rule
-//! of `settings::local_server`), and only voices this app made are deleted.
+//! reaches the server may list and use them. Creating one (a paid request)
+//! is allowed on the server's own computer and through the app's internet
+//! address (Cloudflare Tunnel, `PUBLIC_PORT`); deleting one only on the
+//! server's own computer, and only voices this app made. The request's origin
+//! comes from `infrastructure::ingress`.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -54,13 +56,15 @@ pub struct VoiceSample {
 pub struct DesignedVoice {
     pub voice: Voice,
     pub sample: VoiceSample,
+    /// The request came from the server's own computer, which may delete it.
+    pub deletable: bool,
 }
 
 /// One designed voice of the project, and whether this server may delete it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignedVoiceRow {
     pub voice: Voice,
-    /// Made by this app, and this server is local.
+    /// Made by this app, and the request came from the server's own computer.
     pub deletable: bool,
 }
 
@@ -68,16 +72,25 @@ pub struct DesignedVoiceRow {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DesignedVoices {
     pub voices: Vec<DesignedVoiceRow>,
-    /// The server is local (loopback), so voices may be designed and deleted.
+    /// The request came from the server's own computer or through the
+    /// tunnel, so new voices may be designed.
     pub can_design: bool,
 }
 
-/// Why designing or deleting a voice is refused on this server, if it is.
+/// Why designing a voice is refused, if it is. `allowed` is whether the
+/// request came from the server's own computer or through the tunnel.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub fn design_refusal(local: bool) -> Option<&'static str> {
-    (!local).then_some(
-        "This server is reachable from other computers, so it does not design or delete voices; do that in a copy of the app running on your own computer.",
+pub fn design_refusal(allowed: bool) -> Option<&'static str> {
+    (!allowed).then_some(
+        "Voices can be designed only on the server's own computer or through the app's internet address (Cloudflare Tunnel).",
     )
+}
+
+/// Why deleting a designed voice is refused, if it is. `local` is whether
+/// the request came from the server's own computer.
+#[cfg_attr(not(feature = "server"), allow(dead_code))]
+pub fn delete_refusal(local: bool) -> Option<&'static str> {
+    (!local).then_some("Designed voices can be deleted only on the server's own computer.")
 }
 
 /// The voice catalogue (built-in pools plus `voices.json` overrides). Free:
@@ -148,17 +161,19 @@ pub async fn voice_preview(
 /// Designs a voice from the teacher's description (Voice Design) in the
 /// Google project of the API key, keeps its sample and returns both. Takes
 /// about 20 s and costs about $0.02, booked under "voices" to `exam`
-/// whatever the outcome. Only on a local server; rate-limited.
+/// whatever the outcome. Only on the server's own computer or through the
+/// tunnel; rate-limited.
 #[server]
 pub async fn design_voice(
     request: VoiceDesignRequest,
     exam: Option<Uuid>,
 ) -> Result<DesignedVoice, ServerFnError> {
-    use crate::application::{settings::local_server, usage, user_error};
+    use crate::application::{usage, user_error};
     use crate::domain::UsageStep;
-    use crate::infrastructure::{llm::GeminiClient, rate_limiter, tts};
+    use crate::infrastructure::{ingress, llm::GeminiClient, rate_limiter, tts};
 
-    if let Some(reason) = design_refusal(local_server()) {
+    let origin = ingress::current();
+    if let Some(reason) = design_refusal(origin.may_design_voices()) {
         return Err(ServerFnError::new(reason));
     }
     request.validate().map_err(user_error)?;
@@ -174,20 +189,22 @@ pub async fn design_voice(
             duration_ms: sample.duration_ms,
         },
         voice,
+        deletable: origin.is_local(),
     })
 }
 
 /// The designed voices of the API key's Google project, each marked
-/// deletable when this app made it and the server is local. Free.
+/// deletable when this app made it and the request came from the server's
+/// own computer. Free.
 #[server]
 pub async fn designed_voices() -> Result<DesignedVoices, ServerFnError> {
-    use crate::application::{settings::local_server, user_error};
-    use crate::infrastructure::{llm::GeminiClient, tts};
+    use crate::application::user_error;
+    use crate::infrastructure::{ingress, llm::GeminiClient, tts};
 
+    let origin = ingress::current();
     let client = GeminiClient::from_config().map_err(user_error)?;
     let voices = tts::designed_voices(&client).await.map_err(user_error)?;
-    let local = local_server();
-    let made_here = if local {
+    let made_here = if origin.is_local() {
         tts::app_made_voice_ids().await
     } else {
         Vec::new()
@@ -200,23 +217,23 @@ pub async fn designed_voices() -> Result<DesignedVoices, ServerFnError> {
                 voice,
             })
             .collect(),
-        can_design: design_refusal(local).is_none(),
+        can_design: design_refusal(origin.may_design_voices()).is_none(),
     })
 }
 
 /// Deletes a designed voice this app made, at Google and here (its sample
-/// too). Voices made elsewhere in the project are refused. Only on a local
-/// server; rate-limited with designing.
+/// too). Voices made elsewhere in the project are refused. Only on the
+/// server's own computer; rate-limited on its own (`Bucket::VoiceDelete`).
 #[server]
 pub async fn delete_voice(voice_id: String) -> Result<(), ServerFnError> {
-    use crate::application::{settings::local_server, user_error};
-    use crate::infrastructure::{llm::GeminiClient, rate_limiter, tts};
+    use crate::application::user_error;
+    use crate::infrastructure::{ingress, llm::GeminiClient, rate_limiter, tts};
 
-    if let Some(reason) = design_refusal(local_server()) {
+    if let Some(reason) = delete_refusal(ingress::current().is_local()) {
         return Err(ServerFnError::new(reason));
     }
     Voice::check_id(&voice_id).map_err(user_error)?;
-    rate_limiter::check(rate_limiter::Bucket::VoiceDesign).map_err(ServerFnError::new)?;
+    rate_limiter::check(rate_limiter::Bucket::VoiceDelete).map_err(ServerFnError::new)?;
     let client = GeminiClient::from_config().map_err(user_error)?;
     tts::delete_designed_voice(&client, &voice_id)
         .await
@@ -435,12 +452,18 @@ mod tests {
     }
 
     #[test]
-    fn only_a_local_server_designs_or_deletes_voices() {
+    fn designing_needs_this_computer_or_the_tunnel_and_deleting_this_computer() {
         assert_eq!(design_refusal(true), None);
-        let reason = design_refusal(false).unwrap();
-        assert!(
-            reason.contains("reachable from other computers"),
-            "{reason}"
+        assert_eq!(
+            design_refusal(false),
+            Some(
+                "Voices can be designed only on the server's own computer or through the app's internet address (Cloudflare Tunnel)."
+            )
+        );
+        assert_eq!(delete_refusal(true), None);
+        assert_eq!(
+            delete_refusal(false),
+            Some("Designed voices can be deleted only on the server's own computer.")
         );
     }
 }

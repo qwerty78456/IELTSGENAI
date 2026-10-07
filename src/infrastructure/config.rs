@@ -20,11 +20,11 @@ pub const TTS_MAX_INPUT_TOKENS: usize = 8_192;
 pub const DEFAULT_AUDIO_RETENTION_HOURS: u32 = 24;
 /// The value `.env.example` and the portable template ship with; it means "no key".
 const PLACEHOLDER_KEY: &str = "your_api_key_here";
-const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\nDATA_DIR=./data\nVOICES_PATH=./voices.json\n# Leave the key out to use the GEMINI_API_KEY environment variable or to enter it in the browser.\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-3.8-flash\n# GEMINI_TTS_MODEL=gemini-3.8-flash-tts\n# GEMINI_SUMMARY_MODEL=gemini-3.5-flash-lite\n# GEMINI_THINKING_LEVEL=low\n# EXAM_BUDGET_USD=0.70\n# SPEECH_CACHE_HOURS=72\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
+const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\n# PUBLIC_PORT=8081   # Cloudflare Tunnel port (same IP); requests on it count as internet users\n# PUBLIC_HOST=app.example.com   # required with PUBLIC_PORT: the tunnel's hostname(s), comma-separated\nDATA_DIR=./data\nVOICES_PATH=./voices.json\n# Leave the key out to use the GEMINI_API_KEY environment variable, or to be asked for it at the console or in the browser.\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-3.8-flash\n# GEMINI_TTS_MODEL=gemini-3.8-flash-tts\n# GEMINI_SUMMARY_MODEL=gemini-3.5-flash-lite\n# GEMINI_THINKING_LEVEL=low\n# EXAM_BUDGET_USD=0.70\n# SPEECH_CACHE_HOURS=72\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
 
 /// Every setting the server reads, from the process environment, the persisted
 /// Windows environment and `.env`.
-const SETTINGS: [&str; 14] = [
+const SETTINGS: [&str; 16] = [
     "GEMINI_API_KEY",
     "GEMINI_TEXT_MODEL",
     "GEMINI_TTS_MODEL",
@@ -38,6 +38,8 @@ const SETTINGS: [&str; 14] = [
     "AUDIO_RETENTION_HOURS",
     "IP",
     "PORT",
+    "PUBLIC_PORT",
+    "PUBLIC_HOST",
     "RUST_LOG",
 ];
 
@@ -124,6 +126,23 @@ pub struct StartupOptions {
     pub config_dir: Option<PathBuf>,
     pub no_open: bool,
     pub non_interactive: bool,
+    /// `--service NAME`: run by a service manager under that service name. Never
+    /// asks anything and never opens a browser.
+    pub service: Option<String>,
+}
+
+const SERVICE_NAME_ERROR: &str =
+    "--service needs a service name made of letters, digits, '.', '_' or '-'";
+
+/// A service name the app may print and later hand to the service manager:
+/// 1 to 80 ASCII letters, digits, `.`, `_` or `-`, not starting with `-` (so
+/// `--service --portable` is a missing name, not a service called "--portable").
+pub fn valid_service_name(name: &str) -> bool {
+    (1..=80).contains(&name.len())
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
 }
 
 impl StartupOptions {
@@ -140,10 +159,38 @@ impl StartupOptions {
                 }
                 Some("--no-open") => options.no_open = true,
                 Some("--non-interactive") => options.non_interactive = true,
-                _ => return Err("Unknown argument. Supported: --portable --config-dir PATH --no-open --non-interactive".into()),
+                Some("--service") => {
+                    let name = args.next().ok_or(SERVICE_NAME_ERROR)?;
+                    match name.to_str() {
+                        Some(name) if valid_service_name(name) => {
+                            options.service = Some(name.to_owned());
+                        }
+                        _ => return Err(SERVICE_NAME_ERROR.into()),
+                    }
+                }
+                _ => return Err("Unknown argument. Supported: --portable --config-dir PATH --no-open --non-interactive --service NAME".into()),
             }
         }
         Ok(options)
+    }
+
+    /// Whether a portable run opens the browser once the server listens.
+    pub fn opens_browser(&self) -> bool {
+        self.portable && !self.no_open && self.service.is_none()
+    }
+
+    /// Whether this run may ask the person at the console (a key, a [y/N]):
+    /// never as a service, with `--non-interactive`, under `dx serve`, in
+    /// Windows' session 0, or when stdin or stdout is not a real console.
+    pub fn interactive(&self, dev_path: bool) -> bool {
+        super::console::interactive(
+            self.service.is_some(),
+            self.non_interactive,
+            dev_path,
+            super::console::in_session_zero(),
+            super::console::stdin_is_console(),
+            super::console::stdout_is_console(),
+        )
     }
 
     pub fn directory(&self) -> Result<PathBuf, String> {
@@ -169,7 +216,9 @@ impl StartupOptions {
 // Intentionally no Debug: the API key must not appear in diagnostics.
 pub struct AppConfig {
     pub data_dir: PathBuf,
-    /// `None` when no source has a key; the browser may then supply one
+    /// `None` when no source has a key. An interactive console run then asks
+    /// for one and saves it in `.env` (`infrastructure::finish`); otherwise a
+    /// browser on the server's own computer may supply one
     /// (`infrastructure::secrets`).
     pub gemini_api_key: Option<String>,
     pub key_origin: Option<KeyOrigin>,
@@ -197,6 +246,13 @@ pub struct AppConfig {
     /// How long a recording no saved exam refers to is kept; 0 keeps every recording.
     pub audio_retention_hours: u32,
     pub address: SocketAddr,
+    /// `IP` and `PUBLIC_PORT`: the published port for Cloudflare Tunnel, whose
+    /// requests count as internet users (`ingress::Origin::Published`).
+    pub public_address: Option<SocketAddr>,
+    /// `PUBLIC_HOST`, lowercase: the tunnel's hostnames. A request on the
+    /// published port is `Published` only when its `Host` (and `Origin`, if
+    /// any) names one of them. Empty without `PUBLIC_PORT`.
+    pub public_hosts: Vec<String>,
     pub log_filter: String,
 }
 
@@ -263,9 +319,10 @@ fn read_dotenv(env_path: &Path, portable: bool) -> Result<HashMap<String, String
     Ok(values)
 }
 
-/// Why a key typed in the browser cannot be used, if it cannot. Stricter than
-/// the startup check: Google API keys are letters, digits, `-` and `_`, and
-/// anything else could break the `.env` line it may be written to.
+/// Why a key typed in the browser or pasted at the console key prompt cannot
+/// be used, if it cannot. Stricter than the startup check: Google API keys
+/// are letters, digits, `-` and `_`, and anything else could break the `.env`
+/// line it may be written to.
 pub fn browser_key_problem(key: &str) -> Option<&'static str> {
     if key.is_empty() {
         return Some("Paste your Gemini API key first.");
@@ -290,8 +347,11 @@ pub fn browser_key_problem(key: &str) -> Option<&'static str> {
 /// Sets `name=value` in the dotenv file at `path`, keeping every other line.
 /// The first `name=` (or `export name=`) line is replaced; otherwise the
 /// setting is appended. The new file is written beside the old one and renamed
-/// over it, so a crash never leaves half a file. Unix permissions are 0600.
-/// `value` must already be safe unquoted (see `browser_key_problem`).
+/// over it, so a crash never leaves half a file. Only its owner may read it:
+/// Unix permissions are 0600, and on Windows a protected DACL grants the
+/// account running this process, SYSTEM and Administrators alone
+/// (`owner_only`), both set before the key is written. `value` must already be safe unquoted (see
+/// `browser_key_problem`).
 pub fn remember_in_dotenv(path: &Path, name: &str, value: &str) -> Result<(), String> {
     let existing = match std::fs::read(path) {
         Ok(bytes) => String::from_utf8(bytes)
@@ -340,6 +400,8 @@ pub fn remember_in_dotenv(path: &Path, name: &str, value: &str) -> Result<(), St
             .set_permissions(std::fs::Permissions::from_mode(0o600))
             .map_err(|e| format!("Cannot restrict {}: {e}", path.display()))?;
     }
+    #[cfg(windows)]
+    owner_only(&temporary).map_err(|e| format!("Cannot restrict {}: {e}", path.display()))?;
     temporary
         .write_all(contents.as_bytes())
         .and_then(|_| temporary.as_file().sync_all())
@@ -348,6 +410,186 @@ pub fn remember_in_dotenv(path: &Path, name: &str, value: &str) -> Result<(), St
         .persist(path)
         .map_err(|e| format!("Cannot replace {}: {}", path.display(), e.error))?;
     Ok(())
+}
+
+/// The Windows counterpart of 0600: a protected DACL (no inherited entries)
+/// granting full control to the account running this process (by its SID:
+/// an elevated run's files are owned by Administrators, so "owner" would
+/// lock that account out once it runs without elevation), SYSTEM and
+/// Administrators only, so other accounts on the computer cannot read the
+/// key. A volume without permissions (FAT or exFAT, a USB stick) cannot keep
+/// one: the file is then written as everything else on it is, and the
+/// console and the log say so.
+#[cfg(windows)]
+fn owner_only(file: &tempfile::NamedTempFile) -> std::io::Result<()> {
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+    use windows_sys::Win32::{
+        Foundation::LocalFree,
+        Security::{
+            Authorization::{
+                ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+            },
+            DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+            SetFileSecurityW,
+        },
+        Storage::FileSystem::GetVolumeInformationByHandleW,
+    };
+    /// The volume keeps permissions (`FILE_PERSISTENT_ACLS`, winnt.h).
+    const FILE_PERSISTENT_ACLS: u32 = 0x8;
+
+    let mut flags = 0u32;
+    // SAFETY: the handle is the open temporary file; only `flags` is written,
+    // every other output is null with a zero length.
+    let known = unsafe {
+        GetVolumeInformationByHandleW(
+            file.as_file().as_raw_handle(),
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut flags,
+            std::ptr::null_mut(),
+            0,
+        )
+    } != 0;
+    if known && flags & FILE_PERSISTENT_ACLS == 0 {
+        let folder = file.path().parent().unwrap_or(file.path()).display();
+        let warning = format!(
+            "{folder} is on a drive without file permissions (FAT or exFAT), so other accounts on this computer can read the saved key."
+        );
+        println!("Note: {warning}");
+        tracing::warn!("{warning}");
+        return Ok(());
+    }
+    let wide = |text: &std::ffi::OsStr| -> Vec<u16> {
+        text.encode_wide().chain(std::iter::once(0)).collect()
+    };
+    let sddl = wide(owner_only_sddl(&current_user_sid()?).as_ref());
+    let path = wide(file.path().as_os_str());
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: both strings are NUL-terminated UTF-16 that outlive the calls;
+    // the descriptor Windows allocates is freed with LocalFree below.
+    unsafe {
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        ) == 0
+        {
+            return Err(std::io::Error::last_os_error());
+        }
+        let set = SetFileSecurityW(
+            path.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        );
+        let error = std::io::Error::last_os_error();
+        LocalFree(descriptor);
+        if set == 0 {
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+/// `PUBLIC_HOST`: one or more hostnames separated by commas (spaces around
+/// them and empty entries ignored), each made of non-empty labels of ASCII
+/// letters, digits and `-`, joined by `.`, at most 253 characters; returned
+/// lowercase. `None` when any entry is not such a name (a port, a scheme, a
+/// path) or there is none.
+fn parse_public_hosts(text: &str) -> Option<Vec<String>> {
+    let mut hosts = Vec::new();
+    for host in text
+        .split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+    {
+        let valid = host.len() <= 253
+            && host.split('.').all(|label| {
+                (1..=63).contains(&label.len())
+                    && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+            });
+        if !valid {
+            return None;
+        }
+        let host = host.to_ascii_lowercase();
+        if !hosts.contains(&host) {
+            hosts.push(host);
+        }
+    }
+    (!hosts.is_empty()).then_some(hosts)
+}
+
+/// The protected DACL `owner_only` sets: full access for `user` (a SID
+/// string), SYSTEM and built-in Administrators, nothing inherited.
+#[cfg(windows)]
+fn owner_only_sddl(user: &str) -> String {
+    format!("D:P(A;;FA;;;{user})(A;;FA;;;SY)(A;;FA;;;BA)")
+}
+
+/// The SID of the account this process runs as (its token's user, elevated
+/// or not), as a string such as `S-1-5-21-…-1001`.
+#[cfg(windows)]
+fn current_user_sid() -> std::io::Result<String> {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{HANDLE, LocalFree},
+        Security::{
+            Authorization::ConvertSidToStringSidW, GetTokenInformation, TOKEN_QUERY, TOKEN_USER,
+            TokenUser,
+        },
+        System::Threading::{GetCurrentProcess, OpenProcessToken},
+    };
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: GetCurrentProcess returns a pseudo handle that needs no
+    // closing; `token` receives a real handle, owned from here on.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: a valid token handle OpenProcessToken returned.
+    let token = unsafe { OwnedHandle::from_raw_handle(token) };
+    let raw = {
+        use std::os::windows::io::AsRawHandle;
+        token.as_raw_handle()
+    };
+    let mut needed = 0u32;
+    // SAFETY: the first call only reports the size the information needs.
+    unsafe { GetTokenInformation(raw, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
+    if needed == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // u64 keeps the TOKEN_USER (and the SID after it) aligned.
+    let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+    // SAFETY: the buffer holds `needed` bytes, the size the call asked for.
+    if unsafe {
+        GetTokenInformation(
+            raw,
+            TokenUser,
+            buffer.as_mut_ptr().cast(),
+            needed,
+            &mut needed,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the call filled the buffer with a TOKEN_USER whose SID points
+    // into the same buffer, alive until the end of this function.
+    let sid = unsafe { (*buffer.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+    let mut text: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `sid` is valid (above); Windows allocates the string, freed
+    // with LocalFree once copied.
+    unsafe {
+        if ConvertSidToStringSidW(sid, &mut text) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let length = (0..).take_while(|&i| *text.add(i) != 0).count();
+        let sid = String::from_utf16_lossy(std::slice::from_raw_parts(text, length));
+        LocalFree(text.cast());
+        Ok(sid)
+    }
 }
 
 impl AppConfig {
@@ -408,7 +650,7 @@ impl AppConfig {
             return Err(setting_error("VOICES_PATH", "must not be empty"));
         }
         VoiceCatalog::create_missing(&voices_path)?;
-        let (voices, notices) = VoiceCatalog::load(&voices_path)?;
+        let (voices, mut notices) = VoiceCatalog::load(&voices_path)?;
         let key = [
             (environment, KeyOrigin::Process),
             (windows, KeyOrigin::Windows),
@@ -492,6 +734,50 @@ impl AppConfig {
             .ok()
             .filter(|p| *p > 0)
             .ok_or_else(|| setting_error("PORT", "must be an integer from 1 to 65535"))?;
+        let public_port = match values.get("PUBLIC_PORT").map(|p| p.trim()) {
+            None | Some("") => None,
+            Some(text) => Some(
+                text.parse::<u16>()
+                    .ok()
+                    .filter(|p| *p > 0 && *p != port)
+                    .ok_or_else(|| {
+                        setting_error(
+                            "PUBLIC_PORT",
+                            "must be an integer from 1 to 65535, different from PORT; leave it empty for no tunnel port",
+                        )
+                    })?,
+            ),
+        };
+        let public_host = values
+            .get("PUBLIC_HOST")
+            .map(|hosts| hosts.trim())
+            .filter(|hosts| !hosts.is_empty());
+        let public_hosts = match (public_port, public_host) {
+            (Some(_), Some(hosts)) => parse_public_hosts(hosts).ok_or_else(|| {
+                setting_error(
+                    "PUBLIC_HOST",
+                    "must be hostnames made of letters, digits, '-' and '.', separated by commas, without a port or scheme, for example app.example.com",
+                )
+            })?,
+            (Some(_), None) => {
+                return Err(setting_error(
+                    "PUBLIC_HOST",
+                    "must name the Cloudflare Tunnel hostname, for example app.example.com, when PUBLIC_PORT is set",
+                ));
+            }
+            (None, Some(_)) => {
+                notices.push("PUBLIC_HOST is ignored without PUBLIC_PORT.".into());
+                Vec::new()
+            }
+            (None, None) => Vec::new(),
+        };
+        if let Some(public_port) = public_port
+            && !ip.is_loopback()
+        {
+            notices.push(format!(
+                "PUBLIC_PORT {public_port} is reachable from the network because IP={ip}, so it is treated like any other network address (no voice design). Use IP=127.0.0.1 with Cloudflare Tunnel."
+            ));
+        }
         let audio_retention_hours = value(
             "AUDIO_RETENTION_HOURS",
             &DEFAULT_AUDIO_RETENTION_HOURS.to_string(),
@@ -546,6 +832,8 @@ impl AppConfig {
             music_path,
             audio_retention_hours,
             address: SocketAddr::new(ip, port),
+            public_address: public_port.map(|port| SocketAddr::new(ip, port)),
+            public_hosts,
             log_filter,
         })
     }
@@ -691,6 +979,120 @@ mod tests {
         );
     }
 
+    /// The DACL `remember_in_dotenv` leaves on `.env`, as SDDL.
+    #[cfg(windows)]
+    fn dacl_of(path: &Path) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::{
+            Foundation::LocalFree,
+            Security::{
+                Authorization::{
+                    ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
+                },
+                DACL_SECURITY_INFORMATION, GetFileSecurityW,
+            },
+        };
+        let path: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        // SAFETY: the first call only reports the size; the buffer then has
+        // it; the SDDL string Windows allocates is copied, then freed.
+        unsafe {
+            let mut needed = 0u32;
+            GetFileSecurityW(
+                path.as_ptr(),
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                0,
+                &mut needed,
+            );
+            assert!(needed > 0, "{}", std::io::Error::last_os_error());
+            // u64 keeps the descriptor aligned.
+            let mut buffer = vec![0u64; (needed as usize).div_ceil(8)];
+            assert_ne!(
+                GetFileSecurityW(
+                    path.as_ptr(),
+                    DACL_SECURITY_INFORMATION,
+                    buffer.as_mut_ptr().cast(),
+                    needed,
+                    &mut needed,
+                ),
+                0,
+                "{}",
+                std::io::Error::last_os_error()
+            );
+            let mut text: *mut u16 = std::ptr::null_mut();
+            let mut length = 0u32;
+            assert_ne!(
+                ConvertSecurityDescriptorToStringSecurityDescriptorW(
+                    buffer.as_mut_ptr().cast(),
+                    SDDL_REVISION_1,
+                    DACL_SECURITY_INFORMATION,
+                    &mut text,
+                    &mut length,
+                ),
+                0
+            );
+            let sddl = String::from_utf16_lossy(std::slice::from_raw_parts(text, length as usize));
+            LocalFree(text.cast());
+            sddl.trim_end_matches('\0').to_string()
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn remembered_keys_are_readable_by_their_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".env");
+        // A fresh file, and one that replaces an existing (inheriting) file.
+        remember_in_dotenv(&path, "GEMINI_API_KEY", "AIzaTestKey_0123456789-abc").unwrap();
+        for round in 0..2 {
+            let sddl = dacl_of(&path);
+            // Protected: nothing inherited from the folder (which lets Users in).
+            assert!(sddl.starts_with("D:P"), "{sddl}");
+            // This account by its SID (SDDL writes the built-in Administrator
+            // account, RID 500, as LA), never "whoever owns the file".
+            let user = match current_user_sid().unwrap() {
+                sid if sid.ends_with("-500") => "LA".to_string(),
+                sid => sid,
+            };
+            assert!(user.starts_with("S-1-") || user == "LA", "{user}");
+            for ace in [
+                format!("(A;;FA;;;{user})"),
+                "(A;;FA;;;SY)".into(),
+                "(A;;FA;;;BA)".into(),
+            ] {
+                assert!(sddl.contains(&ace), "{ace} missing from {sddl}");
+            }
+            // Owner rights, Users, Authenticated Users, Everyone, Interactive.
+            for anyone in [";OW)", ";BU)", ";AU)", ";WD)", ";IU)"] {
+                assert!(!sddl.contains(anyone), "{anyone} in {sddl}");
+            }
+            assert_eq!(sddl.matches('(').count(), 3, "{sddl}");
+            if round == 0 {
+                std::fs::write(&path, "PORT=8080\n").unwrap();
+                remember_in_dotenv(&path, "GEMINI_API_KEY", "new-key").unwrap();
+            }
+        }
+        // The owner still reads and edits it.
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "PORT=8080\nGEMINI_API_KEY=new-key\n"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_dacl_names_the_account_not_the_owner() {
+        assert_eq!(
+            owner_only_sddl("S-1-5-21-1-2-3-1001"),
+            "D:P(A;;FA;;;S-1-5-21-1-2-3-1001)(A;;FA;;;SY)(A;;FA;;;BA)"
+        );
+        assert!(!owner_only_sddl("S-1-5-21-1-2-3-1001").contains("OW"));
+    }
+
     #[test]
     fn browser_keys_must_look_like_keys() {
         assert!(browser_key_problem("AIzaSyA-valid_looking0123456789abcdef").is_none());
@@ -823,6 +1225,125 @@ mod tests {
     }
 
     #[test]
+    fn public_port_is_optional_and_must_differ_from_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |pairs: &[(&str, &str)]| {
+            let mut env = environment();
+            for (name, value) in pairs {
+                env.insert((*name).into(), (*value).into());
+            }
+            AppConfig::load(dir.path(), true, &env)
+        };
+        let host = ("PUBLIC_HOST", "exams.example.org");
+        // The template only mentions it in a comment.
+        assert_eq!(load(&[]).unwrap().public_address, None);
+        assert_eq!(load(&[("PUBLIC_PORT", " ")]).unwrap().public_address, None);
+        let cfg = load(&[("PUBLIC_PORT", " 8081 "), host]).unwrap();
+        assert_eq!(cfg.public_address, Some("127.0.0.1:8081".parse().unwrap()));
+        assert!(!cfg.notices.iter().any(|n| n.contains("PUBLIC_PORT")));
+        let cfg = load(&[("IP", "::1"), ("PUBLIC_PORT", "8081"), host]).unwrap();
+        assert_eq!(cfg.public_address, Some("[::1]:8081".parse().unwrap()));
+        for value in ["0", "8080", "65536", "-1", "abc", "80 81"] {
+            let error = load(&[("PUBLIC_PORT", value), host]).err().unwrap();
+            assert!(
+                error.contains(
+                    "PUBLIC_PORT must be an integer from 1 to 65535, different from PORT; leave it empty for no tunnel port"
+                ),
+                "{value}: {error}"
+            );
+        }
+        let error = load(&[("PORT", "9000"), ("PUBLIC_PORT", "9000"), host])
+            .err()
+            .unwrap();
+        assert!(error.contains("PUBLIC_PORT"), "{error}");
+        assert!(load(&[("PORT", "9000"), ("PUBLIC_PORT", "8080"), host]).is_ok());
+        // On a network address the published port is no tunnel-only door.
+        let cfg = load(&[("IP", "0.0.0.0"), ("PUBLIC_PORT", "8081"), host]).unwrap();
+        assert_eq!(cfg.public_address, Some("0.0.0.0:8081".parse().unwrap()));
+        assert!(cfg.notices.iter().any(|n| n
+            == "PUBLIC_PORT 8081 is reachable from the network because IP=0.0.0.0, so it is treated like any other network address (no voice design). Use IP=127.0.0.1 with Cloudflare Tunnel."));
+        assert!(
+            std::fs::read_to_string(dir.path().join(".env"))
+                .unwrap()
+                .contains("# PUBLIC_PORT=8081")
+        );
+    }
+
+    #[test]
+    fn public_host_names_the_tunnel_and_goes_with_public_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |pairs: &[(&str, &str)]| {
+            let mut env = environment();
+            for (name, value) in pairs {
+                env.insert((*name).into(), (*value).into());
+            }
+            AppConfig::load(dir.path(), true, &env)
+        };
+        let port = ("PUBLIC_PORT", "8081");
+        // Required with PUBLIC_PORT; blank counts as missing.
+        for missing in [&[port][..], &[port, ("PUBLIC_HOST", "  ")]] {
+            let error = load(missing).err().unwrap();
+            assert!(
+                error.ends_with(
+                    "PUBLIC_HOST must name the Cloudflare Tunnel hostname, for example app.example.com, when PUBLIC_PORT is set"
+                ),
+                "{error}"
+            );
+        }
+        let cfg = load(&[port, ("PUBLIC_HOST", "Exams.Example.org")]).unwrap();
+        assert_eq!(cfg.public_hosts, ["exams.example.org"]);
+        let cfg = load(&[
+            port,
+            (
+                "PUBLIC_HOST",
+                " a.example.com, B-2.example.net ,,a.example.com ",
+            ),
+        ])
+        .unwrap();
+        assert_eq!(cfg.public_hosts, ["a.example.com", "b-2.example.net"]);
+        for bad in [
+            "app.example.com:443",
+            "https://app.example.com",
+            "app.example.com/path",
+            "app..example.com",
+            ".example.com",
+            "app_1.example.com",
+            "app example.com",
+            "*.example.com",
+            "[::1]",
+            "ứng-dụng.vn",
+            ",",
+        ] {
+            let error = load(&[port, ("PUBLIC_HOST", bad)]).err().unwrap();
+            assert!(
+                error.contains("PUBLIC_HOST must be hostnames made of letters, digits"),
+                "{bad}: {error}"
+            );
+        }
+        let long = format!("{}.com", "a".repeat(64));
+        assert!(load(&[port, ("PUBLIC_HOST", &long)]).is_err());
+        // Without PUBLIC_PORT it is ignored, with a notice, whatever it says.
+        for value in ["app.example.com", "not a host:1"] {
+            let cfg = load(&[("PUBLIC_HOST", value)]).unwrap();
+            assert!(cfg.public_hosts.is_empty());
+            assert!(
+                cfg.notices
+                    .iter()
+                    .any(|n| n == "PUBLIC_HOST is ignored without PUBLIC_PORT."),
+                "{:?}",
+                cfg.notices
+            );
+        }
+        let cfg = load(&[("PUBLIC_HOST", "")]).unwrap();
+        assert!(cfg.notices.is_empty(), "{:?}", cfg.notices);
+        assert!(
+            std::fs::read_to_string(dir.path().join(".env"))
+                .unwrap()
+                .contains("# PUBLIC_HOST=app.example.com")
+        );
+    }
+
+    #[test]
     fn command_line_errors_are_clear() {
         assert!(StartupOptions::parse(["--config-dir".into()]).is_err());
         let options = StartupOptions::parse([
@@ -832,6 +1353,53 @@ mod tests {
         ])
         .unwrap();
         assert!(options.portable && options.no_open && options.non_interactive);
+        assert!(options.service.is_none());
+        let unknown = StartupOptions::parse(["--verbose".into()]).unwrap_err();
+        assert_eq!(
+            unknown,
+            "Unknown argument. Supported: --portable --config-dir PATH --no-open --non-interactive --service NAME"
+        );
+    }
+
+    #[test]
+    fn service_names_are_checked() {
+        let options =
+            StartupOptions::parse(["--portable".into(), "--service".into(), "VMQ-MVP".into()])
+                .unwrap();
+        assert_eq!(options.service.as_deref(), Some("VMQ-MVP"));
+        // A service never opens the browser, even when portable.
+        assert!(!options.opens_browser());
+        assert!(!options.interactive(false));
+        let portable = StartupOptions::parse(["--portable".into()]).unwrap();
+        assert!(portable.opens_browser());
+        for name in ["a", "listening.exam_generator-2", &"x".repeat(80)] {
+            assert!(valid_service_name(name), "{name}");
+        }
+        for name in [
+            "",
+            &"x".repeat(81),
+            "two words",
+            "quote'd",
+            "semi;colon",
+            "dollar$",
+            "back`tick",
+            "slash/",
+            "dịch-vụ",
+            "-x",
+            "--portable",
+        ] {
+            assert!(!valid_service_name(name), "{name}");
+        }
+        let error = |args: &[&str]| {
+            StartupOptions::parse(args.iter().map(|a| std::ffi::OsString::from(*a))).unwrap_err()
+        };
+        let expected = "--service needs a service name made of letters, digits, '.', '_' or '-'";
+        assert_eq!(error(&["--service"]), expected);
+        assert_eq!(error(&["--service", "a b"]), expected);
+        assert_eq!(error(&["--service", ""]), expected);
+        // The next option is not a name.
+        assert_eq!(error(&["--service", "--portable"]), expected);
+        assert_eq!(error(&["--portable", "--service", "--no-open"]), expected);
     }
 
     #[test]

@@ -18,10 +18,13 @@ The CHANGELOG is written in Vietnamese; keep that convention.
 
 ## Commands
 
-Prereqs: Rust 1.88+ (edition 2024 let-chains; developed and released on 1.92), `wasm32-unknown-unknown` target,
+Prereqs: Rust 1.89+ (edition 2024 let-chains, `File::try_lock`; developed and released on 1.92), `wasm32-unknown-unknown` target,
 Dioxus CLI 0.7.x (`cargo install dioxus-cli --version 0.7.9 --locked`), and a Gemini key in
-`GEMINI_API_KEY` (environment, or `.env` copied from `.env.example`; without one the app starts
-and asks in the browser).
+`GEMINI_API_KEY` (environment, or `.env` copied from `.env.example`; without one a release or
+portable run from an interactive console asks for it and saves it in `.env`, and otherwise the
+app starts and, on a loopback bind, asks in a browser on the server's own computer; on a network
+bind (`IP=0.0.0.0`) every request is Remote, so only setting the key and restarting helps;
+`dx serve`, `--service` and `--non-interactive` never ask at the console).
 
 ```bash
 dx serve                                              # dev server, http://localhost:8080, hot reload
@@ -69,11 +72,28 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   blocks inside server-fn bodies.
 - **`src/infrastructure/` is `#![cfg(feature = "server")]`** and must not define `#[server]`
   functions. `main.rs` gates the module and calls `infrastructure::startup::run(App)`:
-  `bootstrap()` (validated config loaded once, data dirs, tracing), SQLite, then
-  `dioxus::server::router(App)` plus two plain axum routes, `GET /audio/{job_id}` and
-  `GET /voice-sample/{voice_id}`, served by `dioxus::serve` in debug (hot reload) or an explicit
-  listener otherwise (portable mode opens the browser); startup errors are returned, not
-  panicked. The browser build uses `dioxus::launch`.
+  `prepare()` (validated config loaded once, data dirs, tracing), then on the release path the
+  data-folder lock (`DATA_DIR/instance.lock`, held for the whole process) and the binds of the
+  main address and, with `PUBLIC_PORT`, the published port (`listeners`), then `finish()`
+  (the console key prompt, key note and notices, `config::initialize`), SQLite, `instance.json`,
+  the interrupted-job sweep, and one router: `dioxus::server::router(App)` plus four plain axum
+  routes, `GET /audio/{job_id}`, `GET /voice-sample/{voice_id}`, `GET /instance` and
+  `POST /instance/stop` (`infrastructure/instance/`, Local requests only). The release path
+  serves that router on both listeners (the published one layers `ingress::PublishedListener`
+  over it) until Ctrl+C, Ctrl+Break, SIGTERM or `POST /instance/stop`, then drains for at most
+  5 s; portable mode opens the browser. `dioxus::serve` in debug (hot reload) serves the main
+  address only and ignores `PUBLIC_PORT`. A port or data folder held by another copy of this
+  app on a loopback bind is identified through `GET /instance` (`instance::probe`), and its
+  process id is acted on only when the system shows that process alone listening on the address
+  that answered (`instance::listener`); at an
+  interactive console a [y/N] prompt (default N) may stop it (`instance::takeover`: a console
+  copy through `POST /instance/stop` with the token from its `instance.json`, a Windows service
+  through the service control manager with a hidden watcher that starts it again when this
+  copy exits while the user stays signed in; signing out ends the watcher, and the service
+  then starts at the next boot) or use it (open the browser to it and exit 0). `--service NAME`
+  (for NSSM) never asks and never opens a browser; other unattended starts (scheduled tasks)
+  pass `--non-interactive`, and Windows session 0 is detected and never asked. Startup errors are returned, not panicked. The browser build
+  uses `dioxus::launch`.
 - **`src/ui/` talks to the server only through `crate::application`.** The part view holds a
   single `HomeState` signal; the exam view a single `ExamState` signal provided by the `Navbar`
   layout. `Navbar` also provides the second context, `VoiceCatalogueCtx` (`ui/components/voices.rs`):
@@ -165,10 +185,23 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   year after their last use, unusable with another key (`prepare_speakers` refuses them at job
   start). The project's list is cached 60 s and forgotten after a create or delete. The
   `designed_voices` table of `jobs.db` records the voices this app made, with their exact
-  accent (Google keeps only the language tag); only those may be deleted, and designing or
-  deleting is allowed only on a loopback bind (`settings::local_server`, the browser-key rule)
-  and limited by `Bucket::VoiceDesign`. Voices made elsewhere in the project (the PO's) are
-  listed and usable, never deleted.
+  accent (Google keeps only the language tag); only those may be deleted. Designing is allowed
+  for Local and Published requests (`voices::design_refusal`, `Bucket::VoiceDesign`), deleting
+  for Local requests only (`voices::delete_refusal`, `Bucket::VoiceDelete`); the refusal check
+  comes before the rate limit. Voices made elsewhere in the project (the PO's) are listed and
+  usable, never deleted.
+- Who may change the key or the Google project is decided per request by
+  `infrastructure::ingress` (`Origin::{Local, Published, Remote}`): `ingress::current()` at the
+  start of a server-fn body (the request context does not follow `tokio::spawn`; with no request
+  the answer is Remote), `ingress::of_parts` in plain routes. `classify` is pure and the first match wins: a
+  non-loopback bind → Remote; `Sec-Fetch-Site: cross-site` → Remote; the `PUBLIC_PORT` listener
+  → Published when its `Host` (port aside) and its `Origin`, if any, name a `PUBLIC_HOST` (the
+  tunnel hostname, required with `PUBLIC_PORT`), else Remote; any `FORWARDING_HEADERS` (`cf-connecting-ip`, `x-forwarded-for`, `forwarded`,
+  `via`, …) → Remote; a `Host` or `Origin` that does not name this computer (`localhost`,
+  `127.x.y.z`, `[::1]`) → Remote; else Local. Application refusals stay pure bool functions
+  (`settings::entry_refusal`, `voices::design_refusal`, `voices::delete_refusal`) so they
+  compile for wasm. Takeover (`/instance`) therefore works only on a loopback bind, and a reverse
+  proxy other than Cloudflare Tunnel must target `PUBLIC_PORT`, never the main port.
 - The accent belongs to the voice: pools hold regional library voices (`en-gb-…`, `en-au-…`,
   `en-in-…`); the 30 classic voices (`despina`, `Puck`, …) are all General American and may only
   appear in the American pool. The built-in pools (`tts/default_voices.json`, compiled in,
@@ -209,7 +242,13 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   the current `DATA_DIR/audio` (`JobRecord::output_file`), so a moved portable folder keeps its
   recordings. Jobs no saved exam refers to are purged hourly from boot once older than
   `AUDIO_RETENTION_HOURS` (default 24, `0` = never); a job named by a saved exam's
-  `recording_job` is never purged and is deleted with the exam.
+  `recording_job` is never purged and is deleted with the exam. At startup, before serving, a
+  server holding the data-folder lock fails every `pending`/`processing` job
+  (`JobStore::fail_interrupted`, `jobs::INTERRUPTED_MESSAGE`: no task makes them any more);
+  without the lock (another live copy, or a file system that cannot lock) they are left alone,
+  and under `dx serve` this happens once, not on every hot-patch. Every answer of `/audio` and
+  `/voice-sample`, errors included, carries `Cache-Control: private, no-cache` (no shared cache
+  such as Cloudflare keeps a recording; the browser still revalidates with 304).
 - Voice samples ("Listen") are made once per voice by `voice_preview` (catalogue ids, or the
   designed voices of the key's project; anything else is refused; `Bucket::VoiceSample`),
   stored as `DATA_DIR/audio/voices/{id}.wav`, streamed from the plain route
@@ -222,8 +261,16 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
 - All configuration is environment only (`infrastructure/config.rs`, see `.env.example`). The
   API key is resolved process environment → Windows registry environment (user, then machine)
   → `.env` → a key typed in the browser (`application/settings.rs`, kept in
-  `infrastructure/secrets.rs`), which is accepted only on a loopback bind, never over a working
-  operator key, after a free check with Google. A missing key does not stop startup. A key Google
+  `infrastructure/secrets.rs`), which is accepted only from a Local request, never over a
+  working operator key, after a free check with Google. A missing key does not stop startup:
+  first an interactive console (release path; never with `--service`, `--non-interactive`,
+  non-console stdio, Windows session 0 or under `dx serve`) asks for it, masked with `*`
+  (`console::ask_secret`), checks it for free and saves it in `.env` (`infrastructure::finish`),
+  at most three tries; Enter alone leaves it to the browser on a loopback bind, and on a
+  network bind the prompt offers to skip and says to set `GEMINI_API_KEY` and restart.
+  `config::remember_in_dotenv` writes `.env` readable by its owner only (0600; on Windows a
+  protected owner/SYSTEM/Administrators DACL on a volume that keeps permissions; FAT/exFAT
+  cannot, and the console and log warn). A key Google
   refuses becomes `LlmError::ActiveKeyRejected` (naming its source) and is remembered in
   `secrets`; `KeySetup` polls `api_key_status` and then offers a browser key that replaces it in
   memory until restart. Keys are never retried or tried in turn: there is no automatic fallback.

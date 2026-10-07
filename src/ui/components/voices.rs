@@ -273,11 +273,12 @@ pub fn VoicePicker(
 
 /// The designed voices of the API key's Google project, in the speaker
 /// dialog: those of the speaker's gender with Listen, Use and (for voices
-/// this app made, on a local server) a two-click Delete, then a form that
-/// designs a new voice of the dialog's gender and accent. The list is asked
-/// for when the section is first opened. A new voice plays its sample and is
-/// chosen at once; `onchoose` gets every chosen voice, `ondelete` every
-/// deleted id.
+/// this app made, in a browser on the server's own computer) a two-click
+/// Delete, then a form that designs a new voice of the dialog's gender and
+/// accent (on the server's own computer or through the tunnel). The list is
+/// asked for when the section is first opened. A new voice plays its sample
+/// and is chosen at once; `onchoose` gets every chosen voice, `ondelete`
+/// every deleted id.
 #[component]
 pub fn DesignedVoicesPanel(
     /// The speaker's label, for the default name of a new voice.
@@ -371,7 +372,7 @@ pub fn DesignedVoicesPanel(
                             0,
                             DesignedVoiceRow {
                                 voice: made.voice.clone(),
-                                deletable: true,
+                                deletable: made.deletable,
                             },
                         );
                     }
@@ -581,7 +582,7 @@ pub fn DesignedVoicesPanel(
                         }
                     } else {
                         p { class: "muted",
-                            "New voices can only be designed on a copy of the app running on your own computer."
+                            "Voices can be designed only on the server's own computer or through the app's internet address (Cloudflare Tunnel)."
                         }
                     }
                 }

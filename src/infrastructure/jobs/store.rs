@@ -189,6 +189,20 @@ impl JobStore {
         Ok(count)
     }
 
+    /// Fails every recording a stopped server left pending or processing: no
+    /// task makes them any more. Call it only while holding the data-folder
+    /// lock (`instance`), so no other live server's jobs are touched.
+    pub async fn fail_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
+        let done = sqlx::query(
+            "UPDATE jobs SET state = ?1, error = ?2 WHERE state IN ('pending', 'processing')",
+        )
+        .bind(JobState::Failed.as_str())
+        .bind(message)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     pub async fn mark_processing(&self, id: &str, progress: f32) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE jobs SET state = ?1, progress = ?2 WHERE id = ?3")
             .bind(JobState::Processing.as_str())
@@ -295,6 +309,41 @@ mod tests {
         assert_eq!(restarted.active_count().await.unwrap(), 1);
         assert!(restarted.get(&id).await.unwrap().is_some());
         restarted.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn interrupted_recordings_fail_and_finished_ones_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(dir.path().join("jobs.db"))
+            .create_if_missing(true);
+        let store = JobStore::open_options(options).await.unwrap();
+        let pending = store.create(JobKind::PartAudio).await.unwrap();
+        let processing = store.create(JobKind::ExamAudio).await.unwrap();
+        store.mark_processing(&processing, 0.4).await.unwrap();
+        let completed = store.create(JobKind::PartAudio).await.unwrap();
+        store.complete(&completed, "done.wav").await.unwrap();
+        let failed = store.create(JobKind::PartAudio).await.unwrap();
+        store.fail(&failed, "Earlier failure").await.unwrap();
+        assert_eq!(store.active_count().await.unwrap(), 2);
+
+        let message = super::super::INTERRUPTED_MESSAGE;
+        assert_eq!(store.fail_interrupted(message).await.unwrap(), 2);
+        assert_eq!(store.active_count().await.unwrap(), 0);
+        for id in [&pending, &processing] {
+            let job = store.get(id).await.unwrap().unwrap();
+            assert_eq!(job.state, JobState::Failed, "{id}");
+            assert_eq!(job.error.as_deref(), Some(message));
+        }
+        let job = store.get(&completed).await.unwrap().unwrap();
+        assert_eq!(job.state, JobState::Completed);
+        assert_eq!(job.error, None);
+        assert_eq!(job.output_path.as_deref(), Some("done.wav"));
+        let job = store.get(&failed).await.unwrap().unwrap();
+        assert_eq!(job.error.as_deref(), Some("Earlier failure"));
+        // Nothing left to sweep.
+        assert_eq!(store.fail_interrupted(message).await.unwrap(), 0);
+        store.pool.close().await;
     }
 
     #[tokio::test]

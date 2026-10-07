@@ -1,9 +1,10 @@
 //! The Gemini API key: where it came from, and entering one in the browser.
 //!
 //! The key itself never travels back to the browser. A key typed in the
-//! browser is accepted only by a server bound to a loopback address, and only
-//! when no operator key (environment or `.env`) exists or Google rejected it;
-//! it then replaces that key in memory until a restart. See `entry_refusal`.
+//! browser is accepted only from a browser on the server's own computer (a
+//! `Local` request, `infrastructure::ingress`), and only when no operator key
+//! (environment or `.env`) exists or Google rejected it; it then replaces that
+//! key in memory until a restart. See `entry_refusal`.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -41,7 +42,7 @@ pub struct KeyStatus {
     pub source: KeySource,
     /// Google refused that key on the last request that used it.
     pub rejected: bool,
-    /// Whether this server accepts a key typed in the browser right now.
+    /// Whether this server accepts a key typed in this browser right now.
     pub can_enter: bool,
     /// Whether writing a typed key to `.env` would outlast a restart: not when
     /// the process or Windows environment holds a key, which `.env` cannot override.
@@ -49,13 +50,13 @@ pub struct KeyStatus {
 }
 
 /// Why a key typed in the browser is refused, or `None` when it is accepted.
-/// `rejected` is whether Google refused the key in use; `loopback` is whether
-/// the server listens on 127.0.0.1 / ::1 only.
+/// `rejected` is whether Google refused the key in use; `local` is whether
+/// the request comes from a browser on the server's own computer.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
-pub fn entry_refusal(source: KeySource, rejected: bool, loopback: bool) -> Option<&'static str> {
+pub fn entry_refusal(source: KeySource, rejected: bool, local: bool) -> Option<&'static str> {
     match source {
-        _ if !loopback => Some(
-            "This server is reachable from other computers, so it does not accept a key from the browser. Set GEMINI_API_KEY on the server and restart.",
+        _ if !local => Some(
+            "API keys can be entered only in a browser on the server's own computer. Set GEMINI_API_KEY on the server and restart.",
         ),
         KeySource::Environment | KeySource::WindowsEnvironment | KeySource::DotEnv if !rejected => {
             Some(
@@ -73,18 +74,6 @@ pub fn can_remember(configured: Option<KeySource>) -> bool {
     matches!(configured, None | Some(KeySource::DotEnv))
 }
 
-/// Whether this server listens on a loopback address only (127.0.0.1, ::1):
-/// then only this computer reaches it. What changes the operator's Google
-/// project (a key typed in the browser, designing or deleting voices) is
-/// allowed only then.
-#[cfg(feature = "server")]
-pub(crate) fn local_server() -> bool {
-    crate::infrastructure::config::config()
-        .address
-        .ip()
-        .is_loopback()
-}
-
 #[cfg(feature = "server")]
 fn configured_source() -> Option<KeySource> {
     use crate::infrastructure::config::{KeyOrigin, config};
@@ -95,8 +84,10 @@ fn configured_source() -> Option<KeySource> {
     })
 }
 
+/// The key's status as the browser that sent the request (`local` or not)
+/// sees it.
 #[cfg(feature = "server")]
-fn current_status() -> KeyStatus {
+fn current_status(local: bool) -> KeyStatus {
     use crate::infrastructure::secrets;
     let configured = configured_source();
     let source = if secrets::browser_key().is_some() {
@@ -105,11 +96,10 @@ fn current_status() -> KeyStatus {
         configured.unwrap_or(KeySource::Missing)
     };
     let rejected = secrets::active_key_rejected();
-    let loopback = local_server();
     KeyStatus {
         source,
         rejected,
-        can_enter: entry_refusal(source, rejected, loopback).is_none(),
+        can_enter: entry_refusal(source, rejected, local).is_none(),
         can_remember: can_remember(configured),
     }
 }
@@ -117,7 +107,9 @@ fn current_status() -> KeyStatus {
 /// Where the key comes from. Never returns the key or any part of it.
 #[server]
 pub async fn api_key_status() -> Result<KeyStatus, ServerFnError> {
-    Ok(current_status())
+    use crate::infrastructure::ingress;
+
+    Ok(current_status(ingress::current().is_local()))
 }
 
 /// Checks `key` with Google and keeps it in memory; with `remember`, also
@@ -125,13 +117,15 @@ pub async fn api_key_status() -> Result<KeyStatus, ServerFnError> {
 #[server]
 pub async fn set_api_key(key: String, remember: bool) -> Result<KeyStatus, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::{config, llm::GeminiClient, rate_limiter, secrets};
+    use crate::infrastructure::{config, ingress, llm::GeminiClient, rate_limiter, secrets};
 
-    rate_limiter::check(rate_limiter::Bucket::KeyEntry).map_err(ServerFnError::new)?;
-    let status = current_status();
-    if let Some(reason) = entry_refusal(status.source, status.rejected, local_server()) {
+    let local = ingress::current().is_local();
+    let status = current_status(local);
+    // Refused requests do not use up the rate limit of the server's own computer.
+    if let Some(reason) = entry_refusal(status.source, status.rejected, local) {
         return Err(ServerFnError::new(reason));
     }
+    rate_limiter::check(rate_limiter::Bucket::KeyEntry).map_err(ServerFnError::new)?;
     if remember && !status.can_remember {
         let place = configured_source().map_or("the environment", KeySource::describe);
         return Err(ServerFnError::new(format!(
@@ -152,7 +146,7 @@ pub async fn set_api_key(key: String, remember: bool) -> Result<KeyStatus, Serve
         remembered = remember,
         "Gemini API key entered in the browser"
     );
-    Ok(current_status())
+    Ok(current_status(local))
 }
 
 #[cfg(test)]
@@ -167,7 +161,8 @@ mod tests {
             KeySource::DotEnv,
         ] {
             assert!(entry_refusal(source, false, true).is_some());
-            // A key Google rejected may be replaced, but only on a local server.
+            // A key Google rejected may be replaced, but only from the
+            // server's own computer.
             assert!(entry_refusal(source, true, true).is_none());
             assert!(entry_refusal(source, true, false).is_some());
             assert!(entry_refusal(source, false, false).is_some());
@@ -178,6 +173,12 @@ mod tests {
                 assert!(entry_refusal(source, rejected, false).is_some());
             }
         }
+        assert_eq!(
+            entry_refusal(KeySource::Missing, false, false),
+            Some(
+                "API keys can be entered only in a browser on the server's own computer. Set GEMINI_API_KEY on the server and restart."
+            )
+        );
     }
 
     #[test]

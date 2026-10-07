@@ -44,6 +44,9 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Usage** (`Usage`, `ExamUsage`) | What Gemini billed for a step: requests, reused chunks, input / cached / output / thinking tokens, and their USD price at the time. An exam's usage adds up every run, failed and superseded ones included. | "billing" (out of scope), "credits" |
 | **Budget** | The amount one exam should stay under (`EXAM_BUDGET_USD`). Passing it warns; it never blocks. | "quota", "limit" |
 | **Teacher** | The person we serve. | "user" |
+| **Local request** (`ingress::Origin::Local`) | A request from a browser on the server's own computer: the server is bound to a loopback address, the request arrived on `PORT`, carries no forwarding header, names this computer in `Host` (and `Origin`, if sent) and is not cross-site. Only a local request may enter an API key in the browser, delete a designed voice or use `/instance`. | "admin", "localhost request" |
+| **Published request** (`ingress::Origin::Published`) | A request that arrived on `PUBLIC_PORT`, the port Cloudflare Tunnel delivers internet users to (behind Cloudflare Access), to a server bound to a loopback address, naming one of the `PUBLIC_HOST` hostnames in `Host` (and `Origin`, if sent), and not cross-site. Never "this computer"; it may design voices. | "tunnel user" is fine in prose |
+| **Remote request** (`ingress::Origin::Remote`) | Any other request: another computer, a proxy on the main port, a page of another site, a request on `PUBLIC_PORT` for a host that is not a `PUBLIC_HOST` (DNS rebinding), or any request to a server bound to a non-loopback address. It may generate and record, but not change the key or the designed voices. | "external" |
 
 ## Format-specific vocabulary
 

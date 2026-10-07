@@ -10,11 +10,23 @@ Gemini API key, first match wins:
   1. the GEMINI_API_KEY environment variable (on Windows this includes a user or
      machine variable set after the console was opened);
   2. GEMINI_API_KEY in .env (replace your_api_key_here);
-  3. otherwise every page shows a form to paste the key.
+  3. otherwise the console asks for it: paste the key (it shows as *), it is
+     checked with Google (free) and saved in .env. Press Enter alone to skip;
+  4. otherwise every page shows a form to paste the key (only with
+     IP=127.0.0.1, the default; with IP=0.0.0.0 or a LAN address the console
+     offers to skip instead: set GEMINI_API_KEY and restart).
+The console never asks with --non-interactive or --service, or when Windows
+runs the app in session 0 (a service, a scheduled task set to run whether you
+are signed in or not, an OpenSSH session). Scheduled tasks and other
+unattended starts should pass --non-interactive --no-open.
 The console says where the key came from, never the key. Read the warning above
 the form: the key travels over plain HTTP, the app has no login, and "Remember"
-writes it unencrypted to .env. The form works only when the app listens on
-127.0.0.1 and checks the key with Google (free) before keeping it. It never
+writes it unencrypted to .env (on an NTFS drive readable only by your account
+and administrators; a USB stick formatted FAT or exFAT cannot restrict it, so
+any account on the computer can read it there, and the console says so).
+The form works only in a browser on this computer, at the main address
+(http://127.0.0.1:8080 by default), and checks the key with Google (free)
+before keeping it. It never
 replaces a working key from the environment or .env. If Google rejects that key,
 every page says where the key came from and offers the form; a key pasted there
 is used until the app restarts. "Remember" is offered only when .env would win
@@ -26,8 +38,20 @@ console window, stops the server.
 Windows startup errors stay visible when double-clicked; press Enter to close.
 Run from a terminal on Linux to read errors.
 
-Options: --no-open (do not open browser), --non-interactive (no error pause),
---config-dir PATH (override configuration directory).
+Options: --no-open (do not open browser), --non-interactive (no error pause,
+no questions at the console), --config-dir PATH (override configuration
+directory), --service NAME (run by a service manager as the service NAME:
+no questions, no browser).
+If the port or the data folder is already used by another copy of this app,
+the console says which (version, process id). When the app listens on
+127.0.0.1 it asks "Stop it and start this copy instead? [y/N]": y stops that
+copy and starts this one; Enter or n opens the browser at the copy that is
+already running and closes this one. A copy running as a Windows service can be
+stopped the same way if your account may stop that service; the service starts
+again when this copy stops while you stay signed in to Windows. If you sign
+out first, it starts again only at the next restart of Windows.
+Stop a copy of 0.8.2 or earlier yourself before starting a newer one on the
+same data folder; otherwise a recording it is still making shows as failed.
 Relative DATA_DIR, VOICES_PATH and MUSIC_PATH values are based on that directory.
 Environment variables override file values; malformed files still cause failure.
 Edit configuration only while stopped; restart to reload it.
@@ -52,8 +76,12 @@ Australian, Canadian, New Zealand, Irish, Scottish, South African or Indian
 English). Listen plays a short sample: the first listen of a voice costs about
 0.005 USD, later ones are free. Another voice and Automatic change it, on both
 pages. Voices designed from a description belong to the Google project of the
-API key (about 0.01 USD each): keys of other projects cannot use them, and they
-can be created or deleted only while the app listens on 127.0.0.1 (the default).
+API key (about 0.01 USD each): keys of other projects cannot use them. They can
+be created in a browser on this computer (with IP=127.0.0.1, the default) or
+through PUBLIC_PORT (Cloudflare Tunnel; set PUBLIC_HOST to the tunnel's
+hostname too, e.g. PUBLIC_PORT=8081 and PUBLIC_HOST=app.example.com, and keep
+the Host header unchanged in the tunnel), and deleted only in a browser on this
+computer.
 voices.json (version 2 since 0.8.0) only overrides the built-in voices. A 0.7
 voices.json that still held the 0.7 defaults is renamed voices.0.7.json and a
 new template is written. A customised 0.7 file is kept but ignored, and the
@@ -63,9 +91,13 @@ The .env may contain your secret key: do not share it. Data and logs are in ./da
 Exams made on the Whole exam page are saved beside the package and reopen after a
 restart, recording included; their recordings stay until the exam is deleted. Other
 recordings expire after AUDIO_RETENTION_HOURS (24 by default; 0 keeps them all).
+A recording still being made when the app stops shows as failed after the next
+start: make it again.
 Both pages export Word (DOCX) and Markdown.
 Missing configuration files are recreated; invalid files are never overwritten.
-Invalid ports/paths/settings stop startup; a missing key does not.
+Invalid ports/paths/settings stop startup; a missing key does not (the console
+asks for it, or the browser does). PUBLIC_PORT without PUBLIC_HOST stops
+startup.
 
 If Linux FUSE is unavailable:
 APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.8.2-linux-x86_64.AppImage

@@ -74,22 +74,43 @@ src/
     naming.rs             summarize_topics: a few words for download names (GEMINI_SUMMARY_MODEL, no thinking level)
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
     usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record() after every Gemini call
-    settings.rs           api_key_status -> KeyStatus, set_api_key (loopback only, never over a working operator key);
-                          local_server(), the loopback rule voices reuse
+    settings.rs           api_key_status -> KeyStatus, set_api_key (Local requests only, never over a working
+                          operator key); entry_refusal (pure, takes `local: bool`)
     voices.rs             voice_catalogue, voice_preview (catalogue or this key's designed voices) -> VoiceSample;
                           design_voice -> DesignedVoice, designed_voices -> DesignedVoices, delete_voice
-                          (design/delete: loopback only, app-made voices only); prepare_speakers (server, async)
+                          (design: Local or Published, design_refusal; delete: Local only and app-made voices
+                          only, delete_refusal; DesignedVoice.deletable); prepare_speakers (server, async)
     exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job), ExamSummary
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
-    config.rs             StartupOptions (--portable, --config-dir, ...), AppConfig validated once from
-                          .env < Windows registry environment < process environment; KeyOrigin
+    config.rs             StartupOptions (--portable, --config-dir, --no-open, --non-interactive, --service NAME;
+                          interactive()), AppConfig validated once from .env < Windows registry environment <
+                          process environment (address, public_address from PUBLIC_PORT, public_hosts from
+                          PUBLIC_HOST); KeyOrigin; remember_in_dotenv (owner-only .env: 0600, protected DACL on
+                          Windows where the volume keeps permissions; FAT/exFAT cannot, and the console says so)
+    console.rs            interactive (pure), real-console checks, in_session_zero (Windows), ask_yes_no ([y/N]),
+                          ask_secret (masked with *; Ctrl+C ends the program with the console restored)
+    ingress.rs            Origin { Local, Published, Remote }: classify (pure), of_parts (plain routes), current
+                          (server functions); PublishedListener; FORWARDING_HEADERS
+    listeners.rs          bind (main, PUBLIC_PORT) with typed BindError, browser_url, one router on both listeners,
+                          process-wide shutdown (Ctrl+C, Ctrl+Break, SIGTERM, POST /instance/stop), 5 s drain
+    instance/             APP_ID, RunKind (console, service, dev), InstanceInfo; GET /instance, POST /instance/stop
+                          (Local only, stop token from instance.json); lock.rs (DATA_DIR/instance.lock);
+                          probe.rs (who answers /instance); process.rs (is that PID this program);
+                          listener.rs (does that PID alone listen on the address that answered);
+                          takeover.rs ([y/N] stop of a console copy or a Windows service + restart watcher);
+                          win32.rs (Windows only: process handle, Toolhelp, TCP listener table, service
+                          control manager)
     secrets.rs            the API key requests use: typed in the browser (memory only), else configured;
                           remembers the key Google last rejected (KeyStatus.rejected)
+    mod.rs                prepare (config, dirs, logging) and finish (console key prompt, key note, notices,
+                          config::initialize)
     usage.rs              UsageStore: `usage` ledger table in jobs.db (one row per step run, any outcome)
     exams.rs              ExamStore: `exams` table (SavedExam JSON body + summary columns) in jobs.db; pins recording jobs
-    startup.rs            bootstrap (prints config notices) -> SQLite -> router + GET /audio/{job_id} and
-                          GET /voice-sample/{voice_id}; dioxus::serve in debug
-                          (hot reload), else an explicit listener, browser opening, graceful Ctrl+C
+    startup.rs            prepare -> data-folder lock and binds (takeover prompt on a conflict) -> finish ->
+                          SQLite, instance.json, interrupted-job sweep -> router + GET /audio/{job_id},
+                          GET /voice-sample/{voice_id}, GET /instance, POST /instance/stop; dioxus::serve in debug
+                          (hot reload, main address only), else the main and published listeners, browser opening,
+                          graceful stop
     llm/gemini.rs         GeminiClient on /v1beta/interactions (store: false): generate_text, generate_json<T>,
                           generate_brief(model) (no thinking level, 20 s, 1,024 output tokens),
                           synthesize(SpeechRequest); Voices API: list_voices, get_voice, delete_voice,
@@ -109,11 +130,13 @@ src/
                           find_voice, delete_designed_voice; `designed_voices` table of the voices made here); Announcer
     audio/wav.rs          Pcm16: silence, tone, append, WAV encode/decode (no crate)
     audio/program.rs      render_program(AudioProgram, passages, announcer, assets)
-    jobs/store.rs         SQLite job table (JobStore); output_path is a file name resolved under DATA_DIR/audio
+    jobs/store.rs         SQLite job table (JobStore); output_path is a file name resolved under DATA_DIR/audio;
+                          fail_interrupted (pending/processing -> failed at startup)
     jobs/worker.rs        spawn_part_audio, spawn_exam_audio (usage recorded on success and failure),
                           hourly clean-up (AUDIO_RETENTION_HOURS, SPEECH_CACHE_HOURS, voice samples after 30 days)
-    jobs/serve.rs         serve_audio, serve_voice_sample: plain axum handlers streaming a WAV (audio/wav, Range)
-    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5, Naming 30)
+    jobs/serve.rs         serve_audio, serve_voice_sample: plain axum handlers streaming a WAV (audio/wav, Range;
+                          Cache-Control: private, no-cache on every answer)
+    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5, VoiceDelete 5, Naming 30)
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
   export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
   export/naming.rs        download names: LocalStamp, slug_words (Vietnamese folded to ASCII), test_type, summary_slug,
@@ -367,11 +390,14 @@ The teacher edits; nothing is "final" until they say so.
 * **Voice Design** (`design_voice`: name, a 20-500 character description,
   gender, accent) takes about 20 s and about $0.01. The `designed_voices` table
   of `jobs.db` records the voices this app made, with their exact accent
-  (Google keeps only a language tag); only those can be deleted. Creating and
-  deleting work only when the server listens on a loopback address (the rule
-  of the browser key, `settings::local_server`) and are limited by
-  `Bucket::VoiceDesign` (5 a minute). Voices made elsewhere in the project are
-  listed and usable, never deleted. The project's list is cached 60 s.
+  (Google keeps only a language tag); only those can be deleted. Creating
+  works for Local and Published requests (a browser on the server's own
+  computer, or the Cloudflare Tunnel on `PUBLIC_PORT`), deleting for Local
+  requests only (see "Request origin"); each is refused before its rate limit
+  is touched, `Bucket::VoiceDesign` and `Bucket::VoiceDelete` (5 a minute
+  each, so internet users designing voices cannot use up the deletes).
+  Voices made elsewhere in the project are listed and usable, never deleted.
+  The project's list is cached 60 s.
 
 ## Usage and cost
 
@@ -415,9 +441,27 @@ itself is streamed by a plain axum route, `GET /audio/{job_id}`
 `infrastructure/startup.rs`), as `audio/wav` with `Range` support, so the player can
 seek and the download link needs no blob. It is deliberately not a server
 function: those redirect requests that accept `text/html`, which is exactly
-what a download link sends. An exam job reads two parts at a time and
+what a download link sends. Every answer of `/audio/{job_id}` and
+`/voice-sample/{voice_id}`, 404s and errors included, carries
+`Cache-Control: private, no-cache`: `private` keeps recordings out of shared
+caches (Cloudflare), `no-cache` still lets the browser revalidate a large WAV
+cheaply (304). An exam job reads two parts at a time and
 reports progress from 0.1 to 0.8 as parts finish. Concurrency is capped
 per process.
+
+A job runs as a task of the server process, so a stop (Ctrl+C, a service
+stop, a crash) leaves its row `pending` or `processing` for good. At the
+next start, before any request is served, the server that holds the
+data-folder lock (`DATA_DIR/instance.lock`, taken before the job database is
+opened and held until the process exits) marks every such row `failed` with
+"The server stopped before this recording was finished. Make the recording
+again." (`JobStore::fail_interrupted`), so both pages stop polling and offer
+to record again. A server without the lock (another live copy uses the same
+data folder, or the file system cannot lock files) leaves them alone, since
+they may still be in progress. Under `dx serve` the sweep runs once per
+process, not on every hot-patch. Copies of 0.8.2 and earlier take no lock:
+stop such a copy before starting a newer one on the same data folder, or the
+newer one fails the recording the old one is still making.
 
 A job row stores only the WAV's file name; every reader resolves it under
 the current `DATA_DIR/audio` (`JobRecord::output_file`, which also accepts
@@ -464,15 +508,125 @@ a portable Windows EXE and Linux AppImage (`--portable`: `.env`,
 saved exams and their recordings travel with the folder); see
 `docs/portable.md`. Put a reverse proxy with TLS and **some
 authentication** in front before exposing it: the app has rate limits but
-no login, and every request spends Gemini credit. A server bound to anything
-but a loopback address never accepts an API key from the browser.
+no login, and every request spends Gemini credit.
+
+The intended public shape is a Windows service plus Cloudflare Tunnel: the
+release binary runs under NSSM with `--service NAME` (no console prompts, no
+browser; `GET /instance` reports the service name), bound to `IP=127.0.0.1`
+with `PUBLIC_PORT` and `PUBLIC_HOST` (the tunnel's hostname, required with
+`PUBLIC_PORT`) set; `cloudflared` connects to `PUBLIC_PORT` and Cloudflare
+Access decides who reaches it. Requests on `PUBLIC_PORT` whose `Host` (and
+`Origin`, if any) is a `PUBLIC_HOST` are Published, so internet users can
+design voices but never enter a key or delete voices; any other request on
+that port (a page whose name was rebound to 127.0.0.1, a tunnel that rewrites
+`Host`) is Remote. Any reverse proxy other than the tunnel must also target
+`PUBLIC_PORT`: on the main port a proxy is recognised only by the
+forwarding headers it adds. A server bound to anything but a loopback
+address (Docker, a LAN bind) treats every request as Remote, so it never
+accepts an API key from the browser and designs or deletes no voices; its
+`PUBLIC_PORT` is reachable without Access and is treated the same way (a
+startup notice says so).
+
+### Request origin
+
+`infrastructure/ingress.rs` classifies each request; the first rule that
+matches wins:
+
+1. the server is not bound to a loopback address → **Remote**;
+2. `Sec-Fetch-Site: cross-site` (a page of another site made it) →
+   **Remote**, on either port;
+3. it arrived on the `PUBLIC_PORT` listener → **Published** when its `Host`
+   (port aside) is one of the `PUBLIC_HOST` names and its `Origin`, if
+   present, names one of them too; otherwise **Remote** (DNS rebinding onto
+   the published port, or anything that did not come through the tunnel's
+   hostname). Forwarding headers are expected here, so rule 4 does not
+   apply;
+4. it carries a forwarding header (`cf-ray`, `cf-connecting-ip`,
+   `cf-warp-tag-id`, `cdn-loop`, `x-forwarded-for`, `x-forwarded-host`,
+   `x-forwarded-proto`, `forwarded`, `x-real-ip`, `true-client-ip`, `via`) →
+   **Remote**;
+5. `Host` is missing or does not name this computer (`localhost`,
+   `*.localhost`, `127.x.y.z`, `[::1]`, any port) → **Remote** (DNS
+   rebinding);
+6. `Origin` is present and does not name this computer, or is `null` →
+   **Remote**;
+7. otherwise → **Local**.
+
+Server functions call `ingress::current()` once at the start of their body
+(the request context does not follow `tokio::spawn`; with no request the
+answer is Remote); plain routes use `ingress::of_parts`. The application
+layer keeps its refusals as pure functions of a `bool`
+(`settings::entry_refusal`, `voices::design_refusal`,
+`voices::delete_refusal`), so the browser build compiles them too.
+
+| | Local | Published | Remote |
+|---|---|---|---|
+| enter an API key in the browser | yes | no | no |
+| design a voice | yes | yes | no |
+| delete a designed voice this app made | yes | no | no |
+| `GET /instance`, `POST /instance/stop` | yes | 404 | 404 |
+
+### Instances and takeover
+
+One server runs per port and per data folder. The release path takes the
+data-folder lock, then binds `PORT` and, when set, `PUBLIC_PORT`, before it
+asks for a key or opens the job database. When the port or the lock is held,
+startup asks who holds it: `GET /instance` on that loopback address (or on
+the address in `DATA_DIR/instance.json` for the lock) answers, to Local
+requests only, with `InstanceInfo` as JSON (`app`, `version`, `pid`,
+`run.kind` = `console`, `service` with its `name`, or `dev`, `address`,
+`public_port`, `config_dir`, `data_dir`; `Cache-Control: no-store`). It is
+taken to be this app only when the JSON names `listening-exam-generator`,
+another live process id and the address that was asked (a dev server is
+exempt from the address check, since `dx serve` proxies its port, but it is
+never stopped), and that process runs an executable of the same file name.
+Before it is asked to stop or ended, the operating system must also show
+that process, and no other, listening on the address that answered
+(`instance::listener`: the TCP listener table on Windows, `/proc/net/tcp{,6}`
+and `/proc/{pid}/fd` on Linux, nothing elsewhere); otherwise it is treated as
+another program. The version and folders it reports are printed without
+control characters.
+
+* Another program, or any non-loopback bind: the old error ("Cannot listen
+  on … Check IP/PORT or close the other application.", or the data folder's
+  lock is held).
+* A copy of this app with no one at the console (`--service`,
+  `--non-interactive`, no real console, or Windows session 0, where services,
+  scheduled tasks set to run whether the user is signed in or not, and
+  OpenSSH sessions run): an error naming its version and
+  process id. A dev server (`dx serve`) is never stopped.
+* At an interactive console: "[y/N]", default no. No means use the running
+  copy: print its URL, open the browser to it when portable, exit 0. Yes
+  stops a console copy with `POST /instance/stop` (Local only; refused with
+  403 when an `Origin` header is present or the
+  `x-listening-exam-generator-stop` header does not carry the token from
+  that copy's `instance.json`, which `GET /instance` never returns; 409 for
+  a service or dev copy; 202 otherwise), waits 10 s and then ends the
+  process. A Windows service copy is stopped through the service control
+  manager, after checking that the app's process is the child of that
+  service's process, and only after a hidden PowerShell watcher was started
+  that runs `Start-Service` once this copy has exited (window closed,
+  Ctrl+C, a crash) while the user stays signed in. The watcher runs in the
+  user's session, so signing out of Windows ends it together with this copy;
+  the service, set to start automatically, then runs again only from the
+  next boot. An
+  account without the right to stop the service is told so and uses the
+  running copy. On other systems a service copy must be stopped by its
+  service manager.
+* `PUBLIC_PORT` held by anything is never taken over (the published
+  listener does not answer `/instance`).
+
+`instance.json` (the `InstanceInfo` plus a random stop token) is written
+after the binds, replaced in one step; the lock file itself stays empty.
 
 ## Roadmap (in order)
 
 1. MP3 output via `ffmpeg`.
 2. Authentication (single shared password or Cloudflare Access), then
    per-user rate limits; saved exams are visible to everyone who reaches the
-   server until then.
+   server until then. In progress: the published port (`PUBLIC_PORT`) puts
+   Cloudflare Tunnel and Access in front and tells internet users apart from
+   the server's own computer, but the app still knows no individual user.
 3. Regeneration of a single item with the validator's issues fed back into
    the prompt.
 4. Saving on the part page too (its state is not an `Exam`; it would need a

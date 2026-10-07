@@ -11,7 +11,7 @@ const KEY_STATUS_POLL_MS: u32 = 5_000;
 
 /// Shown on every page while the server has no Gemini API key or Google
 /// rejected the one in use: explains the risk, then lets the teacher paste a
-/// key (on a local server only).
+/// key (only in a browser on the server's own computer).
 #[component]
 pub fn KeySetup() -> Element {
     let mut status = use_signal(|| None::<KeyStatus>);
@@ -88,7 +88,7 @@ pub fn KeySetup() -> Element {
                     code { ".env" }
                     ". This app has "
                     strong { "no login" }
-                    ": anyone who can open this page can spend your Gemini credit. Only do this on your own computer with the app bound to 127.0.0.1. Prefer setting the "
+                    ": anyone who can open this page can spend your Gemini credit. Only do this in a browser on the server's own computer. Prefer setting the "
                     code { "GEMINI_API_KEY" }
                     " environment variable. Use a key restricted to the Generative Language API, and revoke it in Google AI Studio if you suspect it leaked."
                 }
@@ -152,9 +152,9 @@ pub fn KeySetup() -> Element {
                 }
             } else {
                 p { class: "muted",
-                    "This server is reachable from other computers, so it does not accept a key from the browser. Set "
+                    "A key can be entered here only in a browser on the server's own computer, and not at all while the server listens on a network address (IP=0.0.0.0 or a LAN address, as in Docker). Ask whoever runs the server to set "
                     code { "GEMINI_API_KEY" }
-                    " on the server and restart."
+                    " and restart it."
                 }
             }
             if let Some(message) = error() {

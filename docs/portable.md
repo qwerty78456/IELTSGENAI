@@ -18,10 +18,26 @@ logs/database cause startup failure. Error messages omit dotenv
 contents and API-key values. Environment variables override file values
 (on Windows the user and machine environment is read from the registry too, so
 a variable set after the console opened counts); syntax errors are still
-rejected. A missing or placeholder key no longer stops startup: the server
-starts, logs "GEMINI_API_KEY): missing" and the page asks for a key, which it
-accepts only when bound to a loopback address. Startup makes no paid or
-credential-validation API requests.
+rejected. A missing or placeholder key does not stop startup. A run with a
+real console on stdin and stdout, without --non-interactive or --service and
+outside Windows session 0, first asks for it once the port and data folder are
+its own: "Paste your Gemini API key (shown as *), or press Enter to enter it in
+the browser instead". On a network bind (IP=0.0.0.0 or a LAN address) no
+browser may enter a key, so the prompt ends "or press Enter to skip" and the
+fallback lines say to set GEMINI_API_KEY and restart. Each character shows as
+*, the key is checked with one free Google request and written to .env
+(readable by its owner only: 0600 on Unix, and on Windows a protected
+owner/SYSTEM/Administrators DACL on an NTFS drive; a FAT or exFAT drive, such as
+most USB sticks, keeps no permissions, so the file stays readable by every
+account and the console and log say so), at most three tries.
+A key Google cannot check (busy, offline) is saved only after a "[y/N]". Ctrl+C
+at the prompt ends the program with the console restored, so the launcher's
+"Press Enter to close." still works. Enter alone, a non-interactive run, or
+three unusable keys leave the server to start, log "GEMINI_API_KEY): missing"
+and let the page ask for a key, which it accepts only from a browser on the
+server's own computer (a Local request: loopback bind, main port, no proxy).
+Startup makes no paid API requests; the console key check is the only
+request to Google, and it is free.
 
 Since 0.8.0 voices.json is version 2 and holds overrides only: the voice pools
 per accent and gender (British, American, Australian, Canadian, New Zealand,
@@ -34,9 +50,11 @@ is kept byte for byte and the console prints a "0.7 format" notice. A pool
 below its minimum (4 British voices per gender, 3 for the other core accents,
 2 for the accents added in 0.8) is a notice, not a failure. Voice samples
 ("Listen") are kept under data/audio/voices and purged after 30 days unused.
-Designed voices belong to the Google project of the API key; creating or
-deleting one is refused unless the server listens on 127.0.0.1 or ::1, which
-portable mode does by default.
+Designed voices belong to the Google project of the API key. Creating one is
+allowed in a browser on the server's own computer (127.0.0.1 or ::1, which
+portable mode uses by default) and through PUBLIC_PORT (Cloudflare Tunnel,
+for requests whose Host names a PUBLIC_HOST; PUBLIC_HOST is required with
+PUBLIC_PORT); deleting one only in a browser on the server's own computer.
 
 Development and Docker retain their current-working-directory configuration
 and data conventions; no parent-directory dotenv search is performed. Docker
@@ -44,10 +62,34 @@ may supply configuration entirely through environment variables. They do not
 open browsers. Debug launches retain Dioxus hot reload. All modes now require
 valid startup configuration.
 
-Portable production startup initializes logging, SQLite, and a listener before
-opening the browser. Missing browser launchers leave the URL visible and the
-server running. An occupied port fails instead of selecting another port.
-Ctrl+C shuts down the server. Windows additionally handles Ctrl+Break.
+Portable production startup initializes logging, takes the data-folder lock
+(data/instance.lock), binds the listeners (PORT, and PUBLIC_PORT when set),
+asks for a missing key, opens SQLite, marks recordings an earlier stop
+interrupted as failed, and writes data/instance.json before opening the
+browser. Missing browser launchers leave the URL visible and the server
+running. An occupied port or data folder never selects another one. When
+another copy of this app holds it on a loopback address, the error names that
+copy (version, process id, address); at an interactive console a "[y/N]"
+prompt (Enter = no) offers to stop it and start this copy instead. No opens
+the browser at the running copy and exits 0; yes stops a console copy (a
+clean stop request, then termination after 10 s) or, on Windows, a service
+copy, which a hidden helper starts again once this copy exits while the user
+stays signed in; signing out ends the helper too, and the service (Automatic
+start) then runs again only from the next boot. Nothing is stopped or ended
+unless the system shows the process that answered listening on that address.
+Anything else on the port, any other IP, or PUBLIC_PORT being taken fails as
+before ("Cannot listen on ..."). Copies of 0.8.2 and earlier take no
+data-folder lock: stop such a copy before starting a newer one on the same
+data folder, or a recording it is still making is shown as failed. Ctrl+C shuts down the server. Windows additionally
+handles Ctrl+Break, Unix SIGTERM; open connections get 5 seconds.
+
+--service NAME is for a service manager (NSSM): no console questions, no
+browser, no "Press Ctrl+C to stop." line, and GET /instance reports the
+service name so a manual copy can offer to stop that service. Scheduled tasks
+and other unattended starts should pass --non-interactive (and --no-open): a
+hidden console would otherwise wait for an answer no one can give. A run in
+Windows session 0 (services, a task set to run whether the user is signed in
+or not, OpenSSH sessions) is detected and never asks.
 
 ## Rebuilding
 

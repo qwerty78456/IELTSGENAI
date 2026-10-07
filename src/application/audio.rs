@@ -27,9 +27,9 @@ pub struct JobView {
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub const MAX_ACTIVE_JOBS: i64 = 10;
 
-/// Where a finished recording is streamed from (axum path syntax). `main.rs`
-/// mounts `infrastructure::jobs::serve_audio` here; the browser builds the
-/// same URL with `audio_url`.
+/// Where a finished recording is streamed from (axum path syntax).
+/// `infrastructure::startup` mounts `infrastructure::jobs::serve_audio` here;
+/// the browser builds the same URL with `audio_url`.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub const AUDIO_ROUTE: &str = "/audio/{job_id}";
 

@@ -16,8 +16,11 @@ pub enum Bucket {
     KeyEntry,
     /// A paid voice sample ("Preview"); stored samples are free and not counted.
     VoiceSample,
-    /// Creating or deleting a designed voice (Voice Design).
+    /// Creating a designed voice (Voice Design).
     VoiceDesign,
+    /// Deleting a designed voice: apart from designing, so internet users who
+    /// design voices cannot use up the deletes of the server's own computer.
+    VoiceDelete,
     /// The few-word summary in download file names.
     Naming,
 }
@@ -25,7 +28,7 @@ pub enum Bucket {
 impl Bucket {
     /// Every bucket, in declaration order: `LIMITERS` is built from it and
     /// indexed by `bucket as usize`.
-    pub const ALL: [Bucket; 8] = [
+    pub const ALL: [Bucket; 9] = [
         Bucket::Topic,
         Bucket::Passage,
         Bucket::Task,
@@ -33,6 +36,7 @@ impl Bucket {
         Bucket::KeyEntry,
         Bucket::VoiceSample,
         Bucket::VoiceDesign,
+        Bucket::VoiceDelete,
         Bucket::Naming,
     ];
 
@@ -45,6 +49,7 @@ impl Bucket {
             Bucket::KeyEntry => 5,
             Bucket::VoiceSample => 30,
             Bucket::VoiceDesign => 5,
+            Bucket::VoiceDelete => 5,
             Bucket::Naming => 30,
         }
     }
@@ -101,8 +106,14 @@ mod tests {
         // The last variant closes the list: a variant added after it must
         // join ALL (and move this line) or indexing would go past the end.
         assert_eq!(Bucket::Naming as usize + 1, Bucket::ALL.len());
+        assert_eq!(Bucket::ALL.len(), 9);
+        assert_eq!(
+            Bucket::VoiceDesign as usize + 1,
+            Bucket::VoiceDelete as usize
+        );
         assert_eq!(Bucket::VoiceSample.per_minute(), 30);
         assert_eq!(Bucket::VoiceDesign.per_minute(), 5);
+        assert_eq!(Bucket::VoiceDelete.per_minute(), 5);
         assert_eq!(Bucket::Naming.per_minute(), 30);
     }
 }

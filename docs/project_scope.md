@@ -27,8 +27,13 @@ and edits; the tool never claims to produce an official exam.
 - Knowing and bounding the cost: every Gemini request is metered and priced,
   an exam's spend is shown against a budget (warning only), and synthesised
   speech is reused instead of paid for twice.
-- Deployment as one container behind a reverse proxy, or as a portable
-  Windows EXE / Linux AppImage on the teacher's own computer.
+- Deployment as one container behind a reverse proxy, as a portable
+  Windows EXE / Linux AppImage on the teacher's own computer, or as a
+  Windows service (NSSM, `--service NAME`) reached from the internet through
+  Cloudflare Tunnel on `PUBLIC_PORT` (for the hostname named by
+  `PUBLIC_HOST`) with Cloudflare Access in front.
+  Requests through the tunnel count as internet users: they may design
+  voices, never enter an API key or delete voices.
 
 ## Out of scope
 

@@ -2,10 +2,13 @@
 //!
 //! A key from the environment or `.env` (see `config::KeyOrigin`) is used
 //! while Google accepts it. Without one, or once Google has rejected it, the
-//! teacher may type a key into the browser; it is kept here, in this
-//! process's memory only, replaces the configured key until a restart, and is
-//! gone after one unless they chose to write it to `.env`. Keys are never
-//! logged or sent back.
+//! teacher may type a key into a browser on the server's own computer
+//! (`ingress::Origin::Local`); it is kept here, in this process's memory
+//! only, replaces the configured key until a restart, and is gone after one
+//! unless they chose to write it to `.env`. A key pasted at the console key
+//! prompt at startup (`infrastructure::finish`) is not kept here: it is saved
+//! in `.env` and becomes the configured key. Keys are never logged or sent
+//! back.
 
 use std::sync::RwLock;
 

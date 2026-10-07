@@ -38,11 +38,34 @@ tower-http = { version = "0.6", features = ["fs"] }
 tempfile = "3"
 open = "5"
 sha2 = "0.10"
+# The console key prompt: reads the console itself, echoing '*' per character.
+rpassword = "7.5"
 
 # Reads the persisted user/machine environment (GEMINI_API_KEY set with setx or
 # the "Environment Variables" dialog after the server's parent process started).
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# Console detection for prompts (session 0 never asks), identifying and
+# stopping a running copy (process, Toolhelp, the TCP listener table, service
+# control), and the owner-only DACL on `.env`. Unifies with the windows-sys
+# tokio uses.
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }
+
+# Stopping a running copy (`kill`), and ignoring Ctrl+C during the key prompt.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

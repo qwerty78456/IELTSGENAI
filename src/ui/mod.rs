@@ -6,3 +6,5 @@ pub mod jobs;
 pub mod naming;
 pub mod prefs;
 pub mod views;
+
+pub mod save_queue;

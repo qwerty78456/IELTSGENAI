@@ -158,22 +158,28 @@ pub(crate) fn status_of(state: crate::infrastructure::jobs::JobState) -> JobStat
 pub(crate) async fn track_for(
     record: &crate::infrastructure::jobs::JobRecord,
 ) -> Option<AudioTrack> {
-    use crate::infrastructure::audio::{SAMPLE_RATE, duration_ms_for_len};
     use crate::infrastructure::jobs::JobState;
 
     if record.state != JobState::Completed {
         return None;
     }
     let path = record.output_file()?;
-    let len = tokio::fs::metadata(path)
-        .await
-        .map(|m| m.len())
-        .unwrap_or(0);
+    track_at(&record.id, &path).await
+}
+
+#[cfg(feature = "server")]
+async fn track_at(id: &str, path: &std::path::Path) -> Option<AudioTrack> {
+    use crate::infrastructure::audio::{SAMPLE_RATE, duration_ms_for_len};
+    let metadata = tokio::fs::metadata(path).await.ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let len = metadata.len();
     Some(AudioTrack {
         container: "wav".into(),
         sample_rate: SAMPLE_RATE,
         duration_ms: duration_ms_for_len(len),
-        location: record.id.clone(),
+        location: id.to_string(),
     })
 }
 
@@ -197,4 +203,18 @@ pub async fn audio_job_status(job_id: String) -> Result<JobView, ServerFnError> 
         error: record.error,
         track,
     })
+}
+
+#[cfg(all(test, feature = "server"))]
+mod recording_file_tests {
+    #[tokio::test]
+    async fn missing_wav_and_directories_are_not_playable_tracks() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(
+            super::track_at("missing", &dir.path().join("missing.wav"))
+                .await
+                .is_none()
+        );
+        assert!(super::track_at("directory", dir.path()).await.is_none());
+    }
 }

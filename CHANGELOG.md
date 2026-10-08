@@ -3,6 +3,89 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.9.1] – 2026-10-08 — Bảo toàn bản nháp khi chuyển đề và lưu từ nhiều tab · Preserve drafts across navigation and concurrent tabs
+
+### Tiếng Việt
+
+#### Sửa lỗi và bổ sung
+
+- Hàng đợi lưu dùng chung giữ bản chụp mới nhất của từng đề trong bộ nhớ phiên.
+  Chuyển đề hoặc chuyển giữa One part và Whole exam không bỏ lượt lưu đang chạy
+  hay chỉnh sửa đến trong lúc lưu. Nháp chưa đủ điều kiện autosave vẫn mở lại được.
+- Khu vực trạng thái lưu chung hiển thị đề đang lưu, lỗi và xung đột; cho mở lại
+  nháp và thử lại. Có cảnh báo rời trang khi còn thay đổi chưa lưu.
+- Lưu và xóa kiểm tra `revision` trên server. Tab cũ không âm thầm ghi đè tab mới;
+  ghi đè phải xác nhận phiên bản vừa đọc, và vẫn báo xung đột nếu bản đó đổi tiếp.
+  Mở bản mới nhất cũng cần xác nhận bỏ chỉnh sửa cục bộ.
+- Retry giữ nguyên payload và `mutation_id`: phản hồi bị mất sau khi server đã
+  lưu không gây ghi lặp hoặc tăng revision lần nữa. Dấu xóa lâu dài chặn yêu cầu
+  đến muộn làm đề đã xóa xuất hiện lại; nháp còn giữ có thể lưu thành đề mới.
+- Chỉ ý định mở đề mới nhất được cập nhật giao diện hoặc báo lỗi. Tạo đề mới,
+  đổi format, chỉnh sửa và xóa vô hiệu hóa phản hồi mở cũ; danh sách thư viện
+  không nhận lại summary cũ hơn hoặc đề đã được xác định là đã xóa.
+- Xóa chờ lượt lưu đang gửi có kết quả xác định. Chỉnh sửa phát sinh sau khi
+  xác nhận xóa vẫn được giữ trong phiên để lưu dưới ID mới.
+- Lưu, xóa và cleanup phối hợp bằng transaction SQLite `BEGIN IMMEDIATE`.
+  Bản thu mất tham chiếu không làm mất văn bản: server lưu đề, bỏ liên kết và
+  trả cảnh báo. Xóa một đề không làm mất bản thu đang chạy hoặc còn được đề khác dùng.
+- Retention tính từ lúc job hoàn tất, không từ lúc tạo. Cleanup chỉ xóa nguyên tử
+  tối đa 100 job đã kết thúc, quá hạn và không được tham chiếu mỗi lượt.
+  WAV chỉ xóa sau commit; tệp thiếu không còn được báo là bản thu hợp lệ dài 0 giây.
+
+#### Nâng cấp và kiểm chứng
+
+- Dừng ứng dụng và sao lưu toàn bộ thư mục dữ liệu trước khi nâng cấp. Server
+  và browser assets phải cùng phiên bản; tải lại tab cũ trước khi ghi.
+  Đề cũ bắt đầu ở revision 1; job cũ đã kết thúc nhận thời điểm migration làm
+  mốc retention. Rollback cần khôi phục cả chương trình và dữ liệu tương ứng.
+- Nháp chưa lưu chỉ được giữ trong phiên, không có khôi phục sau đóng tab,
+  lịch sử phiên bản hoặc thùng rác. Xem [hướng dẫn bảo toàn dữ liệu](docs/save-safety.md).
+- Thêm 17 kiểm thử hồi quy: **288 đạt, 5 bỏ qua**. fmt, browser/server/wasm32
+  check, build portable Windows và smoke test đạt. Kiểm thử trình duyệt hai tab
+  bao gồm xung đột, mất phản hồi, mất mạng, mở đề đến muộn và xóa khi đang sửa.
+  Không gọi Gemini trả phí. Clippy còn 8 cảnh báo có sẵn, không thêm cảnh báo mới.
+- Smoke test chưa kiểm ca khởi động hoàn toàn không có key vì Windows đang có
+  key trong cấu hình môi trường; không thay đổi cấu hình đó để chạy test.
+
+### English
+
+#### Fixed and added
+
+- A layout-owned, per-exam save queue retains the latest in-session snapshots
+  across exam and route changes, including edits made while a save is in flight.
+  Unarmed drafts remain recoverable from the shared session panel.
+- Global save status exposes pending work, errors, manual retries and conflicts.
+  Leaving the page warns while work is unsaved. Conflict replacement requires
+  explicit confirmation against a freshly read server revision.
+- Revision-checked saves and deletes prevent stale tabs from overwriting newer
+  work. Mutation receipts make retries after lost acknowledgements idempotent;
+  permanent ID-only tombstones prevent delayed writes from resurrecting deleted exams.
+- Only the latest open intent may replace the current exam or report an error.
+  Library responses cannot restore known deletions or replace newer summaries.
+  Deletion waits for in-flight saves; later local edits survive as a draft that
+  can be saved under a new ID.
+- Immediate SQLite transactions coordinate saves, deletes and recording cleanup.
+  Missing references are detached with a warning while exam text is saved.
+  Active and shared recordings survive deletion; missing WAVs are not playable tracks.
+- Retention starts at job completion. Cleanup atomically removes at most 100
+  expired terminal, unreferenced jobs per pass, deleting files only after commit.
+
+#### Upgrade and verification
+
+- Stop the app and back up the entire data directory. Upgrade server and browser
+  assets together and reload older tabs before writing. Legacy exams start at
+  revision 1; legacy terminal jobs use migration time for retention. Rollback
+  requires the matching application and complete pre-upgrade data backup.
+- Draft protection is session-only; closing the tab does not preserve unsaved
+  drafts. See [data-safety and verification notes](docs/save-safety.md).
+- **288 tests passed, 5 ignored**, including 17 new regressions. Formatting,
+  browser/server/wasm32 checks, the Windows portable build and smoke tests passed.
+  Two-tab browser tests cover conflicts, lost acknowledgements, offline retries,
+  late opens and edits during deletion. No paid Gemini requests were made.
+  Strict Clippy retains eight existing warnings and introduces none.
+- The no-key startup smoke scenario was skipped because a key is present in the
+  Windows environment; that configuration was not modified for testing.
+
 ## [0.9.0] – 2026-10-07 — 🌐 "Sẵn sàng ra Internet qua Cloudflare Tunnel, và biết mình đang chạy ở đâu." · "Ready for the internet through Cloudflare Tunnel, and aware of the copy already running."
 
 Đến 0.8.2, app coi "server bind vào 127.0.0.1" là "người dùng đang ngồi tại

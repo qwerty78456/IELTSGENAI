@@ -101,12 +101,13 @@ async fn cleanup_old_jobs(max_age_secs: i64) {
 /// Deletes the WAV a job row pointed at (best effort, logged).
 pub async fn remove_output(output_path: &str) {
     let path = output_file_in(&config().audio_dir(), output_path);
-    let _ = tokio::task::spawn_blocking(move || {
-        if let Err(e) = std::fs::remove_file(&path) {
-            tracing::warn!("could not delete {}: {e}", path.display());
-        }
-    })
-    .await;
+    remove_output_file(&path).await;
+}
+
+async fn remove_output_file(path: &std::path::Path) {
+    if let Err(error) = tokio::fs::remove_file(path).await {
+        tracing::warn!(path = %path.display(), %error, "could not delete recording file");
+    }
 }
 
 /// Writes a WAV under `DATA_DIR/audio/<job_id>.wav` and returns its file name,
@@ -270,5 +271,45 @@ mod tests {
         };
         let reuse: Vec<Reuse> = request.parts.iter().map(|p| reuse_for("job", p)).collect();
         assert_eq!(reuse, [Reuse::Allow, Reuse::Refresh, Reuse::Allow]);
+    }
+    #[tokio::test]
+    async fn failed_file_cleanup_does_not_restore_a_deleted_job() {
+        use crate::domain::{Exam, ExamFormat};
+        use crate::infrastructure::exams::{ExamStore, SaveInput, StoreDelete};
+        use crate::infrastructure::jobs::JobKind;
+        let directory = tempfile::tempdir().unwrap();
+        let jobs = JobStore::open_options(
+            sqlx::sqlite::SqliteConnectOptions::new()
+                .filename(directory.path().join("jobs.db"))
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        let exams = ExamStore::with_pool(jobs.pool().clone());
+        let job = jobs.create(JobKind::ExamAudio).await.unwrap();
+        // A directory cannot be removed as a WAV; simulate a filesystem failure.
+        let blocked = directory.path().join("blocked.wav");
+        std::fs::create_dir(&blocked).unwrap();
+        jobs.complete(&job, "blocked.wav").await.unwrap();
+        let exam = Exam::new(ExamFormat::hsg_national(), "Delete", "");
+        exams
+            .save(SaveInput {
+                exam: &exam,
+                recording_job: Some(&job),
+                body: "{}",
+                expected_revision: 0,
+                mutation_id: "one",
+                hash: "one",
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            exams.delete(&exam.id.to_string(), 1).await.unwrap(),
+            StoreDelete::Deleted(Some("blocked.wav".into()))
+        );
+        remove_output_file(&blocked).await;
+        assert!(blocked.is_dir());
+        assert!(jobs.get(&job).await.unwrap().is_none());
+        assert!(exams.get(&exam.id.to_string()).await.unwrap().is_none());
     }
 }

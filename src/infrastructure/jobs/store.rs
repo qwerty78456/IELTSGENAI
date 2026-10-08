@@ -155,6 +155,25 @@ impl JobStore {
         )
         .execute(&pool)
         .await?;
+        let mut migration = pool.begin_with("BEGIN IMMEDIATE").await?;
+        let (has_finished,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM pragma_table_info('jobs') WHERE name='finished_at_secs'",
+        )
+        .fetch_one(&mut *migration)
+        .await?;
+        if has_finished == 0 {
+            sqlx::query("ALTER TABLE jobs ADD COLUMN finished_at_secs INTEGER")
+                .execute(&mut *migration)
+                .await?;
+            sqlx::query("UPDATE jobs SET finished_at_secs=? WHERE state IN ('completed','failed')")
+                .bind(now_secs())
+                .execute(&mut *migration)
+                .await?;
+        }
+        sqlx::query("CREATE INDEX IF NOT EXISTS jobs_retention ON jobs(state, finished_at_secs)")
+            .execute(&mut *migration)
+            .await?;
+        migration.commit().await?;
         super::super::exams::create_schema(&pool).await?;
         super::super::usage::create_schema(&pool).await?;
         super::super::tts::create_designed_voices_schema(&pool).await?;
@@ -194,17 +213,18 @@ impl JobStore {
     /// lock (`instance`), so no other live server's jobs are touched.
     pub async fn fail_interrupted(&self, message: &str) -> Result<u64, sqlx::Error> {
         let done = sqlx::query(
-            "UPDATE jobs SET state = ?1, error = ?2 WHERE state IN ('pending', 'processing')",
+            "UPDATE jobs SET state = ?1, error = ?2, finished_at_secs = COALESCE(finished_at_secs, ?3) WHERE state IN ('pending', 'processing')",
         )
         .bind(JobState::Failed.as_str())
         .bind(message)
+        .bind(now_secs())
         .execute(&self.pool)
         .await?;
         Ok(done.rows_affected())
     }
 
     pub async fn mark_processing(&self, id: &str, progress: f32) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE jobs SET state = ?1, progress = ?2 WHERE id = ?3")
+        sqlx::query("UPDATE jobs SET state = ?1, progress = ?2 WHERE id = ?3 AND state IN ('pending','processing')")
             .bind(JobState::Processing.as_str())
             .bind(progress)
             .bind(id)
@@ -214,20 +234,22 @@ impl JobStore {
     }
 
     pub async fn complete(&self, id: &str, output_path: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE jobs SET state = ?1, progress = 1.0, output_path = ?2 WHERE id = ?3")
+        sqlx::query("UPDATE jobs SET state = ?1, progress = 1.0, output_path = ?2, finished_at_secs = COALESCE(finished_at_secs, ?4) WHERE id = ?3 AND state IN ('pending','processing')")
             .bind(JobState::Completed.as_str())
             .bind(output_path)
             .bind(id)
+            .bind(now_secs())
             .execute(&self.pool)
             .await?;
         Ok(())
     }
 
     pub async fn fail(&self, id: &str, error: &str) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE jobs SET state = ?1, error = ?2 WHERE id = ?3")
+        sqlx::query("UPDATE jobs SET state = ?1, error = ?2, finished_at_secs = COALESCE(finished_at_secs, ?4) WHERE id = ?3 AND state IN ('pending','processing')")
             .bind(JobState::Failed.as_str())
             .bind(error)
             .bind(id)
+            .bind(now_secs())
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -253,26 +275,23 @@ impl JobStore {
         ))
     }
 
-    /// Deletes jobs created before `cutoff_secs` and returns their output paths
-    /// for removal. A job a saved exam refers to is never purged here.
+    /// Atomically claims at most 100 finished, expired, unreferenced jobs.
+    /// File deletion happens only after this transaction commits.
     pub async fn purge_before(&self, cutoff_secs: i64) -> Result<Vec<String>, sqlx::Error> {
-        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT id, output_path FROM jobs
-             WHERE created_at_secs <= ?1
-               AND id NOT IN (SELECT recording_job FROM exams WHERE recording_job IS NOT NULL)",
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let rows: Vec<(Option<String>,)> = sqlx::query_as(
+            "DELETE FROM jobs WHERE id IN (
+                SELECT id FROM jobs WHERE state IN ('completed','failed') AND finished_at_secs <= ?1
+                AND NOT EXISTS (SELECT 1 FROM exams WHERE recording_job=jobs.id)
+                ORDER BY finished_at_secs,id LIMIT 100
+            ) RETURNING output_path",
         )
         .bind(cutoff_secs)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await?;
-        let mut paths = Vec::new();
-        for (id, path) in rows {
-            sqlx::query("DELETE FROM jobs WHERE id = ?1")
-                .bind(&id)
-                .execute(&self.pool)
-                .await?;
-            paths.extend(path);
-        }
-        Ok(paths)
+        tx.commit().await?;
+        tracing::info!(removed = rows.len(), "recording cleanup committed");
+        Ok(rows.into_iter().filter_map(|r| r.0).collect())
     }
 }
 
@@ -360,5 +379,55 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+    #[tokio::test]
+    async fn retention_uses_finish_time_never_age_of_active_jobs_and_bounds_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = JobStore::open_options(
+            SqliteConnectOptions::new()
+                .filename(dir.path().join("jobs.db"))
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        let active = store.create(JobKind::ExamAudio).await.unwrap();
+        store.mark_processing(&active, 0.1).await.unwrap();
+        sqlx::query("UPDATE jobs SET created_at_secs=0")
+            .execute(store.pool())
+            .await
+            .unwrap();
+        assert!(store.purge_before(i64::MAX).await.unwrap().is_empty());
+        let completed = store.create(JobKind::PartAudio).await.unwrap();
+        store.complete(&completed, "done.wav").await.unwrap();
+        sqlx::query("UPDATE jobs SET finished_at_secs=42 WHERE id=?")
+            .bind(&completed)
+            .execute(store.pool())
+            .await
+            .unwrap();
+        store.complete(&completed, "replacement.wav").await.unwrap();
+        store.fail(&completed, "late error").await.unwrap();
+        store.mark_processing(&completed, 0.5).await.unwrap();
+        let finish: i64 = sqlx::query_scalar("SELECT finished_at_secs FROM jobs WHERE id=?")
+            .bind(&completed)
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(finish, 42);
+        assert_eq!(
+            store.get(&completed).await.unwrap().unwrap().state,
+            JobState::Completed
+        );
+        assert!(store.purge_before(41).await.unwrap().is_empty());
+        assert_eq!(store.purge_before(42).await.unwrap(), ["done.wav"]);
+        for i in 0..101 {
+            sqlx::query("INSERT INTO jobs (id,kind,state,progress,created_at_secs,finished_at_secs) VALUES (?,'part_audio','failed',0,0,1)").bind(format!("old-{i}")).execute(store.pool()).await.unwrap();
+        }
+        store.purge_before(2).await.unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE state='failed'")
+            .fetch_one(store.pool())
+            .await
+            .unwrap();
+        assert_eq!(left, 1);
+        assert!(store.get(&active).await.unwrap().is_some());
     }
 }

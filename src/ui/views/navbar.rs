@@ -1,10 +1,11 @@
 use crate::Route;
 use dioxus::prelude::*;
 
-use super::exam::ExamState;
+use super::exam::{ExamState, SaveStatusPanel};
 use crate::application::voices::voice_catalogue;
 use crate::ui::components::key_setup::KeySetup;
 use crate::ui::components::voices::VoiceCatalogueCtx;
+use crate::ui::save_queue::SaveQueue;
 
 const NAVBAR_CSS: Asset = asset!("/assets/styling/navbar.css");
 
@@ -13,7 +14,8 @@ const NAVBAR_CSS: Asset = asset!("/assets/styling/navbar.css");
 /// voice catalogue, loaded once for both pages.
 #[component]
 pub fn Navbar() -> Element {
-    use_context_provider(|| Signal::new(ExamState::default()));
+    let saves = use_context_provider(|| Signal::new(SaveQueue::default()));
+    use_context_provider(|| Signal::new(ExamState::with_queue(saves)));
     let catalogue = use_resource(|| async { voice_catalogue().await.map_err(|e| e.to_string()) });
     use_context_provider(|| VoiceCatalogueCtx(catalogue));
 
@@ -37,6 +39,7 @@ pub fn Navbar() -> Element {
         }
 
         KeySetup {}
+        SaveStatusPanel {}
 
         Outlet::<Route> {}
     }

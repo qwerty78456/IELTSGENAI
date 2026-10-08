@@ -17,7 +17,7 @@ Read `docs/architecture.md` first. `docs/domain_model.md` and
 
 ## Portable Windows and Linux applications
 
-The app ships as a single Windows x64 EXE (0.9.0) and a Linux x86-64
+The app ships as a single Windows x64 EXE (0.9.1) and a Linux x86-64
 AppImage (0.9.0, Ubuntu 22.04 baseline). Put the package in a writable folder and run it.
 First launch creates .env and voices.json beside the package and opens your
 browser at http://127.0.0.1:8080. The Gemini API key comes from the

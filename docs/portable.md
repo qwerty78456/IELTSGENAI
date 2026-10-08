@@ -98,7 +98,7 @@ Use Rust 1.92.0, wasm32-unknown-unknown, Dioxus CLI 0.7.9, and Python 3.
 Windows (MSVC build tools installed):
 
     pwsh -NoProfile -File packaging/build-windows.ps1
-    python packaging/smoke.py dist/listening-exam-generator-0.9.0-windows-x64.exe
+    python packaging/smoke.py dist/listening-exam-generator-0.9.1-windows-x64.exe
 
 The Windows server and packaging launcher statically link the C runtime.
 The launcher embeds only the server, public assets, and dependency notices,
@@ -165,7 +165,8 @@ installing Python, then runs the full smoke suite as an unprivileged user,
 including permission errors and missing browser helpers. Windows smoke tests
 do not alter system browser associations to force a browser-launch failure.
 
-See [the v0.9.0 verification record](portable-verification-v0.9.0.md), [the
+See [the v0.9.1 Windows verification record](portable-verification-v0.9.1.md),
+[the v0.9.0 verification record](portable-verification-v0.9.0.md), [the
 v0.8.2 record](portable-verification-v0.8.2.md), [the
 v0.8.1 record](portable-verification-v0.8.1.md), [the
 v0.8.0 record](portable-verification-v0.8.0.md), [the

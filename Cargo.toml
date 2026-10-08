@@ -1,6 +1,6 @@
 [package]
 name = "vmq_mvp"
-version = "0.9.0"
+version = "0.9.1"
 authors = ["Trong-Nghia Be <benghia1st@gmail.com> & Vũ Mạnh Quân <taladinhcao@gmail.com>"]
 edition = "2024"
 
@@ -22,7 +22,7 @@ uuid = { version = "1.19.0", features = ["v4", "serde", "js"] }
 gloo-timers = "0.3"
 gloo-net = "0.6"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3", features = ["Window", "Document", "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlElement", "Element", "Node", "Storage"] }
+web-sys = { version = "0.3", features = ["BeforeUnloadEvent", "Event", "EventTarget", "Window", "Document", "Blob", "BlobPropertyBag", "Url", "HtmlAnchorElement", "HtmlElement", "Element", "Node", "Storage"] }
 js-sys = "0.3"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

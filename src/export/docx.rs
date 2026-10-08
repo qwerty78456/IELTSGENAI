@@ -570,6 +570,7 @@ mod tests {
     fn dump_fixture() {
         let exam = filled_exam();
         let saved = crate::application::exams::SavedExam {
+            revision: 0,
             topics: vec![String::new(); exam.parts.len()],
             exam: exam.clone(),
             recording_job: None,

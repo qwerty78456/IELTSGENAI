@@ -13,6 +13,8 @@ use super::audio::JobStatus;
 /// "final", it is just kept.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SavedExam {
+    #[serde(default)]
+    pub revision: i64,
     pub exam: Exam,
     /// Index-aligned with `exam.parts`: the topic typed for each part, which
     /// only reaches `Passage::topic` once a script exists.
@@ -40,6 +42,7 @@ pub struct SavedExam {
 /// One line of the saved-exams list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExamSummary {
+    pub revision: i64,
     pub id: Uuid,
     pub title: String,
     pub format: FormatId,
@@ -50,6 +53,37 @@ pub struct ExamSummary {
     pub recording: Option<JobStatus>,
     pub created_at_secs: i64,
     pub updated_at_secs: i64,
+}
+
+/// Required concurrency fields deliberately have no serde defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SaveRequest {
+    pub saved: SavedExam,
+    pub expected_revision: i64,
+    pub mutation_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum SaveOutcome {
+    Saved {
+        summary: ExamSummary,
+        recording_job: Option<String>,
+        warning: Option<String>,
+    },
+    Conflict {
+        revision: i64,
+    },
+    Deleted,
+    Invalid {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum DeleteOutcome {
+    Deleted,
+    AlreadyDeleted,
+    Conflict { revision: i64 },
 }
 
 /// Largest JSON body a saved exam may have. A full four-part exam is well
@@ -151,6 +185,7 @@ fn summary_of(row: crate::infrastructure::exams::ExamRow) -> Option<ExamSummary>
             .unwrap_or(JobStatus::Failed)
     });
     Some(ExamSummary {
+        revision: row.revision,
         id,
         title: row.title,
         format,
@@ -170,23 +205,80 @@ fn parse_id(id: &str) -> Result<String, ServerFnError> {
         .map_err(|_| ServerFnError::new("Invalid exam id"))
 }
 
-/// Saves (or re-saves) the exam under its id and returns its list entry.
+/// Saves only the version the client read; retries carry the identical request.
 #[server]
-pub async fn save_exam(saved: SavedExam) -> Result<ExamSummary, ServerFnError> {
-    use crate::application::user_error;
-    use crate::infrastructure::exams::ExamStore;
+pub async fn save_exam(request: SaveRequest) -> Result<SaveOutcome, ServerFnError> {
+    let store = crate::infrastructure::exams::ExamStore::global().await;
+    save_with_store(&store, request).await
+}
 
-    check(&saved).map_err(ServerFnError::new)?;
+#[cfg(feature = "server")]
+async fn save_with_store(
+    store: &crate::infrastructure::exams::ExamStore,
+    request: SaveRequest,
+) -> Result<SaveOutcome, ServerFnError> {
+    use crate::application::user_error;
+    use crate::infrastructure::exams::{SaveInput, StoreSave};
+    use sha2::{Digest, Sha256};
+    let SaveRequest {
+        mut saved,
+        expected_revision,
+        mutation_id,
+    } = request;
+    if expected_revision < 0 || expected_revision == i64::MAX || mutation_id.is_nil() {
+        return Ok(SaveOutcome::Invalid {
+            message: "Invalid save version or request id".into(),
+        });
+    }
+    if let Err(message) = check(&saved) {
+        return Ok(SaveOutcome::Invalid { message });
+    }
+    saved.revision = 0;
+    saved.created_at_secs = 0;
+    saved.updated_at_secs = 0;
+    saved.recording = None;
     let body = serde_json::to_string(&saved).map_err(user_error)?;
     if body.len() > MAX_SAVED_EXAM_BYTES {
-        return Err(ServerFnError::new("This exam is too large to save"));
+        return Ok(SaveOutcome::Invalid {
+            message: "This exam is too large to save".into(),
+        });
     }
-    let row = ExamStore::global()
+    let hash = format!(
+        "{:x}",
+        Sha256::digest(format!("{expected_revision}:{body}"))
+    );
+    let outcome = store
+        .save(SaveInput {
+            exam: &saved.exam,
+            recording_job: saved.recording_job.as_deref(),
+            body: &body,
+            expected_revision,
+            mutation_id: &mutation_id.to_string(),
+            hash: &hash,
+        })
         .await
-        .save(&saved.exam, saved.recording_job.as_deref(), &body)
-        .await
-        .map_err(user_error)?;
-    summary_of(row).ok_or_else(|| ServerFnError::new("Saved, but the exam cannot be listed"))
+        .map_err(|e| {
+            tracing::error!(exam = %saved.exam.id, "exam save failed: {e}");
+            user_error(e)
+        })?;
+    Ok(match outcome {
+        StoreSave::Saved {
+            row,
+            recording_missing,
+        } => {
+            let recording_job = row.recording_job.clone();
+            SaveOutcome::Saved {
+                summary: summary_of(row).ok_or_else(|| ServerFnError::new("Saved exam has an unknown format"))?,
+                recording_job,
+                warning: recording_missing.then(|| "The recording is missing. Your exam text was saved; make a new recording when ready.".into()),
+            }
+        }
+        StoreSave::Conflict(revision) => SaveOutcome::Conflict { revision },
+        StoreSave::Deleted => SaveOutcome::Deleted,
+        StoreSave::Invalid => SaveOutcome::Invalid {
+            message: "A save request id was reused with different content".into(),
+        },
+    })
 }
 
 /// Every saved exam, most recently updated first.
@@ -225,6 +317,8 @@ pub async fn load_exam(id: String) -> Result<SavedExam, ServerFnError> {
     let mut saved: SavedExam = serde_json::from_str(&body).map_err(|_| {
         ServerFnError::new("This exam was saved by another version and cannot be opened")
     })?;
+    saved.revision = row.revision;
+    saved.recording_job = row.recording_job;
     saved.created_at_secs = row.created_at_secs;
     saved.updated_at_secs = row.updated_at_secs;
     saved.recording = match &saved.recording_job {
@@ -244,20 +338,34 @@ pub async fn load_exam(id: String) -> Result<SavedExam, ServerFnError> {
 
 /// Deletes the exam and, when nothing else refers to it, its recording.
 #[server]
-pub async fn delete_exam(id: String) -> Result<(), ServerFnError> {
+pub async fn delete_exam(
+    id: String,
+    expected_revision: i64,
+) -> Result<DeleteOutcome, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::{exams::ExamStore, jobs};
-
+    use crate::infrastructure::{
+        exams::{ExamStore, StoreDelete},
+        jobs,
+    };
     let id = parse_id(&id)?;
-    if let Some(output_path) = ExamStore::global()
+    let result = ExamStore::global()
         .await
-        .delete(&id)
+        .delete(&id, expected_revision)
         .await
-        .map_err(user_error)?
-    {
-        jobs::remove_output(&output_path).await;
-    }
-    Ok(())
+        .map_err(|e| {
+            tracing::error!(exam = %id, "exam delete failed: {e}");
+            user_error(e)
+        })?;
+    Ok(match result {
+        StoreDelete::Deleted(path) => {
+            if let Some(path) = path {
+                jobs::remove_output(&path).await;
+            }
+            DeleteOutcome::Deleted
+        }
+        StoreDelete::AlreadyDeleted => DeleteOutcome::AlreadyDeleted,
+        StoreDelete::Conflict(revision) => DeleteOutcome::Conflict { revision },
+    })
 }
 
 #[cfg(test)]
@@ -406,5 +514,73 @@ mod tests {
         twins.exam.parts[0].speakers[1].label = "Speaker A".into();
         let error = check(&twins).unwrap_err();
         assert!(error.starts_with("Part 1: Duplicate"), "{error}");
+    }
+    #[test]
+    fn old_clients_cannot_write_without_concurrency_fields() {
+        let saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        assert!(
+            serde_json::from_value::<SaveRequest>(serde_json::json!({"saved": saved})).is_err()
+        );
+    }
+    #[cfg(feature = "server")]
+    #[tokio::test]
+    async fn save_use_case_validates_versions_ignores_metadata_and_normalizes_missing_recording() {
+        use crate::infrastructure::{exams::ExamStore, jobs::JobStore};
+        use sqlx::sqlite::SqliteConnectOptions;
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = JobStore::open_options(
+            SqliteConnectOptions::new()
+                .filename(dir.path().join("db"))
+                .create_if_missing(true),
+        )
+        .await
+        .unwrap();
+        let store = ExamStore::with_pool(jobs.pool().clone());
+        let mut saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        saved.exam.id = Uuid::new_v4();
+        saved.revision = 900;
+        saved.created_at_secs = -10;
+        saved.updated_at_secs = -20;
+        saved.recording_job = Some("vanished".into());
+        let request = SaveRequest {
+            saved,
+            expected_revision: 0,
+            mutation_id: Uuid::new_v4(),
+        };
+        for _ in 0..2 {
+            let SaveOutcome::Saved {
+                summary,
+                recording_job,
+                warning,
+            } = save_with_store(&store, request.clone()).await.unwrap()
+            else {
+                panic!()
+            };
+            assert_eq!(summary.revision, 1);
+            assert!(summary.created_at_secs > 0);
+            assert_eq!(recording_job, None);
+            assert!(warning.is_some());
+        }
+        let mut invalid = request.clone();
+        invalid.mutation_id = Uuid::new_v4();
+        invalid.saved.topics.clear();
+        assert!(matches!(
+            save_with_store(&store, invalid).await.unwrap(),
+            SaveOutcome::Invalid { .. }
+        ));
+        let mut stale = request.clone();
+        stale.mutation_id = Uuid::new_v4();
+        assert!(matches!(
+            save_with_store(&store, stale).await.unwrap(),
+            SaveOutcome::Conflict { revision: 1 }
+        ));
+        let (_, body) = store
+            .get(&request.saved.exam.id.to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        let stored: SavedExam = serde_json::from_str(&body).unwrap();
+        assert_eq!(stored.recording_job, None);
+        assert_eq!(stored.recording, None);
     }
 }

@@ -1,4 +1,4 @@
-Listening Exam Generator 0.9.0
+Listening Exam Generator 0.9.1
 
 Windows 10/11 x64: run the EXE from a writable folder.
 Linux x86-64 (Ubuntu 22.04 or newer baseline): chmod +x the AppImage, then run it.

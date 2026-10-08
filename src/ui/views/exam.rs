@@ -12,8 +12,8 @@
 //!
 //! The draft is saved on the server (`application::exams`): automatically
 //! after every finished step once a script exists, a second after an edit,
-//! and on the Save button. `SaveWork` keeps saves single-flight; a save
-//! requested meanwhile runs right after. Opening a saved exam replaces the
+//! and on the Save button. The layout-owned `SaveQueue` keeps per-exam
+//! snapshots and single-flight requests alive across navigation. Opening a saved exam replaces the
 //! state the way switching formats does, recomputing issues with the pure
 //! validators and resuming a recording job that was still running.
 //!
@@ -33,7 +33,8 @@ use uuid::Uuid;
 
 use crate::application::audio::{audio_url, start_exam_audio};
 use crate::application::exams::{
-    ExamSummary, SavedExam, delete_exam, list_exams, load_exam, save_exam,
+    DeleteOutcome, ExamSummary, SaveOutcome, SavedExam, delete_exam, list_exams, load_exam,
+    save_exam,
 };
 use crate::application::passages::generate_passage;
 use crate::application::settings::{KeySource, api_key_status};
@@ -60,6 +61,7 @@ use crate::ui::components::voices::{
 use crate::ui::jobs::{EXAM_AUDIO_DEADLINE_MS, EXAM_AUDIO_POLL_MS, sleep_ms, wait_for_job};
 use crate::ui::naming::{Content, DraftNaming, NameRequest, download, prefetch};
 use crate::ui::prefs;
+use crate::ui::save_queue::{SaveQueue, SaveStatus};
 
 /// How long after the last keystroke an edit is saved.
 const EDIT_DEBOUNCE_MS: u32 = 1_000;
@@ -113,14 +115,12 @@ pub struct SaveWork {
     /// Edited since the last save was started.
     pub dirty: bool,
     pub in_flight: bool,
-    /// A save was requested while one was in flight; it runs right after.
-    pub queued: bool,
-    /// Bumped on every edit; the debounce timer saves only if it is unchanged.
-    pub edit_token: u32,
+    pub revision: i64,
 }
 
 #[derive(Clone)]
 pub struct ExamState {
+    pub saves: Signal<SaveQueue>,
     pub format: FormatId,
     pub exam: Exam,
     /// Index-aligned with `exam.parts`.
@@ -160,19 +160,17 @@ impl AsMut<DraftNaming> for ExamState {
     }
 }
 
-impl Default for ExamState {
-    fn default() -> Self {
-        Self::for_format(FormatId::HsgNational)
-    }
-}
-
 impl ExamState {
-    fn for_format(format: FormatId) -> Self {
+    pub fn with_queue(saves: Signal<SaveQueue>) -> Self {
+        Self::for_format(FormatId::HsgNational, saves)
+    }
+    fn for_format(format: FormatId, saves: Signal<SaveQueue>) -> Self {
         let exam_format = format.format();
         let title = format!("{} - draft", exam_format.name);
         let exam = Exam::new(exam_format, title, "");
         let work = exam.parts.iter().map(|_| PartWork::default()).collect();
         Self {
+            saves,
             format,
             exam,
             work,
@@ -198,7 +196,7 @@ impl ExamState {
             library: self.library.clone(),
             totals: self.totals,
             key_source: self.key_source,
-            ..Self::for_format(format)
+            ..Self::for_format(format, self.saves)
         }
     }
 
@@ -211,6 +209,7 @@ impl ExamState {
     /// What the server will keep.
     fn snapshot(&self) -> SavedExam {
         SavedExam {
+            revision: self.save.revision,
             exam: self.exam.clone(),
             topics: self.work.iter().map(|w| w.topic.clone()).collect(),
             recording_job: self.audio.job_id.clone(),
@@ -226,6 +225,7 @@ impl ExamState {
     /// restored. `run` is bumped so pipelines of the previous exam stop writing.
     fn open_saved(&self, saved: SavedExam) -> Self {
         let SavedExam {
+            revision,
             exam,
             topics,
             recording_job,
@@ -289,13 +289,15 @@ impl ExamState {
             stale: recording_stale,
         };
         Self {
+            saves: self.saves,
             format: exam.format.id,
             exam,
             work,
             audio,
             save: SaveWork {
                 step: Step::Done,
-                saved_at_secs: Some(updated_at_secs),
+                saved_at_secs: (revision > 0).then_some(updated_at_secs),
+                revision,
                 ..SaveWork::default()
             },
             library: self.library.clone(),
@@ -530,63 +532,14 @@ pub fn ExamView() -> Element {
         state.set(fresh);
     };
 
-    let handle_open = move |id: Uuid| {
-        flush_before_leaving(state);
-        spawn_forever(async move {
-            match load_exam(id.to_string()).await {
-                Ok(saved) => {
-                    let fresh = state.peek().open_saved(saved);
-                    let resume = fresh
-                        .audio
-                        .track
-                        .is_none()
-                        .then(|| fresh.audio.job_id.clone())
-                        .flatten()
-                        .map(|job_id| (job_id, fresh.run));
-                    state.set(fresh);
-                    spawn_forever(refresh_spend(state));
-                    // The summary for the download names, so the first
-                    // download does not wait for it. Nothing is downloaded.
-                    let request = exam_name(&state.peek());
-                    prefetch(state, request.source, request.exam);
-                    if let Some((job_id, run)) = resume {
-                        // Not downloaded when it finishes: opening an exam
-                        // never saves a file by itself.
-                        spawn_forever(fetch_exam_audio(state, run, job_id, false));
-                    }
-                }
-                Err(e) => {
-                    state.write().library_error = Some(format!("Could not open the exam: {e}"))
-                }
-            }
-        });
-    };
-
-    // Deleting the open exam also starts a fresh one, or the next auto-save
-    // would bring the row back.
-    let handle_delete = move |id: Uuid| {
-        spawn_forever(async move {
-            match delete_exam(id.to_string()).await {
-                Ok(()) => {
-                    let mut s = state.write();
-                    s.library.retain(|e| e.id != id);
-                    s.library_error = None;
-                    if s.exam.id == id {
-                        let fresh = s.switch_format(s.format);
-                        *s = fresh;
-                    }
-                }
-                Err(e) => {
-                    state.write().library_error = Some(format!("Could not delete the exam: {e}"))
-                }
-            }
-        });
-    };
+    let handle_open = move |id: Uuid| open_exam(state, id);
+    let handle_delete = move |id: Uuid| delete_saved_exam(state, id);
 
     // The one-click pipeline: topics for parts that have none, then every
     // script at once, then every part's questions at once beside the single
     // exam recording job.
     let handle_generate_exam = move |_| {
+        invalidate_open(state);
         let run = {
             let mut s = state.write();
             s.run += 1;
@@ -638,6 +591,7 @@ pub fn ExamView() -> Element {
     };
 
     let handle_suggest_all = move |_| {
+        invalidate_open(state);
         let run = state.peek().run;
         let targets = empty_topics(&state.peek());
         spawn_forever(async move {
@@ -1052,7 +1006,7 @@ pub fn ExamView() -> Element {
                 LoadingPopup {
                     message,
                     submessage,
-                    oncancel: move |_| state.write().cancel(),
+                    oncancel: move |_| { state.write().cancel(); note_edit(state); },
                 }
             }
         }
@@ -1136,10 +1090,29 @@ fn still_current(state: Signal<ExamState>, run: u32) -> bool {
 
 /// Refreshes the saved-exams list from the server.
 async fn refresh_library(mut state: Signal<ExamState>) {
-    match list_exams().await {
+    let mut queue = state.peek().saves;
+    let epoch = {
+        let mut q = queue.write();
+        q.library_epoch = q.library_epoch.wrapping_add(1);
+        q.library_epoch
+    };
+    let result = list_exams().await;
+    if queue.peek().library_epoch != epoch {
+        return;
+    }
+    match result {
         Ok(library) => {
             let mut s = state.write();
-            s.library = library;
+            let mut latest = library;
+            for summary in &s.library {
+                if let Some(row) = latest.iter_mut().find(|r| r.id == summary.id)
+                    && row.revision < summary.revision
+                {
+                    *row = summary.clone();
+                }
+            }
+            latest.retain(|e| !queue.peek().deleted.contains(&e.id));
+            s.library = latest;
             s.library_error = None;
         }
         Err(e) => {
@@ -1212,6 +1185,12 @@ fn spend_view(spend: Option<ExamUsage>) -> Element {
 
 /// Keeps the list sorted by last update, newest first.
 fn upsert_summary(library: &mut Vec<ExamSummary>, summary: ExamSummary) {
+    if library
+        .iter()
+        .any(|e| e.id == summary.id && e.revision > summary.revision)
+    {
+        return;
+    }
     library.retain(|e| e.id != summary.id);
     library.push(summary);
     library.sort_by(|a, b| {
@@ -1221,101 +1200,262 @@ fn upsert_summary(library: &mut Vec<ExamSummary>, summary: ExamSummary) {
     });
 }
 
-/// Saves now, or right after the save in flight. The snapshot is taken here,
-/// synchronously, so what is saved is what the teacher sees at this moment.
-fn request_save(mut state: Signal<ExamState>) {
-    if state.peek().save.in_flight {
-        state.write().save.queued = true;
-        return;
-    }
-    let (snapshot, id) = begin_save(state);
-    spawn_forever(persist(state, snapshot, id));
+/// Copies edits into the layout-owned queue before any await or navigation.
+fn invalidate_open(state: Signal<ExamState>) {
+    let mut queue = state.peek().saves;
+    queue.write().invalidate_open();
 }
-
-/// Marks a save as started and returns what to send.
-fn begin_save(mut state: Signal<ExamState>) -> (SavedExam, Uuid) {
-    let mut s = state.write();
-    s.save.in_flight = true;
-    s.save.queued = false;
-    s.save.dirty = false;
-    s.save.step = Step::Running;
-    (s.snapshot(), s.exam.id)
+fn stage_current(state: Signal<ExamState>, force: bool) -> Uuid {
+    let (mut queue, snapshot, armed) = {
+        let s = state.peek();
+        (s.saves, s.snapshot(), force || s.auto_save_armed())
+    };
+    let id = snapshot.exam.id;
+    queue.write().stage(snapshot, armed);
+    sync_save_status(state);
+    id
 }
-
-/// Sends snapshots to the server until none is queued. Results only touch
-/// the save status of the exam they belong to; the list is updated either way.
-async fn persist(mut state: Signal<ExamState>, mut snapshot: SavedExam, mut id: Uuid) {
-    loop {
-        let outcome = save_exam(snapshot).await;
-        let again = {
-            let mut s = state.write();
-            let same_exam = s.exam.id == id;
-            match outcome {
-                Ok(summary) => {
-                    if same_exam {
-                        s.save.step = Step::Done;
-                        s.save.saved_at_secs = Some(summary.updated_at_secs);
-                    }
-                    upsert_summary(&mut s.library, summary);
-                }
-                Err(e) if same_exam => {
-                    s.save.step = Step::Failed(format!("Save failed: {e}"));
-                    s.save.dirty = true;
-                }
-                Err(_) => {}
+fn sync_save_status(mut state: Signal<ExamState>) {
+    let (queue, id) = {
+        let s = state.peek();
+        (s.saves, s.exam.id)
+    };
+    let draft = queue.peek().drafts.get(&id).cloned();
+    if let Some(draft) = draft {
+        let mut s = state.write();
+        s.save.dirty = draft.dirty();
+        s.save.in_flight = draft.status == SaveStatus::Sending;
+        s.save.revision = draft.snapshot.revision;
+        s.save.saved_at_secs =
+            (draft.snapshot.revision > 0).then_some(draft.snapshot.updated_at_secs);
+        s.save.step = match draft.status {
+            SaveStatus::Sending => Step::Running,
+            SaveStatus::Failed(message) | SaveStatus::Invalid(message) => Step::Failed(message),
+            SaveStatus::Conflict => Step::Failed(
+                "This exam changed in another tab. Resolve it in the save panel.".into(),
+            ),
+            SaveStatus::Deleted => {
+                Step::Failed("This exam was deleted. Save your draft as a new exam.".into())
             }
-            if same_exam {
-                s.save.in_flight = false;
-                s.save.queued
-            } else {
-                false
-            }
+            SaveStatus::Ready if draft.dirty() => Step::Idle,
+            SaveStatus::Ready => Step::Done,
         };
-        if !again {
-            break;
+        // Only normalize a reference if it has not since been replaced locally.
+        if s.audio.job_id.is_some()
+            && draft.snapshot.recording_job.is_none()
+            && draft.warning.is_some()
+        {
+            s.audio.job_id = None;
+            s.audio.track = None;
+            s.audio.step = Step::Failed(draft.warning.unwrap_or_default());
         }
-        (snapshot, id) = begin_save(state);
     }
 }
-
-/// Saves after a finished step, once saving is on, and refreshes the spend.
+fn request_save(state: Signal<ExamState>) {
+    let id = stage_current(state, true);
+    start_save(state, id, true);
+}
+fn start_save(state: Signal<ExamState>, id: Uuid, retry: bool) {
+    let mut queue = state.peek().saves;
+    let request = queue.write().begin(id, retry);
+    sync_save_status(state);
+    if let Some(request) = request {
+        spawn_forever(persist(state, id, request));
+    }
+}
+async fn persist(
+    mut state: Signal<ExamState>,
+    id: Uuid,
+    mut request: crate::application::exams::SaveRequest,
+) {
+    let mut queue = state.peek().saves;
+    loop {
+        let result = save_exam(request)
+            .await
+            .map_err(|e| format!("Save failed: {e}"));
+        if let Ok(SaveOutcome::Saved { summary, .. }) = &result {
+            upsert_summary(&mut state.write().library, summary.clone());
+        }
+        if matches!(result, Ok(SaveOutcome::Deleted)) {
+            state.write().library.retain(|summary| summary.id != id);
+        }
+        queue.write().finish(id, result);
+        sync_save_status(state);
+        let next = queue.write().begin(id, false);
+        let Some(next) = next else {
+            break;
+        };
+        request = next;
+        sync_save_status(state);
+    }
+    queue.write().evict_clean(state.peek().exam.id);
+}
 fn auto_save(state: Signal<ExamState>) {
     spawn_forever(refresh_spend(state));
-    if state.peek().auto_save_armed() {
-        request_save(state);
-    }
+    let id = stage_current(state, false);
+    start_save(state, id, false);
 }
-
-/// Records an edit and saves it a moment after the typing stops.
-fn note_edit(mut state: Signal<ExamState>) {
-    let token = {
-        let mut s = state.write();
-        s.save.dirty = true;
-        s.save.edit_token = s.save.edit_token.wrapping_add(1);
-        s.save.edit_token
-    };
+fn note_edit(state: Signal<ExamState>) {
+    let mut queue = state.peek().saves;
+    queue.write().invalidate_open();
+    let id = stage_current(state, false);
+    let sequence = queue.peek().drafts[&id].sequence;
     spawn_forever(async move {
         sleep_ms(EDIT_DEBOUNCE_MS).await;
-        let due = {
-            let s = state.peek();
-            s.save.edit_token == token && s.save.dirty && s.auto_save_armed()
-        };
-        if due {
-            request_save(state);
+        if queue
+            .peek()
+            .drafts
+            .get(&id)
+            .is_some_and(|d| d.sequence == sequence)
+        {
+            start_save(state, id, false);
         }
     });
 }
-
-/// Before the state is replaced: keep unsaved edits of an exam that is
-/// already being saved. The result lands in the list, not in the new state.
 fn flush_before_leaving(state: Signal<ExamState>) {
-    let due = {
-        let s = state.peek();
-        s.save.dirty && s.auto_save_armed()
-    };
-    if due {
-        request_save(state);
+    let mut queue = state.peek().saves;
+    queue.write().invalidate_open();
+    if state.peek().save.dirty {
+        let id = stage_current(state, false);
+        start_save(state, id, false);
     }
+}
+fn install_exam(mut state: Signal<ExamState>, saved: SavedExam) {
+    let fresh = state.peek().open_saved(saved);
+    let resume = fresh
+        .audio
+        .track
+        .is_none()
+        .then(|| fresh.audio.job_id.clone())
+        .flatten()
+        .map(|job| (job, fresh.run));
+    state.set(fresh);
+    sync_save_status(state);
+    let mut queue = state.peek().saves;
+    queue.write().evict_clean(state.peek().exam.id);
+    spawn_forever(refresh_spend(state));
+    if let Some((job, run)) = resume {
+        spawn_forever(fetch_exam_audio(state, run, job, false));
+    }
+}
+fn open_exam(mut state: Signal<ExamState>, id: Uuid) {
+    flush_before_leaving(state);
+    let mut queue = state.peek().saves;
+    let token = queue.write().invalidate_open();
+    let local = queue.peek().drafts.get(&id).map(|d| d.snapshot.clone());
+    if let Some(saved) = local {
+        install_exam(state, saved);
+        return;
+    }
+    spawn_forever(async move {
+        let result = load_exam(id.to_string()).await;
+        if !queue.peek().accepts_open(token) {
+            return;
+        }
+        match result {
+            Ok(saved) => install_exam(state, saved),
+            Err(e) => state.write().library_error = Some(format!("Could not open the exam: {e}")),
+        }
+    });
+}
+fn delete_saved_exam(mut state: Signal<ExamState>, id: Uuid) {
+    let mut queue = state.peek().saves;
+    if queue.peek().drafts.get(&id).is_some_and(|d| d.deleting) {
+        return;
+    }
+    queue.write().invalidate_open();
+    if state.peek().exam.id == id && state.peek().save.dirty {
+        stage_current(state, false);
+    }
+    let revision = queue
+        .peek()
+        .drafts
+        .get(&id)
+        .map(|d| d.snapshot.revision)
+        .or_else(|| {
+            state
+                .peek()
+                .library
+                .iter()
+                .find(|e| e.id == id)
+                .map(|e| e.revision)
+        });
+    let Some(mut revision) = revision else {
+        return;
+    };
+    let confirmed_sequence = queue.peek().drafts.get(&id).map(|d| d.sequence);
+    if let Some(draft) = queue.write().drafts.get_mut(&id) {
+        draft.deleting = true;
+    }
+    spawn_forever(async move {
+        loop {
+            let draft = queue.peek().drafts.get(&id).cloned();
+            match draft {
+                Some(d) if d.status == SaveStatus::Sending => sleep_ms(25).await,
+                Some(d) => {
+                    if d.pending.is_some() {
+                        queue.write().drafts.get_mut(&id).unwrap().deleting = false;
+                        state.write().library_error = Some(
+                            "Resolve the failed save with Retry before deleting this exam.".into(),
+                        );
+                        return;
+                    }
+                    revision = d.snapshot.revision;
+                    break;
+                }
+                None => break,
+            }
+        }
+        match delete_exam(id.to_string(), revision).await {
+            Ok(DeleteOutcome::Deleted | DeleteOutcome::AlreadyDeleted) => {
+                let edited_after_confirmation = queue
+                    .peek()
+                    .drafts
+                    .get(&id)
+                    .is_some_and(|d| Some(d.sequence) != confirmed_sequence);
+                if edited_after_confirmation {
+                    let mut q = queue.write();
+                    q.deleted.insert(id);
+                    q.library_epoch = q.library_epoch.wrapping_add(1);
+                    if let Some(d) = q.drafts.get_mut(&id) {
+                        d.status = SaveStatus::Deleted;
+                        d.deleting = false;
+                        d.pending = None;
+                    }
+                } else {
+                    queue.write().forget_deleted(id);
+                }
+                let mut s = state.write();
+                s.library.retain(|e| e.id != id);
+                s.library_error = None;
+                if s.exam.id == id && !edited_after_confirmation {
+                    *s = s.switch_format(s.format);
+                }
+            }
+            result => {
+                if matches!(result, Ok(DeleteOutcome::Conflict { .. })) {
+                    if state.peek().exam.id == id {
+                        stage_current(state, false);
+                    }
+                    if let Some(d) = queue.write().drafts.get_mut(&id) {
+                        d.status = SaveStatus::Conflict;
+                        if !d.dirty() {
+                            d.sequence += 1;
+                        }
+                    }
+                }
+                if let Some(d) = queue.write().drafts.get_mut(&id) {
+                    d.deleting = false;
+                }
+                state.write().library_error = Some(match result {
+                    Ok(DeleteOutcome::Conflict { .. }) => "This exam changed. Open the latest version before confirming deletion again.".into(),
+                    Err(e) => format!("Could not delete the exam: {e}"),
+                    _ => unreachable!(),
+                });
+            }
+        }
+        sync_save_status(state);
+    });
 }
 
 /// Indices of the parts the teacher has not given a topic yet.
@@ -1373,6 +1513,7 @@ fn exam_audio_request(
 /// Renders the exam recording from the scripts as they are; with
 /// `fresh_part`, that part gets a new take instead of its earlier one.
 fn render_exam_audio(mut state: Signal<ExamState>, fresh_part: Option<u8>) {
+    invalidate_open(state);
     let request = {
         let s = state.peek();
         exam_audio_request(&s, fresh_part)
@@ -1388,6 +1529,7 @@ fn render_exam_audio(mut state: Signal<ExamState>, fresh_part: Option<u8>) {
 
 /// Writes part `i`'s script again, then its questions.
 fn rewrite_part(state: Signal<ExamState>, i: usize) {
+    invalidate_open(state);
     let run = state.peek().run;
     spawn_forever(async move {
         if run_part_script(state, run, i).await {
@@ -1461,6 +1603,7 @@ fn set_part_speakers(
 }
 
 async fn suggest_part_topic(mut state: Signal<ExamState>, run: u32, i: usize) {
+    invalidate_open(state);
     let (format, number, theme, exam_id) = {
         let s = state.peek();
         (
@@ -1521,6 +1664,7 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
         }
         s.naming.new_draft();
     }
+    stage_current(state, false);
     let exam_id = state.peek().exam.id;
     let outcome = generate_passage(request, Some(exam_id)).await;
     if !still_current(state, run) {
@@ -1587,6 +1731,7 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
         s.work[i].task_issues.clear();
         s.work[i].tasks_step = Step::Running;
     }
+    stage_current(state, false);
     for task_index in 0..task_count {
         let request = TaskRequest {
             format,
@@ -1604,6 +1749,8 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
                 let mut s = state.write();
                 s.exam.parts[i].tasks.push(draft.task);
                 s.work[i].task_issues.extend(draft.issues);
+                drop(s);
+                stage_current(state, false);
             }
             Err(e) => {
                 state.write().work[i].tasks_step =
@@ -1637,6 +1784,7 @@ async fn run_exam_audio(mut state: Signal<ExamState>, run: u32, request: ExamAud
             ..AudioWork::default()
         };
     }
+    stage_current(state, false);
     let exam_id = state.peek().exam.id;
     let numbers: Vec<u8> = request.parts.iter().map(|p| p.passage.part).collect();
     let started = start_exam_audio(request, Some(exam_id)).await;
@@ -1719,5 +1867,180 @@ async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String
     } else {
         // A failed recording was still billed for what it read.
         spawn_forever(refresh_spend(state));
+    }
+}
+
+/// Session-wide controls remain mounted on both routes.
+#[component]
+pub fn SaveStatusPanel() -> Element {
+    let state = use_context::<Signal<ExamState>>();
+    let mut queue = use_context::<Signal<SaveQueue>>();
+    let navigator = use_navigator();
+    let mut confirmation = use_signal(|| None::<(Uuid, SavedExam, bool)>);
+    let mut message = use_signal(|| None::<String>);
+    let mut resolving = use_signal(|| false);
+    use_before_unload(queue);
+    let active = use_memo(move || state.read().exam.id);
+    use_effect(move || queue.write().evict_clean(active()));
+    let busy = state.read().is_busy();
+    let mut drafts: Vec<_> = queue
+        .read()
+        .drafts
+        .iter()
+        .filter(|(_, d)| d.dirty() || d.warning.is_some())
+        .map(|(id, d)| (*id, d.clone()))
+        .collect();
+    drafts.sort_by(|a, b| {
+        a.1.snapshot
+            .exam
+            .title
+            .cmp(&b.1.snapshot.exam.title)
+            .then(a.0.cmp(&b.0))
+    });
+    let count = drafts.len();
+    let mut resolve = move |id: Uuid, overwrite: bool| {
+        resolving.set(true);
+        message.set(None);
+        spawn_forever(async move {
+            match load_exam(id.to_string()).await {
+                Ok(saved) => confirmation.set(Some((id, saved, overwrite))),
+                Err(e) => message.set(Some(format!("Could not load the latest exam: {e}"))),
+            }
+            resolving.set(false);
+        });
+    };
+    rsx! {
+        if count > 0 || message().is_some() || state.read().library_error.is_some() {
+            section { class: "session-saves", "aria-label": "Session drafts", "aria-live": "polite",
+                strong { "Session drafts: {count} need attention" }
+                p { "Drafts stay in this tab until saved. Keep this tab open while saving or resolving an error." }
+                if let Some(error) = message() { p { role: "alert", "{error}" } }
+                if let Some(error) = state.read().library_error.clone() { p { role: "alert", "{error}" } }
+                for (id, draft) in drafts {
+                    div { key: "{id}", class: "session-draft",
+                        strong { "{draft.snapshot.exam.title}" }
+                        span { "{draft_status(&draft)}" }
+                        button { disabled: busy || draft.deleting, onclick: move |_| {
+                            open_exam(state, id); navigator.push(crate::Route::ExamView {});
+                        }, "Open draft" }
+                        if matches!(draft.status, SaveStatus::Ready | SaveStatus::Failed(_)) {
+                            button { disabled: draft.deleting, onclick: move |_| {
+                                if let Some(d) = queue.write().drafts.get_mut(&id) { d.armed = true; }
+                                start_save(state, id, true);
+                            }, "Save / Retry" }
+                        }
+                        if matches!(draft.status, SaveStatus::Conflict) {
+                            button { disabled: resolving() || busy, onclick: move |_| resolve(id, true), "Overwrite server version" }
+                            button { disabled: resolving() || busy, onclick: move |_| resolve(id, false), "Open latest version" }
+                            span { "Or leave this draft here and resolve it later." }
+                        }
+                        if matches!(draft.status, SaveStatus::Deleted) {
+                            button { disabled: busy, onclick: move |_| {
+                                flush_before_leaving(state);
+                                let original = queue.peek().drafts.get(&id).map(|d| d.snapshot.clone());
+                                if let Some(mut saved) = original {
+                                    saved.exam.id = Uuid::new_v4(); saved.revision = 0;
+                                    saved.created_at_secs = 0; saved.updated_at_secs = 0;
+                                    let new_id = saved.exam.id;
+                                    queue.write().stage(saved.clone(), true);
+                                    queue.write().forget_deleted(id);
+                                    install_exam(state, saved);
+                                    start_save(state, new_id, false);
+                                    navigator.push(crate::Route::ExamView {});
+                                }
+                            }, "Save as new exam" }
+                        }
+                        if let Some(warning) = draft.warning {
+                            p { role: "alert", "{warning}" }
+                            button { onclick: move |_| {
+                                if let Some(d) = queue.write().drafts.get_mut(&id) { d.warning = None; }
+                            }, "Dismiss notice" }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((id, saved, overwrite)) = confirmation() {
+            div { class: "save-confirm-backdrop",
+                section { class: "save-confirm", role: "dialog", "aria-modal": "true", "aria-label": "Confirm draft resolution",
+                    h2 { if overwrite { "Replace the server version?" } else { "Discard your local changes?" } }
+                    p { "{saved.exam.title} — version {saved.revision}, updated at {local_time(saved.updated_at_secs)}" }
+                    p { if overwrite { "Your draft will replace this version. If it changes again, saving will stop with another conflict." }
+                        else { "Your unsaved edits in this tab will be discarded and the version shown above will open." } }
+                    button { onclick: move |_| confirmation.set(None), "Leave for later" }
+                    button { disabled: busy, onclick: move |_| {
+                        confirmation.set(None);
+                        if overwrite {
+                            queue.write().overwrite(id, saved.revision);
+                            start_save(state, id, false);
+                        } else {
+                            flush_before_leaving(state);
+                            queue.write().drafts.remove(&id);
+                            install_exam(state, saved.clone());
+                            navigator.push(crate::Route::ExamView {});
+                        }
+                    }, if overwrite { "Confirm overwrite" } else { "Discard edits and open" } }
+                }
+            }
+        }
+    }
+}
+fn draft_status(draft: &crate::ui::save_queue::Draft) -> String {
+    if draft.deleting {
+        return "Waiting to delete…".into();
+    }
+    match &draft.status {
+        SaveStatus::Ready if draft.dirty() => "Unsaved changes".into(),
+        SaveStatus::Ready => "Saved".into(),
+        SaveStatus::Sending => "Saving…".into(),
+        SaveStatus::Failed(error) | SaveStatus::Invalid(error) => error.clone(),
+        SaveStatus::Conflict => "Changed in another tab. Your draft is kept here.".into(),
+        SaveStatus::Deleted => "Deleted on the server. Your draft is kept here.".into(),
+    }
+}
+fn use_before_unload(_queue: Signal<SaveQueue>) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use std::{cell::Cell, rc::Rc};
+        let flag = use_hook(|| Rc::new(Cell::new(false)));
+        let monitor = flag.clone();
+        use_effect(move || monitor.set(_queue.read().needs_warning()));
+        let _guard = use_hook(move || Rc::new(UnloadGuard::new(flag)));
+    }
+}
+#[cfg(target_arch = "wasm32")]
+struct UnloadGuard(wasm_bindgen::closure::Closure<dyn FnMut(web_sys::BeforeUnloadEvent)>);
+#[cfg(target_arch = "wasm32")]
+impl UnloadGuard {
+    fn new(flag: std::rc::Rc<std::cell::Cell<bool>>) -> Self {
+        use wasm_bindgen::JsCast;
+        let callback = wasm_bindgen::closure::Closure::wrap(Box::new(
+            move |event: web_sys::BeforeUnloadEvent| {
+                if flag.get() {
+                    event.prevent_default();
+                    event.set_return_value("");
+                }
+            },
+        )
+            as Box<dyn FnMut(web_sys::BeforeUnloadEvent)>);
+        if let Some(window) = web_sys::window() {
+            let _ = window.add_event_listener_with_callback(
+                "beforeunload",
+                callback.as_ref().unchecked_ref(),
+            );
+        }
+        Self(callback)
+    }
+}
+#[cfg(target_arch = "wasm32")]
+impl Drop for UnloadGuard {
+    fn drop(&mut self) {
+        use wasm_bindgen::JsCast;
+        if let Some(window) = web_sys::window() {
+            let _ = window.remove_event_listener_with_callback(
+                "beforeunload",
+                self.0.as_ref().unchecked_ref(),
+            );
+        }
     }
 }

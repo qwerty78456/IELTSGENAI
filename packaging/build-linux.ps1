@@ -15,7 +15,7 @@ try {
     Check-Exit
     podman --connection $Connection cp target/portable/linux-source.tar ($container + ':/tmp/source.tar')
     Check-Exit
-    podman --connection $Connection exec $container tar -xf /tmp/source.tar -C /build
+    podman --connection $Connection exec $container tar --no-same-owner -xf /tmp/source.tar -C /build
     Check-Exit
     podman --connection $Connection exec $container bash packaging/build-linux.sh
     Check-Exit

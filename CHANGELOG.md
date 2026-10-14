@@ -3,6 +3,180 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.10.0] – 2026-10-14 — ✍️ "Claude viết chữ, Gemini vẫn đọc." · "Claude writes the text, Gemini still reads it aloud."
+
+Đến 0.9.1, mọi chữ của đề (chủ đề, kịch bản, câu hỏi, tên file) đều do Gemini
+viết. **Từ 0.10.0, Claude của Anthropic cũng viết được: `TEXT_PROVIDER` chọn
+mặc định cho server, và mỗi trang có ô "Text written by:" để chọn cho từng lần
+chạy; trang đề thi lưu lựa chọn cùng đề.** App gọi thẳng Messages API của
+Anthropic bằng reqwest, key `ANTHROPIC_API_KEY` được tìm như `GEMINI_API_KEY`
+(biến môi trường, môi trường Windows, `.env`, hỏi ở console hoặc trên trình
+duyệt). Claude không có giọng đọc, nên ghi âm, nghe thử và thiết kế giọng vẫn
+dùng Gemini. Đo ngày 14/10: chữ của một đề IELTS tốn **0,130 USD** với Claude
+Sonnet 5.5, so với 0,039 USD với Gemini 3.8 Flash, chất lượng theo phần kiểm
+tra tương đương.
+*Up to 0.9.1 Gemini wrote all of an exam's text (topics, scripts, questions,
+file names). **From 0.10.0 Anthropic's Claude can write it too:
+`TEXT_PROVIDER` sets the server's default, and each page has a "Text written
+by:" choice for every run; the exam page saves the choice with the exam.** The
+app calls Anthropic's Messages API directly with reqwest, and finds
+`ANTHROPIC_API_KEY` the way it finds `GEMINI_API_KEY` (environment, Windows
+environment, `.env`, the console prompt or the browser). Claude has no voices,
+so recordings, voice samples and Voice Design stay on Gemini. Measured on
+14 October: one IELTS exam's text costs **$0.130** with Claude Sonnet 5.5
+against $0.039 with Gemini 3.8 Flash, with the same validator results.*
+
+### English
+
+#### What's new
+
+- **Claude as a text provider.** `TEXT_PROVIDER=gemini|anthropic` (default
+  `gemini`) chooses who writes topics, scripts, questions and download-name
+  summaries. Both pages offer "Text written by: Gemini (Google) / Claude
+  (Anthropic)", the server's default marked "(server default)"; the exam page
+  keeps the choice in the saved exam. Exams saved before 0.10 follow the
+  server's default. A failed request is never retried on the other provider.
+- **Models and effort:** `ANTHROPIC_TEXT_MODEL` (default `claude-sonnet-5-5`),
+  `ANTHROPIC_SUMMARY_MODEL` (default `claude-haiku-5-5`, the five words of a
+  file name) and `ANTHROPIC_EFFORT` (`low`, `medium` or `high`, default `low`).
+- **The Anthropic key, like the Gemini key.** `ANTHROPIC_API_KEY` from the
+  process environment, the Windows environment or `.env`. With
+  `TEXT_PROVIDER=anthropic` and no key, an interactive console asks for it
+  after the Gemini key (masked with `*`, checked for free with Anthropic,
+  saved in `.env` readable by its owner only); a browser on this computer gets
+  a key box, at the top or under the choice when a page picks Claude. The
+  startup lines add `Text provider (TEXT_PROVIDER): …` and
+  `Anthropic API key (ANTHROPIC_API_KEY): …`; the Gemini line is unchanged.
+- **Readable Claude errors:** a rejected key, an account that may not run
+  requests (no balance, a usage or spend limit), a declined request, an
+  unknown model. Only a 401 marks the key as rejected.
+- **"AI spend"** replaces "Gemini spend": the exam's and the server's totals
+  add both providers, priced per model.
+
+#### Inside
+
+- New `llm/claude.rs`: `ClaudeClient` on `POST /v1/messages` with a
+  hard-coded root (`ANTHROPIC_BASE_URL` is never read), the key in a
+  sensitive `x-api-key` header, one fixed `system` line against preambles,
+  `output_config.effort` as the only thinking control, and
+  `fallbacks: "default"` on text-model requests. A call has 100 s, retries
+  included, to stay under Cloudflare Tunnel's 125 s; it is never repeated
+  after a timeout, a 504 or an error that came late. Usage is metered before
+  `stop_reason` is checked, thinking and cache tokens are counted once, and a
+  fallback's attempts are priced at their own models' rates.
+- New `llm/text.rs` (`TextClient`, a plain enum over the two clients) and
+  `domain/provider.rs` (`TextProvider`). `secrets` keeps one browser key and
+  one rejected key per provider. `CLAUDE.md` now says one client per provider.
+- Prices for `claude-sonnet-5-5`, `claude-sonnet-5` (the fallback),
+  `claude-haiku-5-5` and `claude-opus-5-5`.
+- 318 unit tests (0.9.1: 288); two paid probes, `claude_paid_probe` and
+  `text_provider_compare_probe`, named so `live_probe` does not run them.
+- `smoke.py` and `save-safety.cjs` clear the Anthropic settings; `smoke.py`
+  checks the new startup line and an invalid `TEXT_PROVIDER`.
+
+#### Known, for a later release
+
+- Questions are asked for as JSON in the prompt only; structured outputs,
+  prompt caching and streaming are not used yet.
+- The key check (`GET /v1/models`, free) proves a key works, not that the
+  account has a balance: that shows on the first text request.
+- Anthropic's Messages API has no per-request "do not store" switch; what it
+  keeps follows the organisation's data-retention policy.
+
+#### Upgrading
+
+- Nothing changes until you choose Claude: `TEXT_PROVIDER` defaults to
+  `gemini`. To use Claude, set `ANTHROPIC_API_KEY` and either
+  `TEXT_PROVIDER=anthropic` or the page's choice.
+- `GEMINI_API_KEY` is still needed for recordings.
+- A malformed Anthropic setting stops startup only with
+  `TEXT_PROVIDER=anthropic`; otherwise a note is printed and Claude is
+  unavailable until it is fixed.
+- Setting a spend limit for the key's workspace in the Claude Console is
+  recommended: internet users on `PUBLIC_PORT` can choose Claude too.
+
+### Tiếng Việt
+
+#### Có gì mới
+
+- **Claude viết chữ cho đề.** `TEXT_PROVIDER=gemini|anthropic` (mặc định
+  `gemini`) chọn ai viết chủ đề, kịch bản, câu hỏi và tên file. Cả hai trang
+  có ô "Text written by: Gemini (Google) / Claude (Anthropic)", lựa chọn mặc
+  định của server ghi "(server default)"; trang đề thi lưu lựa chọn trong đề.
+  Đề lưu trước 0.10 theo mặc định của server. Request lỗi không bao giờ tự
+  chạy lại sang nhà cung cấp kia.
+- **Model và mức suy nghĩ:** `ANTHROPIC_TEXT_MODEL` (mặc định
+  `claude-sonnet-5-5`), `ANTHROPIC_SUMMARY_MODEL` (mặc định `claude-haiku-5-5`,
+  năm chữ của tên file) và `ANTHROPIC_EFFORT` (`low`, `medium` hoặc `high`,
+  mặc định `low`).
+- **Key Anthropic giống hệt key Gemini.** `ANTHROPIC_API_KEY` lấy từ biến môi
+  trường, môi trường Windows hoặc `.env`. Có `TEXT_PROVIDER=anthropic` mà
+  thiếu key thì console hỏi sau key Gemini (che bằng `*`, kiểm tra miễn phí
+  với Anthropic, lưu vào `.env` chỉ chủ file đọc được); trình duyệt trên máy
+  này có ô nhập key, ở đầu trang hoặc ngay dưới ô chọn khi trang chọn Claude.
+  Dòng khởi động thêm `Text provider (TEXT_PROVIDER): …` và
+  `Anthropic API key (ANTHROPIC_API_KEY): …`; dòng Gemini giữ nguyên.
+- **Lỗi Claude đọc được:** key bị từ chối, tài khoản không được chạy request
+  (hết số dư, chạm giới hạn chi tiêu), request bị từ chối, model không tồn
+  tại. Chỉ lỗi 401 mới đánh dấu key bị từ chối.
+- **"AI spend"** thay cho "Gemini spend": tổng của đề và của server cộng cả
+  hai nhà cung cấp, tính giá theo từng model.
+
+#### 🧰 Bên trong
+
+- `llm/claude.rs` mới: `ClaudeClient` gọi `POST /v1/messages` với địa chỉ cố
+  định (không bao giờ đọc `ANTHROPIC_BASE_URL`), key trong header `x-api-key`
+  được đánh dấu nhạy cảm, một câu `system` cố định chống lời mở đầu,
+  `output_config.effort` là cần điều khiển suy nghĩ duy nhất, và
+  `fallbacks: "default"` cho request của model viết chữ. Mỗi lời gọi có 100
+  giây kể cả thử lại, để nằm dưới giới hạn 125 giây của Cloudflare Tunnel;
+  không bao giờ thử lại sau timeout, lỗi 504 hay lỗi về muộn. Usage được ghi
+  trước khi xét `stop_reason`, token suy nghĩ và token cache chỉ tính một lần,
+  mỗi lượt fallback tính theo giá model của nó.
+- `llm/text.rs` mới (`TextClient`, một enum thường bọc hai client) và
+  `domain/provider.rs` (`TextProvider`). `secrets` giữ key trình duyệt và key
+  bị từ chối riêng cho từng nhà cung cấp. `CLAUDE.md` giờ ghi "mỗi nhà cung
+  cấp một client".
+- Bảng giá thêm `claude-sonnet-5-5`, `claude-sonnet-5` (đích fallback),
+  `claude-haiku-5-5` và `claude-opus-5-5`.
+- 318 unit test (0.9.1: 288); hai probe trả phí `claude_paid_probe` và
+  `text_provider_compare_probe`, đặt tên để `live_probe` không chạy chúng.
+- `smoke.py` và `save-safety.cjs` xoá các biến Anthropic khỏi môi trường test;
+  `smoke.py` kiểm tra dòng khởi động mới và `TEXT_PROVIDER` sai.
+
+#### Biết rồi, để bản sau
+
+- Câu hỏi được yêu cầu dạng JSON chỉ qua prompt; chưa dùng structured outputs,
+  prompt caching hay streaming.
+- Kiểm tra key (`GET /v1/models`, miễn phí) chỉ chứng minh key đúng, không
+  chứng minh tài khoản còn số dư: điều đó lộ ra ở lần sinh chữ đầu tiên.
+- Messages API của Anthropic không có tuỳ chọn "không lưu" theo từng request;
+  việc giữ dữ liệu theo chính sách của tổ chức.
+
+#### ⚠️ Cần biết khi nâng cấp
+
+- Không chọn Claude thì không có gì thay đổi: `TEXT_PROVIDER` mặc định là
+  `gemini`. Muốn dùng Claude, đặt `ANTHROPIC_API_KEY` rồi đặt
+  `TEXT_PROVIDER=anthropic` hoặc chọn trên trang.
+- Vẫn cần `GEMINI_API_KEY` để ghi âm.
+- Cấu hình Anthropic sai chỉ chặn khởi động khi `TEXT_PROVIDER=anthropic`;
+  ngược lại app in một dòng nhắc và Claude không dùng được cho tới khi sửa.
+- Nên đặt giới hạn chi tiêu cho workspace của key trong Claude Console: người
+  dùng Internet qua `PUBLIC_PORT` cũng chọn được Claude.
+
+### 📊 Con số biết nói · Numbers
+
+| Kiểm tra · Check | Kết quả · Result |
+|---|---|
+| `cargo fmt --check` | sạch · clean |
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba · clean, **0 warnings** on all three |
+| `cargo test --features server --no-default-features` | **318/318**, 7 test chạy tay · 7 manual (0.9.1: 288) |
+| Review · Review | 3 bản thiết kế độc lập, 3 agent phản biện; mỗi mốc code có agent soát và sửa riêng; một lượt soát nhất quán cuối · 3 independent designs, 3 critics; every milestone reviewed and fixed by a separate agent; a final consistency review |
+| `dx serve` | ô chọn trên cả hai trang, chọn Claude được lưu và mở lại đúng cùng đề, nhãn "AI spend" có nguồn của cả hai key, 0 lỗi console · the choice on both pages, Claude saved and reopened with the exam, "AI spend" naming both key sources, 0 console errors |
+| `claude_paid_probe` | key thật đạt, key bịa bị từ chối; kịch bản IELTS Part 4 dài nhất **619 từ, 0 lỗi, 11,3 s**; 10 câu hỏi, 0 lỗi, 7,1 s; tên file "Green Roofs Urban Stormwater Heat" 1,1 s; header fallback được chấp nhận · real key passes, a made-up one is refused; the longest IELTS Part 4 script **619 words, 0 issues, 11.3 s**; 10 questions, 0 issues, 7.1 s; file name in 1.1 s; fallback header accepted; **0,033 USD** |
+| `text_provider_compare_probe` (một đề IELTS, 4 kịch bản cùng lúc + 6 khối câu hỏi · one IELTS exam, 4 scripts at once + 6 question blocks) | Gemini 3.8 Flash: 5 lỗi · errors, 2 cảnh báo · warnings, kịch bản · scripts 10,3/11,6 s, **0,039 USD**. Claude Sonnet 5.5: 6 lỗi · errors, 1 cảnh báo · warning, 11,0/12,4 s, **0,130 USD**. Cả hai · Both: 0 lỗi parse · parse failures, 0 lần thử lại · retries |
+| Tiền tốn cho 0.10.0 · Spend for 0.10.0 | **0,163 USD** Anthropic + **0,039 USD** Gemini (hai probe trên · the two probes above) |
+
 ## [0.9.1] – 2026-10-08 — Bảo toàn bản nháp khi chuyển đề và lưu từ nhiều tab · Preserve drafts across navigation and concurrent tabs
 
 ### Tiếng Việt

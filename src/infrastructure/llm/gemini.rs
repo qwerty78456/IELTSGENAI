@@ -24,7 +24,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::Semaphore;
 
-use crate::domain::{Gender, Usage, Voice};
+use crate::domain::{Gender, TextProvider, Usage, Voice};
 
 use super::super::audio::{Pcm16, SAMPLE_RATE};
 use super::super::config::config;
@@ -125,6 +125,56 @@ pub enum LlmError {
         "Google took too long to create the voice. It may still appear among the designed voices in a minute; look there before creating it again."
     )]
     VoiceDesignTimeout,
+    /// Claude was chosen to write the text, and the server has no Anthropic key.
+    #[error(
+        "Claude is chosen to write the text, but this server has no Anthropic API key: set ANTHROPIC_API_KEY in the environment or .env file, or enter the key on this page; or choose Gemini to write the text."
+    )]
+    ClaudeNoApiKey,
+    /// The free key check: Anthropic does not accept this key.
+    #[error("Anthropic rejected this API key. Check it in the Claude Console and try again.")]
+    ClaudeKeyRejected,
+    /// The Anthropic key requests use was refused; the text says where that
+    /// key lives.
+    #[error(
+        "Anthropic rejected the Anthropic API key from {0}. Check it in the Claude Console; the box at the top of the page says how to replace it."
+    )]
+    ClaudeActiveKeyRejected(&'static str),
+    /// Claude declined to write this; the text names the policy, in words.
+    #[error(
+        "Claude declined to write this ({0}). Try another topic or wording, or choose Gemini to write the text."
+    )]
+    ClaudeRefused(String),
+    /// Anthropic will not run requests on the key's account (no balance
+    /// left, a spend or usage limit reached); the key itself works. The text
+    /// is Anthropic's own message or a fixed sentence.
+    #[error(
+        "Anthropic will not run requests for this key's account right now: {} Check the account's balance and spend limits in the Claude Console, or choose Gemini to write the text.",
+        sentence(.0)
+    )]
+    ClaudeAccountBlocked(String),
+    /// Anthropic refused the request for another reason. The text is
+    /// Anthropic's own message or a fixed sentence, never an HTTP status or
+    /// a page a proxy sent instead.
+    #[error("Anthropic refused the request: {}", sentence(.0))]
+    ClaudeRejected(String),
+    /// An Anthropic setting is malformed (`AppConfig::anthropic_problem`), so
+    /// Claude cannot write text until the server is fixed.
+    #[error(
+        "Claude cannot write the text on this server until its settings are fixed: {} Ask whoever runs the server to fix it and restart, or choose Gemini to write the text.",
+        sentence(.0)
+    )]
+    ClaudeMisconfigured(String),
+}
+
+/// `text` as a sentence inside an error message: trimmed and ending in `.`,
+/// `!` or `?` (Anthropic's messages may or may not).
+fn sentence(text: &str) -> String {
+    let text = text.trim();
+    if text.ends_with(['.', '!', '?']) {
+        text.to_string()
+    } else {
+        format!("{text}.")
+    }
 }
 
 /// A passage label bound to a Gemini voice id.
@@ -285,7 +335,8 @@ impl GeminiClient {
 
     pub fn from_config() -> Result<Self, LlmError> {
         let cfg = config();
-        let api_key = super::super::secrets::api_key().ok_or(LlmError::NoApiKey)?;
+        let api_key =
+            super::super::secrets::api_key(TextProvider::Gemini).ok_or(LlmError::NoApiKey)?;
         Self::new(
             api_key,
             cfg.text_model.clone(),
@@ -589,7 +640,7 @@ impl GeminiClient {
             let sent = Instant::now();
             let (retry_reason, asked_wait) = match request.send().await {
                 Ok(response) if response.status().is_success() => {
-                    super::super::secrets::mark_accepted(&self.api_key);
+                    super::super::secrets::mark_accepted(TextProvider::Gemini, &self.api_key);
                     let text = response
                         .text()
                         .await
@@ -625,9 +676,12 @@ impl GeminiClient {
                     let status = response.status().as_u16();
                     let text = response.text().await.unwrap_or_default();
                     return Err(match refusal(status, &text, path, body) {
-                        LlmError::KeyRejected => LlmError::ActiveKeyRejected(
-                            super::super::secrets::mark_rejected(&self.api_key),
-                        ),
+                        LlmError::KeyRejected => {
+                            LlmError::ActiveKeyRejected(super::super::secrets::mark_rejected(
+                                TextProvider::Gemini,
+                                &self.api_key,
+                            ))
+                        }
                         other => other,
                     });
                 }
@@ -1244,7 +1298,7 @@ fn rejects_key(status: u16, message: &str, error: Option<&Value>) -> bool {
     status == 401 || (matches!(status, 400 | 403) && about_key)
 }
 
-fn strip_fences(text: &str) -> &str {
+pub(super) fn strip_fences(text: &str) -> &str {
     let trimmed = text.trim();
     let Some(without_open) = trimmed.strip_prefix("```") else {
         return trimmed;
@@ -1796,6 +1850,75 @@ mod tests {
             }
         }
         assert!(messages.iter().all(|m| m.ends_with('.')), "{messages:?}");
+    }
+
+    #[test]
+    fn claude_errors_read_as_sentences() {
+        let messages = [
+            LlmError::ClaudeNoApiKey.to_string(),
+            LlmError::ClaudeKeyRejected.to_string(),
+            LlmError::ClaudeActiveKeyRejected("the Windows environment").to_string(),
+            LlmError::ClaudeRefused("usage policy".into()).to_string(),
+            LlmError::ClaudeAccountBlocked("Your credit balance is too low.".into()).to_string(),
+            LlmError::ClaudeAccountBlocked(
+                "You have reached your specified API usage limits".into(),
+            )
+            .to_string(),
+            LlmError::ClaudeRejected("max_tokens: 100000 > 64000".into()).to_string(),
+            LlmError::ClaudeRejected(" The request is too large. ".into()).to_string(),
+            LlmError::ClaudeMisconfigured("ANTHROPIC_EFFORT must be low, medium or high".into())
+                .to_string(),
+        ];
+        for message in &messages {
+            assert!(
+                message.ends_with('.') && !message.ends_with(".."),
+                "{message}"
+            );
+            assert!(
+                !message.contains("(4") && !message.contains("(5"),
+                "{message}"
+            );
+            assert!(!message.contains("Google"), "{message}");
+            // Gemini is named only as the other choice.
+            assert_eq!(
+                message.matches("Gemini").count(),
+                message.matches("choose Gemini to write the text").count(),
+                "{message}"
+            );
+        }
+        assert!(messages[0].contains("ANTHROPIC_API_KEY"));
+        assert!(messages[1].contains("Claude Console"));
+        assert_eq!(
+            messages[2],
+            "Anthropic rejected the Anthropic API key from the Windows environment. Check it in the Claude Console; the box at the top of the page says how to replace it."
+        );
+        assert_eq!(
+            messages[6],
+            "Anthropic refused the request: max_tokens: 100000 > 64000."
+        );
+        assert_eq!(
+            messages[7],
+            "Anthropic refused the request: The request is too large."
+        );
+        assert!(messages[5].contains("usage limits. Check the account's balance"));
+        assert!(messages[8].contains("medium or high. Ask whoever runs the server"));
+        // The Gemini messages are unchanged.
+        assert_eq!(
+            LlmError::NoApiKey.to_string(),
+            "The AI service is not configured: set GEMINI_API_KEY in the environment or .env file, or enter the key at the top of the page."
+        );
+        assert_eq!(
+            LlmError::KeyRejected.to_string(),
+            "Google rejected this API key. Check it in Google AI Studio and try again."
+        );
+        assert_eq!(
+            LlmError::ActiveKeyRejected(".env").to_string(),
+            "Google rejected the Gemini API key from .env. Check it in Google AI Studio; the box at the top of the page says how to replace it."
+        );
+        assert_eq!(
+            LlmError::Blocked("safety".into()).to_string(),
+            "Gemini refused to write this (safety). Try another topic or wording."
+        );
     }
 
     #[test]

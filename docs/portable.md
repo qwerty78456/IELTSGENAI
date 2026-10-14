@@ -13,12 +13,17 @@ An explicit --config-dir PATH overrides that location.
 Missing templates are created exclusively, with mode 0600 on Unix. Existing
 files are preserved. Permission failures, malformed dotenv/JSON, a voices.json
 with another version, an unknown accent or an invalid voice id, invalid
-IP/port/model/log settings, invalid optional music, and unwritable
-logs/database cause startup failure. Error messages omit dotenv
-contents and API-key values. Environment variables override file values
-(on Windows the user and machine environment is read from the registry too, so
-a variable set after the console opened counts); syntax errors are still
-rejected. A missing or placeholder key does not stop startup. A run with a
+IP/port/model/log settings, a TEXT_PROVIDER other than gemini or anthropic,
+invalid optional music, and unwritable logs/database cause startup failure.
+The Anthropic settings (ANTHROPIC_API_KEY, ANTHROPIC_TEXT_MODEL,
+ANTHROPIC_SUMMARY_MODEL, ANTHROPIC_EFFORT) stop startup only with
+TEXT_PROVIDER=anthropic; with gemini a malformed one is a "Note:" line and
+Claude cannot write text until it is fixed and the app restarts. A blank value
+means the default. Error messages omit dotenv contents and API-key values.
+Environment variables override file values (on Windows the user and machine
+environment is read from the registry too, so a variable set after the console
+opened counts); syntax errors are still rejected. A missing or placeholder
+Gemini key does not stop startup. A run with a
 real console on stdin and stdout, without --non-interactive or --service and
 outside Windows session 0, first asks for it once the port and data folder are
 its own: "Paste your Gemini API key (shown as *), or press Enter to enter it in
@@ -36,8 +41,22 @@ at the prompt ends the program with the console restored, so the launcher's
 three unusable keys leave the server to start, log "GEMINI_API_KEY): missing"
 and let the page ask for a key, which it accepts only from a browser on the
 server's own computer (a Local request: loopback bind, main port, no proxy).
-Startup makes no paid API requests; the console key check is the only
-request to Google, and it is free.
+
+The Anthropic key (ANTHROPIC_API_KEY) is found the same way and needed only
+for text written by Claude. With TEXT_PROVIDER=anthropic and no Anthropic key,
+the same console asks for it too, after any Gemini prompt: "Paste your
+Anthropic API key (shown as *), or press Enter to enter it in the browser
+instead" (on a network bind "or press Enter to skip", and the fallback lines
+say to set ANTHROPIC_API_KEY and restart, or set TEXT_PROVIDER=gemini). The
+key is checked with one free Anthropic request (GET /v1/models?limit=1) and
+written to .env as ANTHROPIC_API_KEY under the same rules. With the default
+TEXT_PROVIDER=gemini the console never asks for it. After the Gemini key line,
+startup prints "Text provider (TEXT_PROVIDER): gemini" (or anthropic) and
+"Anthropic API key (ANTHROPIC_API_KEY): ...": where the key came from, "missing;
+..." with TEXT_PROVIDER=anthropic, or "not set; needed only when a page
+chooses Claude to write the text". Startup makes no paid API requests; the
+console key checks are the only requests (to Google, and to Anthropic only
+with TEXT_PROVIDER=anthropic and no Anthropic key), and they are free.
 
 Since 0.8.0 voices.json is version 2 and holds overrides only: the voice pools
 per accent and gender (British, American, Australian, Canadian, New Zealand,
@@ -64,7 +83,7 @@ valid startup configuration.
 
 Portable production startup initializes logging, takes the data-folder lock
 (data/instance.lock), binds the listeners (PORT, and PUBLIC_PORT when set),
-asks for a missing key, opens SQLite, marks recordings an earlier stop
+asks for missing keys, opens SQLite, marks recordings an earlier stop
 interrupted as failed, and writes data/instance.json before opening the
 browser. Missing browser launchers leave the URL visible and the server
 running. An occupied port or data folder never selects another one. When
@@ -137,15 +156,22 @@ extraction cleanup, use --appimage-extract once and run squashfs-root/AppRun.
 
 Run cargo fmt/check, both cargo check feature combinations, the wasm check,
 and all server-feature unit tests. The smoke script tests the actual package
-in a temporary path with spaces/Unicode and makes no Gemini request. It removes
-`GEMINI_API_KEY` from the package's environment, but on Windows the server also
-reads the registry: on a machine whose user or machine environment holds a key,
-the "no key anywhere" case prints NOT TESTED instead of changing the registry. It checks missing
-and malformed config, environment overrides, preservation, storage errors,
-occupied ports, both pages, JS/WASM/CSS, an audio-job server function, WAV ranges
-and downloads, shutdown, and relocation. On Windows it also closes a real
-console window (WM_CLOSE, like the X button) and asserts that no launcher
-payload directory remains after any run.
+in a temporary path with spaces/Unicode and makes no Gemini or Anthropic
+request. It removes `GEMINI_API_KEY`, `TEXT_PROVIDER` and the Anthropic
+settings (`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, which the app never
+reads, included) from the package's environment and sets `TEXT_PROVIDER` blank,
+so Gemini writes the text whatever the registry says. On Windows the server
+also reads the registry: on a machine whose user or machine environment holds a
+key, the "no key anywhere" case for that key prints NOT TESTED instead of
+changing the registry (the Gemini key's "missing" line, or the Anthropic key's
+"not set; needed only when a page chooses Claude to write the text"). It checks
+missing and malformed config (`TEXT_PROVIDER=openai` among it), environment
+overrides, preservation, storage errors, occupied ports, the startup key lines
+(every start prints "Anthropic API key (ANTHROPIC_API_KEY): ", and the default
+start "Text provider (TEXT_PROVIDER): gemini"), both pages, JS/WASM/CSS, an
+audio-job server function, WAV ranges and downloads, shutdown, and relocation.
+On Windows it also closes a real console window (WM_CLOSE, like the X button)
+and asserts that no launcher payload directory remains after any run.
 
 Audit EXE imports and Linux ldd output. Verify package inventories contain only
 runtime files and notices. Test AppImages on Ubuntu 22.04 and a newer distribution.
@@ -155,9 +181,15 @@ separate from packaging: `cargo test --features server --no-default-features
 live_probe -- --ignored --nocapture` (about $0.01) confirms the Gemini request
 shapes and measures audio tokens per second; `voice_live_probe` (same flags)
 checks for free that every pooled voice still exists with its gender and
-language, then spends about $0.003. The smoke script also checks that the
-first launch writes a version 2 voices.json, that a 0.7 file at its defaults
-is renamed and that a customised one is kept with the "0.7 format" notice.
+language, then spends about $0.003. `claude_paid_probe` (same flags, about
+$0.03) checks the Anthropic key for free and counts the prompts' tokens, then
+writes a topic, the longest IELTS script, its questions and a download-name
+summary with Claude; `text_provider_compare_probe` (about $0.17) writes
+one IELTS exam's text with Gemini and with Claude and compares them. Their
+names keep them out of the `live_probe` filter; ask before running either. The
+smoke script also checks that the first launch writes a version 2 voices.json,
+that a 0.7 file at its defaults is renamed and that a customised one is kept
+with the "0.7 format" notice.
 
 Run `pwsh -NoProfile -File packaging/test-linux.ps1` to verify the built AppImage
 on clean Ubuntu 22.04 and 24.04 containers. Each first tests startup before

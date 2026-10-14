@@ -32,6 +32,21 @@ every page says where the key came from and offers the form; a key pasted there
 is used until the app restarts. "Remember" is offered only when .env would win
 after a restart, i.e. not when the bad key is an environment variable.
 
+Anthropic API key (ANTHROPIC_API_KEY), optional: Claude can write the text
+(topics, scripts, questions, download-name summaries) instead of Gemini, by
+default with TEXT_PROVIDER=anthropic in .env, or for one page's runs with "Text
+written by: Claude (Anthropic)". Recordings always use the Gemini key. The
+Anthropic key is found the same way (environment, then ANTHROPIC_API_KEY in
+.env; a new .env lists it and TEXT_PROVIDER commented out with #, and an older
+one lacks them: add the lines) and kept apart from the Gemini key. The console
+asks for it, after the Gemini key, only with TEXT_PROVIDER=anthropic, and
+checks it with Anthropic (free). Otherwise a missing Anthropic key is no fault:
+the console says "not set; needed only when a page chooses Claude to write the
+text", and a page that chooses Claude shows the same form under its choice.
+If Anthropic rejects the key, every page offers the form, as for Gemini. The
+free check proves the key works, not that the account has credit: set a spend
+limit for the key's workspace in the Claude Console.
+
 The browser opens after initialization. The console prints the address (default
 http://127.0.0.1:8080). Keep the console open. Ctrl+C, or closing the
 console window, stops the server.
@@ -58,17 +73,23 @@ Edit configuration only while stopped; restart to reload it.
 
 Cost: text uses gemini-3.8-flash, speech gemini-3.8-flash-tts (paid tier). A full
 IELTS exam measured about 0.36 USD (0.73 USD at the prices Google announced from
-2027-01-01, above the default budget). The Whole exam page shows each exam's
-spend against EXAM_BUDGET_USD (0.70 by default; it only warns).
+2027-01-01, above the default budget). Text written by Claude uses
+claude-sonnet-5-5 (ANTHROPIC_TEXT_MODEL): 2 USD per million input tokens and
+10 USD per million output tokens, the same price before and after 2027;
+speech is still Gemini's. The Whole exam page shows each exam's AI spend
+(Gemini and Claude together) against EXAM_BUDGET_USD (0.70 by default; it only
+warns).
 GEMINI_THINKING_LEVEL (low by default) and SPEECH_CACHE_HOURS (72: speech already
-made for the same words and voices is reused for free) are in .env too. Speech
-made by 0.7 is not reused: rendering an old exam again pays once.
+made for the same words and voices is reused for free) are in .env too, and so
+is ANTHROPIC_EFFORT (low by default) for Claude. Speech made by 0.7 is not
+reused: rendering an old exam again pays once.
 
 Downloads are named after the test, five words about the draft and the time,
 e.g. IELTS-Listening-Part1_Booking-A-Hotel-Room-Online_06-10-2026_14-32-05.docx.
-The five words come from gemini-3.5-flash-lite (GEMINI_SUMMARY_MODEL), about
-0.0001 USD per draft. Tick "Download the DOCX and WAV automatically" to save
-each file as soon as it is ready; the browser may ask once to allow several
+The five words come from gemini-3.5-flash-lite (GEMINI_SUMMARY_MODEL), or from
+claude-haiku-5-5 (ANTHROPIC_SUMMARY_MODEL) when Claude writes the text, about
+0.0001 USD per draft or less. Tick "Download the DOCX and WAV automatically" to
+save each file as soon as it is ready; the browser may ask once to allow several
 downloads.
 
 Voices: every speaker gets a regional voice of its own (British, American,
@@ -97,7 +118,10 @@ Both pages export Word (DOCX) and Markdown.
 Missing configuration files are recreated; invalid files are never overwritten.
 Invalid ports/paths/settings stop startup; a missing key does not (the console
 asks for it, or the browser does). PUBLIC_PORT without PUBLIC_HOST stops
-startup.
+startup, and so does a TEXT_PROVIDER other than gemini or anthropic. A
+malformed Anthropic setting stops startup only with TEXT_PROVIDER=anthropic;
+otherwise the console notes it and Claude cannot write the text until it is
+fixed.
 
 If Linux FUSE is unavailable:
 APPIMAGE_EXTRACT_AND_RUN=1 ./listening-exam-generator-0.9.0-linux-x86_64.AppImage

@@ -1,8 +1,10 @@
-//! What Gemini has cost: per exam (with its budget) and for the whole server.
+//! What the AI services have cost: per exam (with its budget) and for the
+//! whole server.
 //!
-//! Every server function that calls Gemini records what its client was billed
-//! right after the call, whatever the outcome (`record`), so failed and
-//! superseded runs are counted too. The browser only reads the totals.
+//! Every server function that calls Gemini or Claude records what its client
+//! was billed right after the call, whatever the outcome (`record`), so
+//! failed and superseded runs are counted too. The browser only reads the
+//! totals.
 
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -17,16 +19,16 @@ pub struct UsageTotals {
     pub last_30_days: Usage,
 }
 
-/// Adds what `client` was billed to the ledger under `step`.
+/// Adds what a client was billed (its `usage()`) to the ledger under `step`.
 #[cfg(feature = "server")]
 pub(crate) async fn record(
     step: crate::domain::UsageStep,
     exam: Option<Uuid>,
     model: &str,
-    client: &crate::infrastructure::llm::GeminiClient,
+    usage: &Usage,
 ) {
     let exam = exam.map(|id| id.to_string());
-    crate::infrastructure::usage::record(step, exam.as_deref(), model, &client.usage()).await;
+    crate::infrastructure::usage::record(step, exam.as_deref(), model, usage).await;
 }
 
 /// Everything one exam has cost so far, per step, with the configured budget.

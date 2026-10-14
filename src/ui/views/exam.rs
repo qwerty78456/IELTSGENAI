@@ -10,6 +10,11 @@
 //! provided by the `Navbar` layout, so moving between pages keeps a running
 //! exam, and pipelines are spawned on the root scope for the same reason.
 //!
+//! Topics, scripts, questions and the download-name summary come from the
+//! exam's text provider (`TextProviderPicker`; none chosen: the server's
+//! `TEXT_PROVIDER`), taken before each call awaits and fixed while anything
+//! runs. It is saved with the exam and kept for a new exam or format.
+//!
 //! The draft is saved on the server (`application::exams`): automatically
 //! after every finished step once a script exists, a second after an edit,
 //! and on the Save button. The layout-owned `SaveQueue` keeps per-exam
@@ -37,14 +42,14 @@ use crate::application::exams::{
     save_exam,
 };
 use crate::application::passages::generate_passage;
-use crate::application::settings::{KeySource, api_key_status};
+use crate::application::settings::KeySource;
 use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::application::usage::{UsageTotals, exam_usage, usage_totals};
 use crate::domain::{
     AudioRequest, AudioTrack, Exam, ExamAudioRequest, ExamUsage, FormatId, PassageRequest,
-    SpeakerConfig, TaskRequest, UsageStep, ValidationIssue, VoiceChoice, assign_exam_voices,
-    assign_voices, has_errors, validate_exam, validate_passage, validate_task,
+    SpeakerConfig, TaskRequest, TextProvider, UsageStep, ValidationIssue, VoiceChoice,
+    assign_exam_voices, assign_voices, has_errors, validate_exam, validate_passage, validate_task,
 };
 use crate::export::naming::test_type;
 use crate::export::{docx, markdown};
@@ -53,8 +58,10 @@ use crate::ui::components::audio_player::AudioPlayerSection;
 use crate::ui::components::auto_download::AutoDownloadToggle;
 use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
+use crate::ui::components::key_setup::KeyStatusCtx;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
+use crate::ui::components::text_provider::TextProviderPicker;
 use crate::ui::components::voices::{
     VoiceCatalogueCtx, speaker_warnings, voices_of_others, voices_summary, with_choice,
 };
@@ -130,11 +137,11 @@ pub struct ExamState {
     /// The saved exams on this server, most recently updated first.
     pub library: Vec<ExamSummary>,
     pub library_error: Option<String>,
-    /// What Gemini has billed for this exam so far (from the server's ledger).
+    /// What the AI services have billed for this exam so far (from the
+    /// server's ledger).
     pub spend: Option<ExamUsage>,
-    /// Spend on the whole server, and where its API key comes from.
+    /// Spend on the whole server.
     pub totals: Option<UsageTotals>,
-    pub key_source: Option<KeySource>,
     /// Bumped on every new exam run or cancel; a running pipeline compares
     /// against it before every write, so late results of an old run are dropped.
     pub run: u32,
@@ -143,6 +150,10 @@ pub struct ExamState {
     /// New scripts are expressive (`PassageRequest::expressive`): on for a
     /// new exam, as saved for an opened one (off for exams from before 0.8).
     pub expressive: bool,
+    /// Who writes the text (topics, scripts, questions, download-name
+    /// summary); `None` follows the server's `TEXT_PROVIDER`. Saved with the
+    /// exam, and kept for a new exam or another format.
+    pub text_provider: Option<TextProvider>,
     /// How this exam's downloads are named (`ui::naming`); not saved, so an
     /// opened exam's first download takes a new time.
     pub naming: DraftNaming,
@@ -180,22 +191,22 @@ impl ExamState {
             library_error: None,
             spend: None,
             totals: None,
-            key_source: None,
             run: 0,
             editing_speaker: None,
             expressive: true,
+            text_provider: None,
             naming: DraftNaming::default(),
         }
     }
 
     /// A fresh exam (new id) in the given format that still supersedes runs
-    /// in flight and keeps the saved-exams list.
+    /// in flight and keeps the saved-exams list and who writes the text.
     fn switch_format(&self, format: FormatId) -> Self {
         Self {
             run: self.run + 1,
             library: self.library.clone(),
             totals: self.totals,
-            key_source: self.key_source,
+            text_provider: self.text_provider,
             ..Self::for_format(format, self.saves)
         }
     }
@@ -216,6 +227,7 @@ impl ExamState {
             recording: self.audio.track.clone(),
             recording_stale: self.audio.stale,
             expressive: self.expressive,
+            text_provider: self.text_provider,
             created_at_secs: 0,
             updated_at_secs: 0,
         }
@@ -232,6 +244,7 @@ impl ExamState {
             recording,
             recording_stale,
             expressive,
+            text_provider,
             updated_at_secs,
             ..
         } = saved;
@@ -304,10 +317,10 @@ impl ExamState {
             library_error: None,
             spend: None,
             totals: self.totals,
-            key_source: self.key_source,
             run: self.run + 1,
             editing_speaker: None,
             expressive,
+            text_provider,
             naming: DraftNaming::default(),
         }
     }
@@ -464,6 +477,8 @@ fn audio_stage(progress: f32, parts: usize) -> String {
 pub fn ExamView() -> Element {
     let mut state = use_context::<Signal<ExamState>>();
     let catalogue = use_context::<VoiceCatalogueCtx>();
+    // Where the keys come from, for the spend line; `KeySetup` keeps it fresh.
+    let KeyStatusCtx(key_statuses) = use_context::<KeyStatusCtx>();
     let exam_id = use_memo(move || state.read().exam.id);
 
     // Speakers on Auto get voices once the catalogue is here and whenever
@@ -515,12 +530,7 @@ pub fn ExamView() -> Element {
     // The list is fetched after mount so the server render and the browser
     // agree on an empty panel until then.
     use_future(move || refresh_library(state));
-    use_future(move || async move {
-        refresh_spend(state).await;
-        if let Ok(status) = api_key_status().await {
-            state.write().key_source = Some(status.source);
-        }
-    });
+    use_future(move || refresh_spend(state));
 
     let handle_save = move |_| request_save(state);
 
@@ -693,6 +703,14 @@ pub fn ExamView() -> Element {
                     " Expressive delivery (sighs, laughs)"
                 }
                 p { class: "muted", "New scripts may carry a few sighs, coughs, laughs and chuckles that the voices perform. Transcripts, questions and downloads show only the words." }
+                TextProviderPicker {
+                    chosen: current.text_provider,
+                    disabled: busy,
+                    onchange: move |provider| {
+                        state.write().text_provider = Some(provider);
+                        note_edit(state);
+                    },
+                }
                 AutoDownloadToggle {}
                 p { class: "{save_class}", "{save_text}" }
                 {spend_view(current.spend)}
@@ -731,9 +749,13 @@ pub fn ExamView() -> Element {
                 }
                 if let Some(totals) = current.totals {
                     p { class: "panel-help",
-                        "Gemini spend on this server: {totals.last_24h.cost_text()} in the last 24 hours, {totals.last_30_days.cost_text()} in the last 30 days."
-                        if let Some(source) = current.key_source {
-                            " API key from {source.describe()}."
+                        "AI spend on this server: {totals.last_24h.cost_text()} in the last 24 hours, {totals.last_30_days.cost_text()} in the last 30 days."
+                        if let Some(keys) = key_statuses() {
+                            if keys.anthropic.source == KeySource::Missing {
+                                " API key from {keys.gemini.source.describe()}."
+                            } else {
+                                " Gemini API key from {keys.gemini.source.describe()}. Anthropic API key from {keys.anthropic.source.describe()}."
+                            }
                         }
                     }
                 }
@@ -1049,6 +1071,7 @@ fn exam_name(state: &ExamState) -> NameRequest {
         test_type: test_type(&exam.format, None),
         source,
         exam: Some(exam.id),
+        provider: state.text_provider,
     }
 }
 
@@ -1137,12 +1160,12 @@ async fn refresh_spend(mut state: Signal<ExamState>) {
     }
 }
 
-/// The exam's Gemini spend per step beside its budget, token counts on hover.
+/// The exam's AI spend per step beside its budget, token counts on hover.
 /// Going over the budget only warns; nothing is blocked.
 fn spend_view(spend: Option<ExamUsage>) -> Element {
     let Some(spend) = spend.filter(|s| !s.total().is_empty()) else {
         return rsx! {
-            p { class: "spend-status", "Gemini spend for this exam: nothing yet." }
+            p { class: "spend-status", "AI spend for this exam: nothing yet." }
         };
     };
     let total = spend.total();
@@ -1168,7 +1191,7 @@ fn spend_view(spend: Option<ExamUsage>) -> Element {
         .join(", ");
     rsx! {
         p { class: "spend-status", title: "{detail}",
-            "Gemini spend for this exam: "
+            "AI spend for this exam: "
             strong { "{total.cost_text()}" }
             "{budget} ({steps})"
         }
@@ -1604,17 +1627,18 @@ fn set_part_speakers(
 
 async fn suggest_part_topic(mut state: Signal<ExamState>, run: u32, i: usize) {
     invalidate_open(state);
-    let (format, number, theme, exam_id) = {
+    let (format, number, theme, exam_id, provider) = {
         let s = state.peek();
         (
             s.format,
             s.exam.parts[i].spec.number,
             s.exam.theme.clone(),
             s.exam.id,
+            s.text_provider,
         )
     };
     state.write().work[i].topic_step = Step::Running;
-    let outcome = suggest_topic(format, number, theme, Some(exam_id)).await;
+    let outcome = suggest_topic(format, number, theme, Some(exam_id), provider).await;
     if !still_current(state, run) {
         return;
     }
@@ -1665,8 +1689,11 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
         s.naming.new_draft();
     }
     stage_current(state, false);
-    let exam_id = state.peek().exam.id;
-    let outcome = generate_passage(request, Some(exam_id)).await;
+    let (exam_id, provider) = {
+        let s = state.peek();
+        (s.exam.id, s.text_provider)
+    };
+    let outcome = generate_passage(request, Some(exam_id), provider).await;
     if !still_current(state, run) {
         return false;
     }
@@ -1698,14 +1725,14 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
     };
     if all_written && any_script {
         let request = exam_name(&state.peek());
-        prefetch(state, request.source, request.exam);
+        prefetch(state, request.source, request.exam, request.provider);
     }
     usable
 }
 
 /// Generates every task block of part `i`, one after another.
 async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
-    let (format, number, passage, speakers, task_count, exam_id) = {
+    let (format, number, passage, speakers, task_count, exam_id, provider) = {
         let s = state.peek();
         let part = &s.exam.parts[i];
         let Some(passage) = part.passage.clone() else {
@@ -1718,6 +1745,7 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
             part.speakers.clone(),
             part.spec.tasks.len(),
             s.exam.id,
+            s.text_provider,
         )
     };
     {
@@ -1740,7 +1768,7 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
             passage: passage.clone(),
             speakers: speakers.clone(),
         };
-        let outcome = generate_task(request, Some(exam_id)).await;
+        let outcome = generate_task(request, Some(exam_id), provider).await;
         if !still_current(state, run) {
             return;
         }

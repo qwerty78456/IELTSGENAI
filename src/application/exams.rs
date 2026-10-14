@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::{AudioTrack, Exam, FormatId, MAX_TOPIC_CHARS};
+use crate::domain::{AudioTrack, Exam, FormatId, MAX_TOPIC_CHARS, TextProvider};
 
 use super::audio::JobStatus;
 
@@ -32,6 +32,11 @@ pub struct SavedExam {
     /// before 0.8 load as plain; the exam page starts new exams expressive.
     #[serde(default)]
     pub expressive: bool,
+    /// Who writes the exam's text. `None`: saved before 0.10, or no choice
+    /// made; `TEXT_PROVIDER` decides. Left out of the body when `None`, so an
+    /// exam without a choice is saved exactly as 0.9 saved it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text_provider: Option<TextProvider>,
     /// Server-populated.
     #[serde(default)]
     pub created_at_secs: i64,
@@ -398,6 +403,7 @@ mod tests {
         assert!(part1.audio.is_some());
         assert!(saved.recording_stale);
         assert!(!saved.expressive);
+        assert_eq!(saved.text_provider, None);
 
         let every_speaker = exam.parts.iter().flat_map(|p| p.speakers.iter()).chain(
             exam.format
@@ -412,6 +418,21 @@ mod tests {
         // Saved again by this version, it reads back the same.
         let again: SavedExam =
             serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        assert_eq!(again, saved);
+    }
+
+    #[test]
+    fn a_text_provider_choice_round_trips() {
+        let mut saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        // No choice: the body has no such key, as before 0.10.
+        let body = serde_json::to_string(&saved).unwrap();
+        assert!(!body.contains("text_provider"), "{body}");
+
+        saved.text_provider = Some(TextProvider::Anthropic);
+        let body = serde_json::to_string(&saved).unwrap();
+        assert!(body.contains(r#""text_provider":"anthropic""#), "{body}");
+        let again: SavedExam = serde_json::from_str(&body).unwrap();
+        assert_eq!(again.text_provider, Some(TextProvider::Anthropic));
         assert_eq!(again, saved);
     }
 

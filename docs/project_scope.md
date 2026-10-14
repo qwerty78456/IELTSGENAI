@@ -24,9 +24,13 @@ and edits; the tool never claims to produce an official exam.
   listen, another voice, or a voice designed from a description. Scripts may
   carry a few performed sounds (sighs, laughs) that never reach the paper,
   and a script or recording made for other speakers is flagged as stale.
-- Knowing and bounding the cost: every Gemini request is metered and priced,
-  an exam's spend is shown against a budget (warning only), and synthesised
-  speech is reused instead of paid for twice.
+- Text from Gemini (Google) or Claude (Anthropic): the server's default
+  (`TEXT_PROVIDER`) or the provider a page chooses for a run, each with its
+  own API key. Recordings, voice samples and designed voices always come from
+  Gemini, so audio always needs the Gemini key.
+- Knowing and bounding the cost: every Gemini or Claude request is metered
+  and priced, an exam's spend is shown against a budget (warning only), and
+  synthesised speech is reused instead of paid for twice.
 - Deployment as one container behind a reverse proxy, as a portable
   Windows EXE / Linux AppImage on the teacher's own computer, or as a
   Windows service (NSSM, `--service NAME`) reached from the internet through
@@ -45,7 +49,9 @@ and edits; the tool never claims to produce an official exam.
 ## Non-goals for the next milestone
 
 - Multi-tenant SaaS features (billing customers, organisations). Tracking
-  what Gemini costs us is in scope; charging anyone for it is not.
+  what the AI services cost us is in scope; charging anyone for it is not.
+- Falling back from one text provider to the other on its own: a run uses
+  the provider it was given, and a failure is shown to the teacher.
 - Fine-tuned models; prompts plus validation are the quality lever.
 
 ## Quality bar
@@ -53,10 +59,15 @@ and edits; the tool never claims to produce an official exam.
 - Every generated key passes the validator or is flagged with an issue the
   teacher can see.
 - The domain layer is unit-tested and compiles for wasm and the server.
-- No secret in URLs or logs; the Gemini key travels in a header and is never
-  sent back to the browser.
-- A full IELTS exam costs at most $0.70 of Gemini usage at the prices Google
-  announced for 2027 (measured $0.616 on 2026-09-28; **$0.728 with 0.8.0 on
-  2026-10-05, over the bar**, mostly the recording).
+- No secret in URLs or logs; API keys travel in headers (`x-goog-api-key`,
+  `x-api-key`) and are never sent back to the browser.
+- Text and speech requests to Google are sent with `store: false`. Anthropic's
+  Messages API keeps no conversation but has no per-request store option:
+  what Anthropic retains follows the organisation's data-retention policy.
+- A full IELTS exam costs at most $0.70 of AI usage at the prices announced
+  for 2027 (with Gemini text: measured $0.616 on 2026-09-28; **$0.728 with
+  0.8.0 on 2026-10-05, over the bar**, mostly the recording). Claude text
+  costs $0.130 per IELTS exam (measured 2026-10-14), about $0.77 a whole
+  exam at 2027 Gemini prices.
 - The speakers of a part never share a voice, and each voice has the
   speaker's gender; a recording is refused otherwise.

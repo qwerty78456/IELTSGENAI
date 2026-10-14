@@ -28,7 +28,7 @@ async function until(check, label) {
     const port = await availablePort();
     const url = `http://127.0.0.1:${port}`;
     const env = {...process.env, IP:'127.0.0.1', PORT:String(port), PUBLIC_PORT:'', PUBLIC_HOST:'',
-        DATA_DIR:path.join(base,'data'), GEMINI_API_KEY:'offline-test-placeholder',
+        DATA_DIR:path.join(base,'data'), GEMINI_API_KEY:'offline-test-placeholder', ANTHROPIC_API_KEY:'', TEXT_PROVIDER:'gemini',
         VOICES_PATH:path.join(base,'voices.json'), DIOXUS_PUBLIC_PATH:path.join(bundle,'public'), AUDIO_RETENTION_HOURS:'0'};
     const server = spawn(path.join(bundle, process.platform === 'win32' ? 'server.exe' : 'server'),
         ['--config-dir', base, '--no-open', '--non-interactive'], {cwd:base, env, windowsHide:true, stdio:['ignore','pipe','pipe']});

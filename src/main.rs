@@ -3,7 +3,7 @@
 //! Layers (see `docs/architecture.md`):
 //! - `domain`         pure types and rules, shared by browser and server
 //! - `application`    the `#[server]` functions the UI calls (use cases)
-//! - `infrastructure` server-only adapters: Gemini, TTS, WAV, SQLite jobs
+//! - `infrastructure` server-only adapters: Gemini, Claude (text), TTS, WAV, SQLite jobs
 //! - `export`         pure renderers (Markdown paper, key, transcript)
 //! - `ui`             Dioxus components and views
 

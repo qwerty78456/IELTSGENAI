@@ -7,6 +7,8 @@ use std::{
     sync::OnceLock,
 };
 
+use crate::domain::TextProvider;
+
 use super::{audio::Pcm16, tts::voices::VoiceCatalog};
 
 pub const DEFAULT_TEXT_MODEL: &str = "gemini-3.8-flash";
@@ -14,22 +16,36 @@ pub const DEFAULT_TTS_MODEL: &str = "gemini-3.8-flash-tts";
 /// Writes the few-word summaries in download file names: the cheapest text model.
 pub const DEFAULT_SUMMARY_MODEL: &str = "gemini-3.5-flash-lite";
 pub const DEFAULT_THINKING_LEVEL: &str = "low";
+/// Writes topics, scripts and questions when Claude writes the text.
+pub const DEFAULT_ANTHROPIC_TEXT_MODEL: &str = "claude-sonnet-5-5";
+/// Writes the download-name summaries when Claude writes the text.
+pub const DEFAULT_ANTHROPIC_SUMMARY_MODEL: &str = "claude-haiku-5-5";
+pub const DEFAULT_ANTHROPIC_EFFORT: &str = "low";
+pub const DEFAULT_TEXT_PROVIDER: TextProvider = TextProvider::Gemini;
 pub const DEFAULT_EXAM_BUDGET_USD: &str = "0.70";
 pub const DEFAULT_SPEECH_CACHE_HOURS: u32 = 72;
 pub const TTS_MAX_INPUT_TOKENS: usize = 8_192;
 pub const DEFAULT_AUDIO_RETENTION_HOURS: u32 = 24;
 /// The value `.env.example` and the portable template ship with; it means "no key".
 const PLACEHOLDER_KEY: &str = "your_api_key_here";
-const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\n# PUBLIC_PORT=8081   # Cloudflare Tunnel port (same IP); requests on it count as internet users\n# PUBLIC_HOST=app.example.com   # required with PUBLIC_PORT: the tunnel's hostname(s), comma-separated\nDATA_DIR=./data\nVOICES_PATH=./voices.json\n# Leave the key out to use the GEMINI_API_KEY environment variable, or to be asked for it at the console or in the browser.\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-3.8-flash\n# GEMINI_TTS_MODEL=gemini-3.8-flash-tts\n# GEMINI_SUMMARY_MODEL=gemini-3.5-flash-lite\n# GEMINI_THINKING_LEVEL=low\n# EXAM_BUDGET_USD=0.70\n# SPEECH_CACHE_HOURS=72\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
+const PORTABLE_ENV: &str = "# Listening Exam Generator. Restart after editing.\nIP=127.0.0.1\nPORT=8080\n# PUBLIC_PORT=8081   # Cloudflare Tunnel port (same IP); requests on it count as internet users\n# PUBLIC_HOST=app.example.com   # required with PUBLIC_PORT: the tunnel's hostname(s), comma-separated\nDATA_DIR=./data\nVOICES_PATH=./voices.json\n# Leave the key out to use the GEMINI_API_KEY environment variable, or to be asked for it at the console or in the browser.\nGEMINI_API_KEY=your_api_key_here\n# GEMINI_TEXT_MODEL=gemini-3.8-flash\n# GEMINI_TTS_MODEL=gemini-3.8-flash-tts\n# GEMINI_SUMMARY_MODEL=gemini-3.5-flash-lite\n# GEMINI_THINKING_LEVEL=low\n# Claude (Anthropic) can write the text instead; recordings always use Gemini. A page may also choose Claude for one run.\n# TEXT_PROVIDER=gemini   # or anthropic\n# ANTHROPIC_API_KEY=\n# ANTHROPIC_TEXT_MODEL=claude-sonnet-5-5\n# ANTHROPIC_SUMMARY_MODEL=claude-haiku-5-5\n# ANTHROPIC_EFFORT=low\n# EXAM_BUDGET_USD=0.70\n# SPEECH_CACHE_HOURS=72\n# MUSIC_PATH=./music.wav\n# AUDIO_RETENTION_HOURS=24\nRUST_LOG=info\n";
 
 /// Every setting the server reads, from the process environment, the persisted
-/// Windows environment and `.env`.
-const SETTINGS: [&str; 16] = [
+/// Windows environment and `.env`. `ANTHROPIC_BASE_URL` and
+/// `ANTHROPIC_AUTH_TOKEN` are never among them: other Anthropic tools (Claude
+/// Code among them) set those, and Claude requests always go to Anthropic's
+/// own address with `ANTHROPIC_API_KEY`.
+const SETTINGS: [&str; 21] = [
     "GEMINI_API_KEY",
     "GEMINI_TEXT_MODEL",
     "GEMINI_TTS_MODEL",
     "GEMINI_SUMMARY_MODEL",
     "GEMINI_THINKING_LEVEL",
+    "TEXT_PROVIDER",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_TEXT_MODEL",
+    "ANTHROPIC_SUMMARY_MODEL",
+    "ANTHROPIC_EFFORT",
     "EXAM_BUDGET_USD",
     "SPEECH_CACHE_HOURS",
     "DATA_DIR",
@@ -43,7 +59,8 @@ const SETTINGS: [&str; 16] = [
     "RUST_LOG",
 ];
 
-/// Where the configured Gemini API key came from. Logged at startup; the key never is.
+/// Where a configured API key (Gemini or Anthropic) came from. Logged at
+/// startup; the key never is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyOrigin {
     /// The server process's own environment.
@@ -213,7 +230,7 @@ impl StartupOptions {
     }
 }
 
-// Intentionally no Debug: the API key must not appear in diagnostics.
+// Intentionally no Debug: the API keys must not appear in diagnostics.
 pub struct AppConfig {
     pub data_dir: PathBuf,
     /// `None` when no source has a key. An interactive console run then asks
@@ -231,6 +248,22 @@ pub struct AppConfig {
     pub summary_model: String,
     /// `generation_config.thinking_level` for text requests: low, medium or high.
     pub thinking_level: String,
+    /// `TEXT_PROVIDER`: who writes the text of a run whose page chose no one.
+    pub text_provider: TextProvider,
+    /// `ANTHROPIC_API_KEY`, found as `gemini_api_key` is. Only text written by
+    /// Claude needs it.
+    pub anthropic_api_key: Option<String>,
+    pub anthropic_key_origin: Option<KeyOrigin>,
+    /// The model for topics, scripts and questions written by Claude.
+    pub anthropic_text_model: String,
+    /// The model for download-name summaries written by Claude.
+    pub anthropic_summary_model: String,
+    /// `output_config.effort` for Claude text requests: low, medium or high.
+    pub anthropic_effort: String,
+    /// Why Claude cannot write text on this server: an Anthropic setting that
+    /// is malformed while `text_provider` is Gemini (with Anthropic it stops
+    /// startup instead). Names the setting, never its value or the `.env` path.
+    pub anthropic_problem: Option<String>,
     /// What one exam should cost at most, in µUSD; 0 means no budget. Only warned about.
     pub exam_budget_micro_usd: u64,
     /// How long a synthesised chunk is kept for reuse; 0 disables the speech cache.
@@ -321,28 +354,80 @@ fn read_dotenv(env_path: &Path, portable: bool) -> Result<HashMap<String, String
 
 /// Why a key typed in the browser or pasted at the console key prompt cannot
 /// be used, if it cannot. Stricter than the startup check: Google API keys
-/// are letters, digits, `-` and `_`, and anything else could break the `.env`
-/// line it may be written to.
-pub fn browser_key_problem(key: &str) -> Option<&'static str> {
+/// are letters, digits, `-` and `_`, Anthropic's (`sk-ant-…`) too, and
+/// anything else could break the `.env` line it may be written to.
+pub fn browser_key_problem(provider: TextProvider, key: &str) -> Option<&'static str> {
+    let (missing, wrong_length, wrong_characters) = match provider {
+        TextProvider::Gemini => (
+            "Paste your Gemini API key first.",
+            "That does not look like a Gemini API key (wrong length).",
+            "That does not look like a Gemini API key: only letters, digits, '-', '_' and '.' are allowed.",
+        ),
+        TextProvider::Anthropic => (
+            "Paste your Anthropic API key first.",
+            "That does not look like an Anthropic API key (wrong length).",
+            "That does not look like an Anthropic API key: only letters, digits, '-', '_' and '.' are allowed.",
+        ),
+    };
     if key.is_empty() {
-        return Some("Paste your Gemini API key first.");
+        return Some(missing);
     }
     if key == PLACEHOLDER_KEY {
         return Some("That is the placeholder from .env.example, not a key.");
     }
     if !(20..=200).contains(&key.len()) {
-        return Some("That does not look like a Gemini API key (wrong length).");
+        return Some(wrong_length);
     }
     if !key
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
     {
-        return Some(
-            "That does not look like a Gemini API key: only letters, digits, '-', '_' and '.' are allowed.",
-        );
+        return Some(wrong_characters);
     }
     None
 }
+
+/// The API key setting `name` from the first of the process environment, the
+/// Windows environment and `.env` that has one, with where it came from. A
+/// blank or placeholder value is skipped, so it never hides a real key
+/// further down. `Err` is the reason the key cannot be used, to follow the
+/// setting's name; it never contains the key.
+fn find_key(
+    name: &str,
+    environment: &HashMap<String, String>,
+    windows: &HashMap<String, String>,
+    dotenv: &HashMap<String, String>,
+) -> Result<Option<(String, KeyOrigin)>, &'static str> {
+    let key = [
+        (environment, KeyOrigin::Process),
+        (windows, KeyOrigin::Windows),
+        (dotenv, KeyOrigin::DotEnv),
+    ]
+    .into_iter()
+    .find_map(|(source, origin)| {
+        source
+            .get(name)
+            .filter(|key| !key.trim().is_empty() && key.trim() != PLACEHOLDER_KEY)
+            .map(|key| (key.clone(), origin))
+    });
+    if key
+        .as_ref()
+        .is_some_and(|(key, _)| key.chars().any(|c| c.is_whitespace() || c.is_control()))
+    {
+        return Err("must not contain whitespace or control characters");
+    }
+    Ok(key)
+}
+
+/// Letters, digits, `-`, `_` and `.`: safe in a request body and a log line.
+fn is_model_id(model: &str) -> bool {
+    !model.is_empty()
+        && model
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+const MODEL_ID_REASON: &str = "must be a model ID containing letters, digits, '.', '_' or '-'";
 
 /// Sets `name=value` in the dotenv file at `path`, keeping every other line.
 /// The first `name=` (or `export name=`) line is replaced; otherwise the
@@ -604,7 +689,7 @@ impl AppConfig {
     }
 
     /// Reads `.env`, then lets the persisted Windows environment and finally the
-    /// process environment override it. The API key is taken from the first of
+    /// process environment override it. Each API key is taken from the first of
     /// those three that has one, so a placeholder or blank value never hides a
     /// real key further down.
     pub fn load_with(
@@ -651,28 +736,10 @@ impl AppConfig {
         }
         VoiceCatalog::create_missing(&voices_path)?;
         let (voices, mut notices) = VoiceCatalog::load(&voices_path)?;
-        let key = [
-            (environment, KeyOrigin::Process),
-            (windows, KeyOrigin::Windows),
-            (&dotenv, KeyOrigin::DotEnv),
-        ]
-        .into_iter()
-        .find_map(|(source, origin)| {
-            source
-                .get("GEMINI_API_KEY")
-                .filter(|key| !key.trim().is_empty() && key.trim() != PLACEHOLDER_KEY)
-                .map(|key| (key.clone(), origin))
-        });
-        if key
-            .as_ref()
-            .is_some_and(|(key, _)| key.chars().any(|c| c.is_whitespace() || c.is_control()))
-        {
-            return Err(setting_error(
-                "GEMINI_API_KEY",
-                "must not contain whitespace or control characters",
-            ));
-        }
-        let (gemini_api_key, key_origin) = key.unzip();
+        let (gemini_api_key, key_origin) =
+            find_key("GEMINI_API_KEY", environment, windows, &dotenv)
+                .map_err(|reason| setting_error("GEMINI_API_KEY", reason))?
+                .unzip();
         let text_model = value("GEMINI_TEXT_MODEL", DEFAULT_TEXT_MODEL);
         let tts_model = value("GEMINI_TTS_MODEL", DEFAULT_TTS_MODEL);
         let summary_model = value("GEMINI_SUMMARY_MODEL", DEFAULT_SUMMARY_MODEL);
@@ -681,15 +748,8 @@ impl AppConfig {
             ("GEMINI_TTS_MODEL", &tts_model),
             ("GEMINI_SUMMARY_MODEL", &summary_model),
         ] {
-            if model.is_empty()
-                || !model
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-            {
-                return Err(setting_error(
-                    name,
-                    "must be a model ID containing letters, digits, '.', '_' or '-'",
-                ));
+            if !is_model_id(model) {
+                return Err(setting_error(name, MODEL_ID_REASON));
             }
         }
         let thinking_level = value("GEMINI_THINKING_LEVEL", DEFAULT_THINKING_LEVEL)
@@ -701,6 +761,63 @@ impl AppConfig {
                 "must be low, medium or high",
             ));
         }
+        // A blank text provider or Anthropic setting means its default.
+        let setting = |name: &str, default: &str| {
+            values
+                .get(name)
+                .map(|value| value.trim())
+                .filter(|value| !value.is_empty())
+                .unwrap_or(default)
+                .to_string()
+        };
+        let text_provider = TextProvider::from_key(
+            &setting("TEXT_PROVIDER", DEFAULT_TEXT_PROVIDER.key()).to_ascii_lowercase(),
+        )
+        .ok_or_else(|| setting_error("TEXT_PROVIDER", "must be gemini or anthropic"))?;
+        // The Anthropic settings matter only when Claude writes the text. A
+        // malformed one stops startup when Claude is the default; otherwise
+        // it is a notice and Claude is unavailable (`anthropic_problem`), so
+        // a setting another tool left behind (ANTHROPIC_API_KEY is a shared
+        // name) never stops a server that writes with Gemini.
+        let mut anthropic_problems: Vec<(&str, &str)> = Vec::new();
+        let (anthropic_api_key, anthropic_key_origin) =
+            match find_key("ANTHROPIC_API_KEY", environment, windows, &dotenv) {
+                Ok(key) => key.unzip(),
+                Err(reason) => {
+                    anthropic_problems.push(("ANTHROPIC_API_KEY", reason));
+                    (None, None)
+                }
+            };
+        let anthropic_text_model = setting("ANTHROPIC_TEXT_MODEL", DEFAULT_ANTHROPIC_TEXT_MODEL);
+        let anthropic_summary_model =
+            setting("ANTHROPIC_SUMMARY_MODEL", DEFAULT_ANTHROPIC_SUMMARY_MODEL);
+        for (name, model) in [
+            ("ANTHROPIC_TEXT_MODEL", &anthropic_text_model),
+            ("ANTHROPIC_SUMMARY_MODEL", &anthropic_summary_model),
+        ] {
+            if !is_model_id(model) {
+                anthropic_problems.push((name, MODEL_ID_REASON));
+            }
+        }
+        let anthropic_effort =
+            setting("ANTHROPIC_EFFORT", DEFAULT_ANTHROPIC_EFFORT).to_ascii_lowercase();
+        if !matches!(anthropic_effort.as_str(), "low" | "medium" | "high") {
+            anthropic_problems.push(("ANTHROPIC_EFFORT", "must be low, medium or high"));
+        }
+        if let Some(&(name, reason)) = anthropic_problems.first()
+            && text_provider == TextProvider::Anthropic
+        {
+            return Err(setting_error(name, reason));
+        }
+        for &(name, reason) in &anthropic_problems {
+            notices.push(format!(
+                "{}; until that is fixed and the app restarts, Claude cannot write the text.",
+                setting_error(name, reason)
+            ));
+        }
+        let anthropic_problem = anthropic_problems
+            .first()
+            .map(|(name, reason)| format!("{name} {reason}"));
         let exam_budget_micro_usd = value("EXAM_BUDGET_USD", DEFAULT_EXAM_BUDGET_USD)
             .trim()
             .trim_start_matches('$')
@@ -825,6 +942,13 @@ impl AppConfig {
             tts_model,
             summary_model,
             thinking_level,
+            text_provider,
+            anthropic_api_key,
+            anthropic_key_origin,
+            anthropic_text_model,
+            anthropic_summary_model,
+            anthropic_effort,
+            anthropic_problem,
             exam_budget_micro_usd,
             speech_cache_hours,
             voices,
@@ -836,6 +960,23 @@ impl AppConfig {
             public_hosts,
             log_filter,
         })
+    }
+
+    /// The configured key for `provider`, if any (not one typed in the browser:
+    /// see `secrets::api_key`).
+    pub fn api_key(&self, provider: TextProvider) -> Option<&str> {
+        match provider {
+            TextProvider::Gemini => self.gemini_api_key.as_deref(),
+            TextProvider::Anthropic => self.anthropic_api_key.as_deref(),
+        }
+    }
+
+    /// Where the configured key for `provider` came from.
+    pub fn key_origin_of(&self, provider: TextProvider) -> Option<KeyOrigin> {
+        match provider {
+            TextProvider::Gemini => self.key_origin,
+            TextProvider::Anthropic => self.anthropic_key_origin,
+        }
     }
 
     pub fn audio_dir(&self) -> PathBuf {
@@ -1095,7 +1236,13 @@ mod tests {
 
     #[test]
     fn browser_keys_must_look_like_keys() {
-        assert!(browser_key_problem("AIzaSyA-valid_looking0123456789abcdef").is_none());
+        assert!(
+            browser_key_problem(
+                TextProvider::Gemini,
+                "AIzaSyA-valid_looking0123456789abcdef"
+            )
+            .is_none()
+        );
         for bad in [
             "",
             PLACEHOLDER_KEY,
@@ -1104,8 +1251,31 @@ mod tests {
             "AIzaSyA\"quote0123456789abcdef",
             "AIzaSyA#hash0123456789abcdef",
         ] {
-            assert!(browser_key_problem(bad).is_some(), "{bad}");
+            assert!(
+                browser_key_problem(TextProvider::Gemini, bad).is_some(),
+                "{bad}"
+            );
         }
+        // Anthropic keys follow the same rules; the messages name them.
+        let anthropic = format!("sk-ant-api03-{}-AA", "Ab1_".repeat(23));
+        assert!(browser_key_problem(TextProvider::Anthropic, &anthropic).is_none());
+        for bad in [
+            "",
+            PLACEHOLDER_KEY,
+            "sk-ant",
+            "sk-ant-api03 with spaces 0123456789",
+        ] {
+            let problem = browser_key_problem(TextProvider::Anthropic, bad).unwrap();
+            assert!(!problem.contains("Gemini"), "{problem}");
+        }
+        assert_eq!(
+            browser_key_problem(TextProvider::Anthropic, ""),
+            Some("Paste your Anthropic API key first.")
+        );
+        assert_eq!(
+            browser_key_problem(TextProvider::Gemini, "short"),
+            Some("That does not look like a Gemini API key (wrong length).")
+        );
     }
     #[test]
     fn missing_files_are_created_independently_and_existing_files_preserved() {
@@ -1492,6 +1662,257 @@ mod tests {
         assert_eq!(cfg.thinking_level, "medium");
         assert_eq!(cfg.exam_budget_micro_usd, 1_250_000);
         assert_eq!(cfg.speech_cache_secs(), None);
+    }
+
+    #[test]
+    fn anthropic_key_follows_the_gemini_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".env"),
+            "ANTHROPIC_API_KEY=from-dotenv\nGEMINI_API_KEY=gemini-from-dotenv\n",
+        )
+        .unwrap();
+        let process = HashMap::from([("ANTHROPIC_API_KEY".into(), "from-process".into())]);
+        let windows = HashMap::from([("ANTHROPIC_API_KEY".into(), "from-windows".into())]);
+        let none = HashMap::new();
+        let origin = |environment: &HashMap<String, String>, windows: &HashMap<String, String>| {
+            let cfg = AppConfig::load_with(dir.path(), true, environment, windows).unwrap();
+            // The Gemini key is found on its own.
+            assert_eq!(cfg.gemini_api_key.as_deref(), Some("gemini-from-dotenv"));
+            assert_eq!(
+                cfg.api_key(TextProvider::Gemini),
+                Some("gemini-from-dotenv")
+            );
+            assert_eq!(
+                cfg.key_origin_of(TextProvider::Gemini),
+                Some(KeyOrigin::DotEnv)
+            );
+            assert_eq!(
+                cfg.api_key(TextProvider::Anthropic),
+                cfg.anthropic_api_key.as_deref()
+            );
+            (
+                cfg.anthropic_api_key.clone().unwrap(),
+                cfg.key_origin_of(TextProvider::Anthropic).unwrap(),
+            )
+        };
+        assert_eq!(
+            origin(&process, &windows),
+            ("from-process".into(), KeyOrigin::Process)
+        );
+        assert_eq!(
+            origin(&none, &windows),
+            ("from-windows".into(), KeyOrigin::Windows)
+        );
+        assert_eq!(
+            origin(&none, &none),
+            ("from-dotenv".into(), KeyOrigin::DotEnv)
+        );
+        // A blank or placeholder value never hides a real key further down.
+        let blank = HashMap::from([("ANTHROPIC_API_KEY".into(), " ".into())]);
+        let placeholder = HashMap::from([("ANTHROPIC_API_KEY".into(), PLACEHOLDER_KEY.into())]);
+        assert_eq!(
+            origin(&blank, &placeholder),
+            ("from-dotenv".into(), KeyOrigin::DotEnv)
+        );
+        std::fs::write(dir.path().join(".env"), "ANTHROPIC_API_KEY=\n").unwrap();
+        let cfg = AppConfig::load_with(dir.path(), true, &blank, &none).unwrap();
+        assert!(cfg.anthropic_api_key.is_none() && cfg.anthropic_key_origin.is_none());
+        assert!(cfg.gemini_api_key.is_none());
+        // With Claude as the default, a key with whitespace stops startup
+        // without showing it.
+        let mut env = HashMap::from([
+            ("TEXT_PROVIDER".into(), "anthropic".into()),
+            (
+                "ANTHROPIC_API_KEY".into(),
+                "sk-ant-never-print-this\n".into(),
+            ),
+        ]);
+        let error = AppConfig::load(dir.path(), true, &env).err().unwrap();
+        assert!(
+            error.ends_with("ANTHROPIC_API_KEY must not contain whitespace or control characters"),
+            "{error}"
+        );
+        assert!(!error.contains("never-print-this"), "{error}");
+        env.insert("ANTHROPIC_API_KEY".into(), "sk-ant-api03-fine".into());
+        let cfg = AppConfig::load(dir.path(), true, &env).unwrap();
+        assert_eq!(cfg.anthropic_api_key.as_deref(), Some("sk-ant-api03-fine"));
+        assert!(cfg.gemini_api_key.is_none());
+    }
+
+    #[test]
+    fn text_provider_and_claude_settings_are_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let load = |pairs: &[(&str, &str)]| {
+            let mut env = environment();
+            for (name, value) in pairs {
+                env.insert((*name).into(), (*value).into());
+            }
+            AppConfig::load(dir.path(), true, &env)
+        };
+        let cfg = load(&[]).unwrap();
+        assert_eq!(cfg.text_provider, TextProvider::Gemini);
+        assert_eq!(cfg.anthropic_text_model, "claude-sonnet-5-5");
+        assert_eq!(cfg.anthropic_summary_model, "claude-haiku-5-5");
+        assert_eq!(cfg.anthropic_effort, "low");
+        assert!(cfg.anthropic_api_key.is_none() && cfg.anthropic_problem.is_none());
+        assert!(cfg.notices.is_empty(), "{:?}", cfg.notices);
+        // Blank means the default.
+        let cfg = load(&[
+            ("TEXT_PROVIDER", " "),
+            ("ANTHROPIC_TEXT_MODEL", ""),
+            ("ANTHROPIC_SUMMARY_MODEL", "  "),
+            ("ANTHROPIC_EFFORT", ""),
+        ])
+        .unwrap();
+        assert_eq!(cfg.text_provider, TextProvider::Gemini);
+        assert_eq!(cfg.anthropic_text_model, "claude-sonnet-5-5");
+        assert_eq!(cfg.anthropic_summary_model, "claude-haiku-5-5");
+        assert_eq!(cfg.anthropic_effort, "low");
+        assert!(cfg.notices.is_empty(), "{:?}", cfg.notices);
+        let cfg = load(&[
+            ("TEXT_PROVIDER", " Anthropic "),
+            ("ANTHROPIC_TEXT_MODEL", "claude-opus-5-5"),
+            ("ANTHROPIC_EFFORT", " High "),
+        ])
+        .unwrap();
+        assert_eq!(cfg.text_provider, TextProvider::Anthropic);
+        assert_eq!(cfg.anthropic_text_model, "claude-opus-5-5");
+        assert_eq!(cfg.anthropic_effort, "high");
+        // A missing Anthropic key is no error: it may be supplied later.
+        assert!(cfg.anthropic_api_key.is_none() && cfg.anthropic_problem.is_none());
+        for provider in ["openai", "claude", "gemini,anthropic"] {
+            let error = load(&[("TEXT_PROVIDER", provider)]).err().unwrap();
+            assert!(
+                error.ends_with("TEXT_PROVIDER must be gemini or anthropic"),
+                "{provider}: {error}"
+            );
+        }
+        // With Claude as the default, every Anthropic setting is checked strictly.
+        let claude = ("TEXT_PROVIDER", "anthropic");
+        for (name, value) in [
+            ("ANTHROPIC_EFFORT", "max"),
+            ("ANTHROPIC_EFFORT", "minimal"),
+            ("ANTHROPIC_TEXT_MODEL", "bad/model"),
+            ("ANTHROPIC_SUMMARY_MODEL", "claude haiku"),
+        ] {
+            let error = load(&[claude, (name, value)]).err().unwrap();
+            assert!(error.contains(name), "{name}={value}: {error}");
+            assert!(!error.contains(value), "{name}={value}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_gemini_server_starts_despite_bad_claude_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, value, problem) in [
+            (
+                "ANTHROPIC_API_KEY",
+                "sk-ant never-print-this",
+                "ANTHROPIC_API_KEY must not contain whitespace or control characters",
+            ),
+            (
+                "ANTHROPIC_EFFORT",
+                "max",
+                "ANTHROPIC_EFFORT must be low, medium or high",
+            ),
+            (
+                "ANTHROPIC_TEXT_MODEL",
+                "claude/sonnet",
+                "ANTHROPIC_TEXT_MODEL must be a model ID containing letters, digits, '.', '_' or '-'",
+            ),
+        ] {
+            for provider in [None, Some("gemini")] {
+                let mut env = environment();
+                env.insert(name.into(), value.into());
+                if let Some(provider) = provider {
+                    env.insert("TEXT_PROVIDER".into(), provider.into());
+                }
+                let cfg = AppConfig::load(dir.path(), true, &env).unwrap();
+                assert_eq!(cfg.text_provider, TextProvider::Gemini);
+                assert_eq!(
+                    cfg.gemini_api_key.as_deref(),
+                    Some("test-secret-not-a-real-key")
+                );
+                assert_eq!(cfg.anthropic_problem.as_deref(), Some(problem));
+                assert!(cfg.anthropic_api_key.is_none());
+                assert_eq!(cfg.notices.len(), 1, "{:?}", cfg.notices);
+                assert!(
+                    cfg.notices[0].contains(problem)
+                        && cfg.notices[0].ends_with("Claude cannot write the text."),
+                    "{:?}",
+                    cfg.notices
+                );
+                assert!(!cfg.notices[0].contains("never-print-this"));
+            }
+        }
+    }
+
+    #[test]
+    fn no_base_url_or_auth_token_is_ever_read() {
+        for name in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] {
+            assert!(!SETTINGS.contains(&name), "{name}");
+        }
+        // Claude Code sets ANTHROPIC_BASE_URL for the processes it starts,
+        // this test among them.
+        let process = super::environment().unwrap();
+        let windows = windows_environment();
+        for name in ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"] {
+            assert!(!process.contains_key(name) && !windows.contains_key(name));
+        }
+        for name in [
+            "TEXT_PROVIDER",
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_TEXT_MODEL",
+            "ANTHROPIC_SUMMARY_MODEL",
+            "ANTHROPIC_EFFORT",
+        ] {
+            assert!(SETTINGS.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn the_portable_template_sets_no_anthropic_key() {
+        let parse = |text: &str| -> HashMap<String, String> {
+            dotenvy::from_read_iter(text.as_bytes())
+                .map(Result::unwrap)
+                .collect()
+        };
+        // As written, and as the Linux check makes it (a test key in place
+        // of the placeholder).
+        for text in [
+            PORTABLE_ENV.to_string(),
+            PORTABLE_ENV.replace(PLACEHOLDER_KEY, "offline-test-key"),
+        ] {
+            let values = parse(&text);
+            assert!(
+                values
+                    .keys()
+                    .all(|name| !name.starts_with("ANTHROPIC_") && name != "TEXT_PROVIDER"),
+                "{values:?}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = AppConfig::load(dir.path(), true, &HashMap::new()).unwrap();
+        assert_eq!(cfg.text_provider, TextProvider::Gemini);
+        assert!(cfg.anthropic_api_key.is_none() && cfg.anthropic_problem.is_none());
+        // Each commented line, uncommented, gives its default.
+        let uncommented = PORTABLE_ENV
+            .lines()
+            .filter_map(|line| line.strip_prefix("# "))
+            .filter(|line| line.starts_with("ANTHROPIC_") || line.starts_with("TEXT_PROVIDER="))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let values = parse(&uncommented);
+        assert_eq!(values.len(), 5, "{values:?}");
+        assert_eq!(values["TEXT_PROVIDER"], DEFAULT_TEXT_PROVIDER.key());
+        assert_eq!(values["ANTHROPIC_API_KEY"], "");
+        assert_eq!(values["ANTHROPIC_TEXT_MODEL"], DEFAULT_ANTHROPIC_TEXT_MODEL);
+        assert_eq!(
+            values["ANTHROPIC_SUMMARY_MODEL"],
+            DEFAULT_ANTHROPIC_SUMMARY_MODEL
+        );
+        assert_eq!(values["ANTHROPIC_EFFORT"], DEFAULT_ANTHROPIC_EFFORT);
     }
 
     #[test]

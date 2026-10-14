@@ -7,6 +7,11 @@
 //! chaining the same server functions the individual buttons use: the script
 //! first, then the questions and the recording side by side.
 //!
+//! The topic, script, questions and download-name summary come from the
+//! page's text provider (`TextProviderPicker`; none chosen: the server's
+//! `TEXT_PROVIDER`), taken before each call awaits and fixed while anything
+//! runs. Recordings always use Gemini voices.
+//!
 //! Speakers get their voices here, from the catalogue `Navbar` loads: the
 //! domain's `assign_voices` runs whenever the line-up changes, and the server
 //! assigns the same way when a recording starts and sends the line-up back,
@@ -22,7 +27,8 @@ use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::domain::{
     AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
-    ValidationIssue, VoiceChoice, assign_voices, has_errors, speaker_change, validate_passage,
+    TextProvider, ValidationIssue, VoiceChoice, assign_voices, has_errors, speaker_change,
+    validate_passage,
 };
 use crate::export::naming::test_type;
 use crate::export::{docx, markdown};
@@ -31,6 +37,7 @@ use crate::ui::components::auto_download::AutoDownloadToggle;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
+use crate::ui::components::text_provider::TextProviderPicker;
 use crate::ui::components::voices::{
     VoiceCatalogueCtx, speaker_warnings, voices_of_others, with_choice,
 };
@@ -47,6 +54,9 @@ pub struct HomeState {
     pub is_generating_topic: bool,
     /// New scripts are expressive (`PassageRequest::expressive`); on by default.
     pub expressive: bool,
+    /// Who writes the text (topic, script, questions, download-name
+    /// summary); `None` follows the server's `TEXT_PROVIDER`. Not saved.
+    pub text_provider: Option<TextProvider>,
 
     /// The line-up once it differs from the part's defaults (an edit, or
     /// voices assigned); empty means the defaults. See `effective_speakers`.
@@ -114,6 +124,7 @@ impl HomeState {
             topic_error: None,
             is_generating_topic: false,
             expressive: true,
+            text_provider: None,
             custom_speakers: Vec::new(),
             show_speakers: false,
             editing_speaker_idx: None,
@@ -137,11 +148,13 @@ impl HomeState {
     }
 
     /// A fresh state for another format that still supersedes runs in flight
-    /// and keeps the teacher's choice of expressive scripts.
+    /// and keeps the teacher's choice of expressive scripts and of who writes
+    /// the text.
     fn switch_format(&self, format: FormatId) -> Self {
         Self {
             run: self.run + 1,
             expressive: self.expressive,
+            text_provider: self.text_provider,
             ..Self::for_format(format)
         }
     }
@@ -345,9 +358,14 @@ pub fn Home() -> Element {
     let handle_generate_topic = move |_| {
         state.write().topic_error = None;
         state.write().is_generating_topic = true;
-        let (format, part, run) = (state().format, state().part, state().run);
+        let (format, part, run, provider) = (
+            state().format,
+            state().part,
+            state().run,
+            state().text_provider,
+        );
         spawn(async move {
-            let outcome = suggest_topic(format, part, String::new(), None).await;
+            let outcome = suggest_topic(format, part, String::new(), None, provider).await;
             if !still_current(state, run) {
                 return;
             }
@@ -578,6 +596,11 @@ pub fn Home() -> Element {
                         " Expressive delivery (sighs, laughs)"
                     }
                     p { class: "muted", "New scripts may carry a few sighs, coughs, laughs and chuckles that the voices perform. Transcripts, questions and downloads show only the words." }
+                    TextProviderPicker {
+                        chosen: state().text_provider,
+                        disabled: state().is_busy(),
+                        onchange: move |provider| state.write().text_provider = Some(provider),
+                    }
                     AutoDownloadToggle {}
                 }
 
@@ -871,6 +894,7 @@ fn part_name(state: &HomeState) -> Option<NameRequest> {
         test_type: test_type(&state.format.format(), Some(state.part)),
         source: vec![passage.topic.clone()],
         exam: None,
+        provider: state.text_provider,
     })
 }
 
@@ -949,8 +973,9 @@ async fn run_script(
     run: u32,
     request: PassageRequest,
 ) -> Option<Passage> {
+    let provider = state.peek().text_provider;
     state.write().is_generating_script = true;
-    let outcome = generate_passage(request, None).await;
+    let outcome = generate_passage(request, None, provider).await;
     if !still_current(state, run) {
         return None;
     }
@@ -973,7 +998,7 @@ async fn run_script(
     // (Bound first: an `if let` would hold the read across `prefetch`'s write.)
     let request = part_name(&state.peek());
     if let Some(request) = request {
-        prefetch(state, request.source, request.exam);
+        prefetch(state, request.source, request.exam, request.provider);
     }
     passage
 }
@@ -993,6 +1018,7 @@ async fn run_tasks(
         .part(part)
         .map(|p| p.tasks.len())
         .unwrap_or(0);
+    let provider = state.peek().text_provider;
     {
         let mut s = state.write();
         // New questions for this script get a new download name; the first
@@ -1013,7 +1039,7 @@ async fn run_tasks(
             passage: passage.clone(),
             speakers: speakers.clone(),
         };
-        let outcome = generate_task(request, None).await;
+        let outcome = generate_task(request, None, provider).await;
         if !still_current(state, run) {
             return;
         }

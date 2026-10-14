@@ -12,7 +12,7 @@ theo dõi việc triển khai. Khi xong, mục 2 của lộ trình đó ("Authen
 or Cloudflare Access") được giải quyết một nửa: Access chặn người lạ, app vẫn
 chưa biết từng người dùng (xem B4).
 
-Cập nhật lần cuối: **2026-10-07**.
+Cập nhật lần cuối: **2026-10-14**.
 
 ---
 
@@ -297,7 +297,7 @@ installer (S1) kiểm tra lại mỗi lần cài.
 | Chương trình | `C:\Program Files\ListeningExamGenerator\server.exe`, `public\`, `RUST-DEPENDENCIES.txt`, lấy từ `target\dx\vmq_mvp\release\web\` do `packaging/build-windows.ps1` build (CRT tĩnh, console subsystem) |
 | Cấu hình và dữ liệu | `C:\ProgramData\ListeningExamGenerator\` gồm `.env`, `data\` (`jobs.db`, `audio\`, `logs\`, `voices.json`) |
 | Lệnh | `server.exe --config-dir C:\ProgramData\ListeningExamGenerator --service ListeningExamGenerator` (không `--portable`) |
-| `.env` | `IP=127.0.0.1`, `PORT=8080`, `PUBLIC_PORT=8081`, `PUBLIC_HOST=app.ielts-ai-master.co.uk`, `DATA_DIR=./data`, `GEMINI_API_KEY=…`, `RUST_LOG=info` |
+| `.env` | `IP=127.0.0.1`, `PORT=8080`, `PUBLIC_PORT=8081`, `PUBLIC_HOST=app.ielts-ai-master.co.uk`, `DATA_DIR=./data`, `GEMINI_API_KEY=…`, `RUST_LOG=info`; thêm `ANTHROPIC_API_KEY=…` nếu cho Claude viết văn bản, và `TEXT_PROVIDER=anthropic` nếu Claude là mặc định |
 | Tên service | `ListeningExamGenerator`, hiển thị "Listening Exam Generator" |
 | Tài khoản | `NT SERVICE\ListeningExamGenerator` |
 
@@ -337,7 +337,9 @@ Cài mới, theo thứ tự:
    `.env` bằng file tạm rồi đổi tên, file mới mang ACL của thư mục.
 4. Tạo `.env` nếu chưa có, **không bao giờ ghi đè**. Với
    `-CopyKeyFromUserEnvironment`, chép `GEMINI_API_KEY` từ HKCU của người đang
-   chạy script vào `.env`, không in key ra.
+   chạy script vào `.env`, cùng `ANTHROPIC_API_KEY` và `TEXT_PROVIDER` nếu HKCU
+   có, không in key ra. Service chạy bằng tài khoản ảo nên không đọc được HKCU
+   của người cài: biến nào không chép thì service không bao giờ thấy.
 5. `nssm install` và các `nssm set` ở bảng trên.
 6. Cấp `NT SERVICE\ListeningExamGenerator` quyền Modify trên `ConfigDir`. Bước
    này phải sau bước 5: tài khoản ảo chỉ tồn tại khi đã có service.
@@ -356,7 +358,7 @@ Chạy trên máy có service. Không gọi Gemini, trừ khi có `-Paid`.
 |---|---|---|
 | 1 | Trạng thái service | Running, Automatic, đúng tài khoản ảo |
 | 2 | `GET /` qua 8080 và 8081 | 200 |
-| 3 | `api_key_status` qua 8080 / 8081 / 8080 kèm `CF-Connecting-IP` | nguồn key là `.env`; `can_enter` chỉ có thể `true` qua 8080 không header |
+| 3 | `api_key_status` qua 8080 / 8081 / 8080 kèm `CF-Connecting-IP` | nguồn key Gemini (và key Anthropic, nếu đã chép) là `.env`; `can_enter` của từng key chỉ có thể `true` qua 8080 không header |
 | 4 | `Stop-Service` | `service.log` có "Server stopped cleanly." và dừng xong dưới 4 giây |
 | 5 | Kill `server.exe` | NSSM chạy lại trong khoảng 15 giây |
 | 6 | Thư mục tạm | Không có `listening-generator-*` mới trong `%TEMP%` của hệ thống |

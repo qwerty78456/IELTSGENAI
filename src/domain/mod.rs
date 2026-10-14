@@ -12,6 +12,7 @@ pub mod error;
 pub mod exam;
 pub mod format;
 pub mod passage;
+pub mod provider;
 pub mod speaker;
 pub mod speech;
 pub mod task;
@@ -27,6 +28,7 @@ pub use error::*;
 pub use exam::*;
 pub use format::*;
 pub use passage::*;
+pub use provider::*;
 pub use speaker::*;
 #[allow(unused_imports)] // the browser reaches speech through `Line` and `Passage`
 pub use speech::*;

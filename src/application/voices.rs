@@ -147,7 +147,7 @@ pub async fn voice_preview(
             rate_limiter::check(rate_limiter::Bucket::VoiceSample).map_err(ServerFnError::new)?;
             let client = GeminiClient::from_config().map_err(user_error)?;
             let made = tts::make_sample(&client, &voice).await;
-            usage::record(UsageStep::Voices, exam, client.tts_model(), &client).await;
+            usage::record(UsageStep::Voices, exam, client.tts_model(), &client.usage()).await;
             made.map_err(user_error)?
         }
     };
@@ -180,7 +180,7 @@ pub async fn design_voice(
     rate_limiter::check(rate_limiter::Bucket::VoiceDesign).map_err(ServerFnError::new)?;
     let client = GeminiClient::from_config().map_err(user_error)?;
     let made = tts::design_voice(&client, &request).await;
-    usage::record(UsageStep::Voices, exam, client.tts_model(), &client).await;
+    usage::record(UsageStep::Voices, exam, client.tts_model(), &client.usage()).await;
     let (voice, sample) = made.map_err(user_error)?;
     Ok(DesignedVoice {
         sample: VoiceSample {

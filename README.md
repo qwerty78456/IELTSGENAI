@@ -8,9 +8,11 @@ transcript and audio. The exam **format** is data; two ship:
 - **HSG Quốc gia – Listening** (4 parts, 35 items, parts 3–4 played twice,
   transcribed from the official 2025–2026 paper)
 
-Generation uses Google Gemini for text and speech. Every generated key is
-checked against the script by a validator; problems are shown next to the
-draft. The teacher edits; nothing is final until they say so.
+Generation uses Google Gemini for text and speech. Anthropic Claude can write
+the text instead (topics, scripts, questions and download-name summaries:
+`TEXT_PROVIDER`, or a choice on each page); speech is always Gemini. Every
+generated key is checked against the script by a validator; problems are shown
+next to the draft. The teacher edits; nothing is final until they say so.
 
 Read `docs/architecture.md` first. `docs/domain_model.md` and
 `docs/ubiquitous_language.md` define the types and words used everywhere.
@@ -24,10 +26,14 @@ browser at http://127.0.0.1:8080. The Gemini API key comes from the
 GEMINI_API_KEY environment variable (on Windows also one set after the console
 opened), then from .env; with neither, the console asks for it (shown as `*`,
 checked with Google for free, saved in .env), and if you press Enter there the
-page asks instead (see "API key" below). Keep the console open; Ctrl+C or
-closing the console window stops it.
+page asks instead (see "API key" below). An Anthropic API key
+(ANTHROPIC_API_KEY) is optional: only text written by Claude needs it, it is
+found the same way, and the console asks for it, after the Gemini key, only
+with `TEXT_PROVIDER=anthropic`. Keep the console open; Ctrl+C or closing the
+console window stops it.
 No Rust or Docker installation is needed by users. Generation still needs
-internet access and a Gemini API key.
+internet access and a Gemini API key: recordings always use Gemini, even when
+Claude writes the text.
 
 Missing configuration files are recreated; existing invalid files are never
 replaced. Syntax errors, invalid settings, inaccessible storage, and occupied
@@ -63,10 +69,11 @@ sessions) is detected and never asks. Relative paths
 are resolved against the configuration directory. Environment values override
 file settings, but malformed files always fail. Configuration is loaded once;
 restart after edits. A key typed at the console or in the browser is checked
-with Google before it is kept; other keys are checked when generating. If
-Google rejects the configured key, every page says where that key came from
-and, in a browser on the server's own computer, lets you paste a working one
-that replaces it until the next restart.
+with its company (Google, or Anthropic for an Anthropic key) before it is kept;
+other keys are checked when generating. If Google or Anthropic rejects a
+configured key, every page says where that key came from and, in a browser on
+the server's own computer, lets you paste a working one that replaces it until
+the next restart.
 Exams built on the Whole exam page are saved on the server and reopen after a
 restart, recording included. Their recordings are kept until the exam is deleted;
 other recordings expire after AUDIO_RETENTION_HOURS (24 by default). A
@@ -91,7 +98,7 @@ Prerequisites: Rust 1.89+ (edition 2024 let-chains, `File::try_lock`; developed 
 `wasm32-unknown-unknown` target, and on Linux `pkg-config libssl-dev`.
 
 ```bash
-cp .env.example .env      # optional: GEMINI_API_KEY here, or in the environment
+cp .env.example .env      # optional: GEMINI_API_KEY (and ANTHROPIC_API_KEY) here, or in the environment
 dx serve                  # http://localhost:8080, hot reload
 ```
 
@@ -107,9 +114,14 @@ cargo test  --features server --no-default-features  # unit tests (domain, expor
 calls the real API (about $0.01) and prints tokens, latency and audio tokens
 per second. `voice_live_probe` (same flags) checks for free that every pooled
 voice still exists with its gender and language, then spends about $0.003 on
-a three-speaker passage. Nothing else in the test suite spends money;
-`tools/voice_lab.py` (see `docs/voices.md`) runs the voice probes and auditions
-with a spending cap.
+a three-speaker passage. `claude_paid_probe` (same flags, about $0.03) checks
+the Anthropic key for free, counts the prompts' tokens, then writes a topic,
+the longest IELTS script, its questions and a download-name summary with
+Claude; `text_provider_compare_probe` (about $0.17) writes one IELTS
+exam's whole text with Gemini and with Claude and compares validator issues,
+parse failures, latency and cost. Their names keep them out of the `live_probe`
+filter. Nothing else in the test suite spends money; `tools/voice_lab.py` (see
+`docs/voices.md`) runs the voice probes and auditions with a spending cap.
 
 ## Run in Docker
 
@@ -117,6 +129,12 @@ with a spending cap.
 cp .env.example .env      # set GEMINI_API_KEY (a container never accepts a key from the browser)
 docker compose up -d --build
 ```
+
+`docker-compose.yml` hands the container `.env` (`env_file`), not the host's
+environment, and a detached container never asks at a console: every key and
+setting the app should see goes in `.env`. To let Claude write the text, put
+`ANTHROPIC_API_KEY` there too, and `TEXT_PROVIDER=anthropic` if Claude should
+write it by default; a key set only on the host does not reach the container.
 
 The container listens on `127.0.0.1:8080`. Put a reverse proxy with TLS and
 **authentication** in front (Caddy with `basic_auth`, or Cloudflare Access):
@@ -136,9 +154,13 @@ Run the release binary under a service manager (NSSM) with
 never opens a browser, and `GET /instance` reports the copy as that service. Put
 the key in `GEMINI_API_KEY` (environment or the `.env` of the configuration
 directory): without one the startup line says "missing; set GEMINI_API_KEY in
-… and restart the service". The app stops cleanly on Ctrl+C (what NSSM sends
-first), Ctrl+Break or, on Unix, SIGTERM; open downloads get 5 seconds. A
-recording interrupted by the stop is shown as failed after the next start.
+… and restart the service". With `TEXT_PROVIDER=anthropic`, put
+`ANTHROPIC_API_KEY` there too; its own startup line reads the same way when it
+is missing. With the default `TEXT_PROVIDER=gemini` a missing Anthropic key is
+no fault: the line says "not set; needed only when a page chooses Claude to
+write the text". The app stops cleanly on Ctrl+C (what NSSM sends first),
+Ctrl+Break or, on Unix, SIGTERM; open downloads get 5 seconds. A recording
+interrupted by the stop is shown as failed after the next start.
 
 ## Publish with Cloudflare Tunnel
 
@@ -177,6 +199,7 @@ Each request is classified as Local, Published or Remote:
 |---|---|---|---|
 | comes from | a browser on the server's own computer, on `PORT` | `PUBLIC_PORT` (the tunnel), for a `PUBLIC_HOST` name | anything else |
 | enter an API key in the browser | yes | no | no |
+| choose Claude to write the text (spends on the server's Anthropic account) | yes | yes | yes |
 | design a voice | yes | yes | no |
 | delete a designed voice (made by this app) | yes | no | no |
 | `GET /instance`, `POST /instance/stop` | yes | no (404) | no (404) |
@@ -195,11 +218,16 @@ sent) is a `PUBLIC_HOST` name, and it is not cross-site.
 | Variable | Default | Meaning |
 |----------|---------|---------|
 | `GEMINI_API_KEY` | — | process environment, then the Windows user/machine environment, then `.env`; without any, an interactive console asks and saves it in `.env`, else the page asks (in a browser on the server's own computer, loopback bind only) |
-| `GEMINI_TEXT_MODEL` | `gemini-3.8-flash` | scripts, topics, questions; pinned GA model (prices are known for it, not for aliases) |
+| `GEMINI_TEXT_MODEL` | `gemini-3.8-flash` | scripts, topics, questions written by Gemini; pinned GA model (prices are known for it, not for aliases) |
 | `GEMINI_TTS_MODEL` | `gemini-3.8-flash-tts` | speech; any 3.8-generation TTS model, e.g. `gemini-3.8-flash-lite-tts` (a third cheaper) |
-| `GEMINI_SUMMARY_MODEL` | `gemini-3.5-flash-lite` | the five-word summary in download names; sent without a thinking level, so the model thinks at its default (minimal on Flash-Lite) |
-| `GEMINI_THINKING_LEVEL` | `low` | `low`, `medium` or `high` for text requests; thinking tokens are billed as output |
-| `EXAM_BUDGET_USD` | `0.70` | the exam page warns once an exam's Gemini spend passes it; `0` = no budget; nothing is blocked |
+| `GEMINI_SUMMARY_MODEL` | `gemini-3.5-flash-lite` | the five-word summary in download names when Gemini writes the text; sent without a thinking level, so the model thinks at its default (minimal on Flash-Lite) |
+| `GEMINI_THINKING_LEVEL` | `low` | `low`, `medium` or `high` for Gemini text requests; thinking tokens are billed as output |
+| `TEXT_PROVIDER` | `gemini` | who writes the text (topics, scripts, questions, download-name summaries) of a run whose page chose no one: `gemini` or `anthropic`; each page can choose for its own runs, and the exam page saves its choice with the exam; speech is always Gemini; any other value stops startup |
+| `ANTHROPIC_API_KEY` | — | needed only for text written by Claude; looked up like `GEMINI_API_KEY`; the console asks for it only with `TEXT_PROVIDER=anthropic`, otherwise a page that chooses Claude asks (in a browser on the server's own computer) |
+| `ANTHROPIC_TEXT_MODEL` | `claude-sonnet-5-5` | scripts, topics, questions written by Claude |
+| `ANTHROPIC_SUMMARY_MODEL` | `claude-haiku-5-5` | the five-word summary in download names when Claude writes the text; always sent with effort `low` |
+| `ANTHROPIC_EFFORT` | `low` | `low`, `medium` or `high` (`output_config.effort`, Claude's only thinking control) for Claude text requests; thinking tokens are billed as output |
+| `EXAM_BUDGET_USD` | `0.70` | the exam page warns once an exam's AI spend (Gemini and Claude) passes it; `0` = no budget; nothing is blocked |
 | `SPEECH_CACHE_HOURS` | `72` | synthesised speech is reused for identical words, styles, voices and model this long after its last use; `0` = off |
 | `DATA_DIR` | `./data` | jobs.db, audio/, logs/ |
 | `VOICES_PATH` | `$DATA_DIR/voices.json` | version 2 voice overrides: a list replaces the built-in voices of one accent and gender, `announcer` the announcer; written as an empty template if missing; a 0.7 file is renamed (defaults) or ignored (customised) |
@@ -220,6 +248,24 @@ chunks of at most 200 words and two voices, and asks for raw 24 kHz mono
 are read by regional voices of the Extended Voice Library instead; each voice
 in a request also bills its reference audio (740-1,970 input tokens).
 Measurements and decisions are in `docs/voices.md`.
+
+Claude writes text only, through the Messages API
+(`POST https://api.anthropic.com/v1/messages`). That address is built in:
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_AUTH_TOKEN`, which other Anthropic tools
+set, are never read. The Messages API keeps no conversation and has no
+per-request switch like `"store": false`: what Anthropic retains follows the
+policy of the key's organisation. A request is retried only when Anthropic
+answers quickly that it is busy or the connection never opened, and never
+after a timeout, so one call stays within 100 s (a Cloudflare Tunnel request
+is cut at 125 s). A topic, script or questions request that the model's
+safety classifier declines may run again on Anthropic's side on the model
+Anthropic recommends (`claude-sonnet-5` for Sonnet 5.5; server-side fallback,
+never asked for the download-name summary), and each attempt is priced at its
+own model's rate. A blank Anthropic setting means its default. A malformed one
+stops startup only with `TEXT_PROVIDER=anthropic`; otherwise the console
+prints a notice and Claude cannot write the text until it is fixed and the app
+restarts. The app never switches provider on its own: a request that fails
+with Claude is not repeated with Gemini, nor the reverse.
 
 ### Voices
 
@@ -250,10 +296,11 @@ Every DOCX, WAV and Markdown download is named after the test, five words
 about the draft and the browser's time, day first:
 `IELTS-Listening-Part1_Booking-A-Hotel-Room-Online_06-10-2026_14-32-05.docx`
 (the exam page leaves the part out). The five words come from
-`gemini-3.5-flash-lite` right after a script is written (about $0.0001 per
-draft, booked as "file names"); without them the files are named after the
-topics. The DOCX and the WAV of one draft share a name; new questions or a
-new take get a new time. **Download the DOCX and WAV automatically** (on
+`gemini-3.5-flash-lite` (or `claude-haiku-5-5` when Claude writes the text)
+right after a script is written (about $0.0001 per draft or less, booked as
+"file names"); without them the files are named after the topics. The DOCX
+and the WAV of one draft share a name; new questions or a new take get a new
+time. **Download the DOCX and WAV automatically** (on
 both pages, remembered in this browser, off by default) saves the DOCX as
 soon as the questions are written and the WAV as soon as the recording is
 ready; opening a saved exam never downloads anything. Chrome and Edge ask
@@ -262,12 +309,12 @@ downloads are blocked silently.
 
 ### API key
 
-The key is looked up in the process environment, then (Windows) in the user
-and machine environment stored in the registry, so a variable set after the
-terminal or IDE opened still counts, then in `.env`. The console says where it
-came from, never the key. With none, a run started from an interactive console
-asks for it first: the key is shown as `*`, checked with a free Google request
-and saved in `.env`; Enter alone skips to the browser, and a key Google cannot
+The Gemini key (`GEMINI_API_KEY`) is looked up in the process environment,
+then (Windows) in the user and machine environment stored in the registry, so
+a variable set after the terminal or IDE opened still counts, then in `.env`.
+The console says where it came from, never the key. With none, a run started
+from an interactive console asks for it first: the key is shown as `*`,
+checked with a free Google request and saved in `.env`; Enter alone skips to the browser, and a key Google cannot
 check (busy, offline) is saved only if you say so. On a network bind (`IP`
 other than a loopback address) no browser may enter a key, so the prompt offers
 to skip instead and says to set `GEMINI_API_KEY` and restart. A run with
@@ -285,21 +332,47 @@ NTFS drive, access for the owner, SYSTEM and Administrators only. A FAT or
 exFAT drive (a typical USB stick) keeps no permissions, so there the file is
 readable by every account on the computer; the console and the log say so.
 
+The Anthropic key (`ANTHROPIC_API_KEY`) follows the same lookup order and the
+same rules, under its own name, and is checked with a free Anthropic request
+(listing one model). Only text written by Claude needs it: recordings, voice
+samples and designed voices always use the Gemini key. The console asks for it
+only with `TEXT_PROVIDER=anthropic`, after the Gemini key; on a network bind
+its prompt says to set `ANTHROPIC_API_KEY` and restart, or set
+`TEXT_PROVIDER=gemini`. While Claude writes the text by default, a missing
+Anthropic key gets a form above every page, as a missing Gemini key does.
+Otherwise the startup line says "not set; needed only when a page chooses
+Claude to write the text", and the form appears under a page's "Text written
+by" choice once that page chooses Claude. Each key is kept apart: entering or
+rejecting one never touches the other. Only a key Anthropic does not accept is
+marked rejected, which brings the form to the top of every page. A key whose
+account has no balance left, or has reached a spend or usage limit, still
+counts as working: the run fails with Anthropic's message instead. The free
+check proves that a key works, not that its account has credit: set a spend
+limit for the key's workspace in the Claude Console, and delete the key there
+if you suspect it leaked.
+
 ### What an exam costs
 
-Every Gemini request is metered from its `usage` and priced at the rate in
-force (3.8 introductory prices until 2026-12-31, list prices after). The exam
-page shows the exam's spend per step against `EXAM_BUDGET_USD`; the saved
-exams panel shows the server's last 24 hours and 30 days; each request is also
-logged. Measured on 2026-10-05 with 0.8.0, one full IELTS exam (4 topics,
-4 expressive scripts, 6 question blocks, one 30-minute recording with regional
-voices, Part 3 on Irish and Scottish voices) at `GEMINI_THINKING_LEVEL=low`:
+Every Gemini and Claude request is metered from its `usage` and priced at the
+rate in force (Gemini 3.8 introductory prices until 2026-12-31, list prices
+after; Claude has one price: `claude-sonnet-5-5` $2 per million input tokens
+and $10 per million output tokens, `claude-haiku-5-5` $0.10 and $0.50). The
+exam page shows the exam's AI spend per step against `EXAM_BUDGET_USD`; the
+saved exams panel shows the server's last 24 hours and 30 days; each request
+is also logged. A model the app has no price for (another
+`ANTHROPIC_TEXT_MODEL` or `GEMINI_TEXT_MODEL`, say) is recorded with its tokens
+and its spend is shown with "+?". Measured on 2026-10-05 with 0.8.0, one full
+IELTS exam (4 topics, 4 expressive scripts, 6 question blocks, one 30-minute
+recording with regional voices, Part 3 on Irish and Scottish voices) at
+`GEMINI_THINKING_LEVEL=low`:
 
 | | now | from 2027-01-01 |
 |---|---|---|
 | topics, scripts, questions (gemini-3.8-flash) | $0.042 | $0.084 |
 | recording (gemini-3.8-flash-tts, 19 requests, 30:18) | $0.322 | $0.644 |
 | **whole exam** | **$0.364** | **$0.728** |
+| topics, scripts, questions with Claude instead (claude-sonnet-5-5, `ANTHROPIC_EFFORT=low`, measured 2026-10-14) | $0.130 | $0.130 (one price) |
+| **whole exam with Claude text** | **$0.452** | **$0.774** |
 
 From 2027 that is over the default $0.70 budget (0.7.0 measured $0.308 and
 $0.616; part of the rise is the reference audio each regional voice bills on
@@ -313,9 +386,10 @@ $0.052; the first listen of a voice about $0.005, later listens nothing. The
 ```
 src/domain/          pure types and rules (formats, passage, tasks, exam, validation, audio programme)
 src/application/     #[server] use cases the UI calls
-src/infrastructure/  server only: Gemini client (Interactions and Voices API) and prices, prompts, voice
-                     catalogue, samples and designed voices, TTS chunks and speech cache, WAV, SQLite
-                     jobs, saved exams and usage ledger, config and key
+src/infrastructure/  server only: Gemini client (Interactions and Voices API), Claude client (Messages
+                     API, text only) and prices, prompts, voice catalogue, samples and designed voices,
+                     TTS chunks and speech cache, WAV, SQLite jobs, saved exams and usage ledger,
+                     config and keys
 src/export/          Markdown and DOCX paper / key / transcript
 src/ui/              Dioxus components and views
 docs/                architecture, domain model, ubiquitous language, scope, voices
@@ -332,8 +406,10 @@ topic per part and produces the whole paper, the answer key, every
 transcript and one exam recording with announcements, pauses and replays,
 streamed from `/audio/{job_id}`. Exams on that page are saved on the server
 automatically and can be reopened later, recording included; both pages export
-Markdown and Word (DOCX, laid out like the paper with answer boxes). Every
-speaker is read by a regional voice of its own that the teacher can listen to,
-change or design on either page. Every Gemini request is metered: the exam
-page shows what the exam has cost against its budget. See the roadmap at the
-end of `docs/architecture.md` for what comes next: MP3, authentication.
+Markdown and Word (DOCX, laid out like the paper with answer boxes). Each page
+chooses whether Gemini or Claude writes its text; the exam page saves that
+choice with the exam. Every speaker is read by a regional voice of its own
+that the teacher can listen to, change or design on either page. Every Gemini
+and Claude request is metered: the exam page shows what the exam has cost
+against its budget. See the roadmap at the end of `docs/architecture.md` for
+what comes next: MP3, authentication.

@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::{Passage, PassageRequest, ValidationIssue};
+use crate::domain::{Passage, PassageRequest, TextProvider, ValidationIssue};
 
 /// A generated script plus what the validator thinks of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,20 +13,22 @@ pub struct PassageDraft {
 
 /// Generates the script of one part. Parsing failures are returned as errors;
 /// softer problems come back as `issues` for the teacher to judge. `exam`
-/// names the saved exam the spend is booked to (none from the part page).
+/// names the saved exam the spend is booked to (none from the part page);
+/// `provider` is the page's text provider (none: `TEXT_PROVIDER`).
 #[server]
 pub async fn generate_passage(
     request: PassageRequest,
     exam: Option<Uuid>,
+    provider: Option<TextProvider>,
 ) -> Result<PassageDraft, ServerFnError> {
     use crate::application::{usage, user_error};
     use crate::domain::UsageStep;
-    use crate::infrastructure::{llm::GeminiClient, prompts, rate_limiter};
+    use crate::infrastructure::{llm::TextClient, prompts, rate_limiter};
 
     let spec = request.validate().map_err(user_error)?;
     rate_limiter::check(rate_limiter::Bucket::Passage).map_err(ServerFnError::new)?;
     let exam_format = request.format.format();
-    let client = GeminiClient::from_config().map_err(user_error)?;
+    let client = TextClient::from_config(provider).map_err(user_error)?;
     let text = client
         .generate_text(&prompts::passage_prompt(
             &exam_format,
@@ -36,7 +38,13 @@ pub async fn generate_passage(
             request.expressive,
         ))
         .await;
-    usage::record(UsageStep::Script, exam, client.text_model(), &client).await;
+    usage::record(
+        UsageStep::Script,
+        exam,
+        client.text_model(),
+        &client.usage(),
+    )
+    .await;
     let text = text.map_err(user_error)?;
     draft_from(&request, &spec, &text).map_err(user_error)
 }

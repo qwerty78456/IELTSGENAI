@@ -41,8 +41,9 @@ sha2 = "0.10"
 # The console key prompt: reads the console itself, echoing '*' per character.
 rpassword = "7.5"
 
-# Reads the persisted user/machine environment (GEMINI_API_KEY set with setx or
-# the "Environment Variables" dialog after the server's parent process started).
+# Reads the persisted user/machine environment (GEMINI_API_KEY, ANTHROPIC_API_KEY
+# and the other settings set with setx or the "Environment Variables" dialog
+# after the server's parent process started).
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
 # Console detection for prompts (session 0 never asks), identifying and

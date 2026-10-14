@@ -1,14 +1,14 @@
-//! What Gemini billed for a draft: tokens, and their price at the time.
+//! What the AI services billed for a draft: tokens, and their price at the time.
 //!
 //! Money is kept in whole millionths of a US dollar (µUSD) so sums never
 //! drift. A price per million tokens in USD is exactly µUSD per token.
 
 use serde::{Deserialize, Serialize};
 
-/// Tokens and cost of one or more Gemini requests.
+/// Tokens and cost of one or more requests to Gemini or Claude.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
-    /// Requests Gemini answered and billed.
+    /// Requests answered and billed.
     pub requests: u32,
     /// Speech requests answered from the local cache instead, at no cost.
     pub reused: u32,
@@ -53,7 +53,7 @@ impl Usage {
     }
 }
 
-/// The steps of a draft that call Gemini.
+/// The steps of a draft that call Gemini or Claude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum UsageStep {
     Topic,

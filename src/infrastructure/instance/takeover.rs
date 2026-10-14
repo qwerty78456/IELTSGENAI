@@ -282,7 +282,7 @@ fn our_service(info: &InstanceInfo, name: &str) -> bool {
 /// Starts the hidden watcher that starts the service again once this process
 /// has ended and the service has stopped. It has no console and no stdio of
 /// ours, survives our window closing (not signing out: the session ends it),
-/// and never sees the API key.
+/// and never sees the API keys.
 #[cfg(windows)]
 fn spawn_watcher(name: &str) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
@@ -304,6 +304,7 @@ fn spawn_watcher(name: &str) -> std::io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .env_remove("GEMINI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
         .spawn()
         .map(drop)
 }

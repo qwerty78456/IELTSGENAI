@@ -1,4 +1,4 @@
-//! SQLite ledger of what Gemini billed, in the same database as the jobs.
+//! SQLite ledger of what the AI services billed, in the same database as the jobs.
 //!
 //! One row per step run (a topic, a script, a question block, a recording
 //! job), written whatever the step's outcome: a request that was billed and

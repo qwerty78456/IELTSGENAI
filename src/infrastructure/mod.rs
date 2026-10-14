@@ -19,6 +19,8 @@ pub mod usage;
 
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::domain::TextProvider;
+
 /// The first half of startup: configuration, data folders and logging.
 /// Nothing is shared with other processes yet (no lock, no port, no job
 /// database), so a second copy can still give way to a running one.
@@ -79,9 +81,12 @@ pub fn prepare(
 }
 
 /// The second half of startup, once this process owns its data folder and
-/// ports: asks for a missing key at an interactive console (checked with
-/// Google through `runtime`, which the dev path does not have, so it never
-/// asks), reports the key and the notices, then freezes the configuration.
+/// ports: asks for missing keys at an interactive console (checked with
+/// their company through `runtime`, which the dev path does not have, so it
+/// never asks), reports the keys, the text provider and the notices, then
+/// freezes the configuration. The Gemini key comes first: recordings always
+/// need it. The Anthropic key is asked for only when Claude writes the text
+/// by default (`TEXT_PROVIDER=anthropic`).
 pub fn finish(
     mut cfg: config::AppConfig,
     options: &config::StartupOptions,
@@ -91,6 +96,7 @@ pub fn finish(
         && let Some(runtime) = runtime
         && options.interactive(false)
         && let Some(key) = ask_for_key(
+            TextProvider::Gemini,
             &cfg.dotenv_path,
             cfg.address.ip().is_loopback(),
             console::ask_secret,
@@ -102,17 +108,49 @@ pub fn finish(
         cfg.gemini_api_key = Some(key);
         cfg.key_origin = Some(config::KeyOrigin::DotEnv);
     }
+    if cfg.text_provider == TextProvider::Anthropic
+        && cfg.anthropic_api_key.is_none()
+        && let Some(runtime) = runtime
+        && options.interactive(false)
+        && let Some(key) = ask_for_key(
+            TextProvider::Anthropic,
+            &cfg.dotenv_path,
+            cfg.address.ip().is_loopback(),
+            console::ask_secret,
+            console::ask_yes_no,
+            |key| runtime.block_on(llm::ClaudeClient::check_key(key)),
+            |line| println!("{line}"),
+        )
+    {
+        cfg.anthropic_api_key = Some(key);
+        cfg.anthropic_key_origin = Some(config::KeyOrigin::DotEnv);
+    }
+    let service = options.service.is_some();
+    let loopback = cfg.address.ip().is_loopback();
     let key_note = key_note(
+        TextProvider::Gemini.key_env(),
         cfg.key_origin,
-        options.service.is_some(),
-        cfg.address.ip().is_loopback(),
+        service,
+        loopback,
         &cfg.dotenv_path,
     );
+    let anthropic_note = anthropic_key_note(
+        cfg.text_provider,
+        cfg.anthropic_key_origin,
+        service,
+        loopback,
+        &cfg.dotenv_path,
+    );
+    let text_provider = cfg.text_provider.key();
     // Notices were collected while loading, before logging existed.
     let notices = cfg.notices.clone();
     config::initialize(cfg)?;
     println!("Gemini API key (GEMINI_API_KEY): {key_note}");
     tracing::info!("Gemini API key {key_note}");
+    println!("Text provider (TEXT_PROVIDER): {text_provider}");
+    tracing::info!("Text provider {text_provider}");
+    println!("Anthropic API key (ANTHROPIC_API_KEY): {anthropic_note}");
+    tracing::info!("Anthropic API key {anthropic_note}");
     for notice in &notices {
         println!("Note: {notice}");
         tracing::warn!("{notice}");
@@ -120,11 +158,12 @@ pub fn finish(
     Ok(())
 }
 
-/// Where the key came from, or what to do without one, for the startup line
-/// "Gemini API key (GEMINI_API_KEY): …". A missing key always starts with
-/// "missing" (the smoke test reads it); a service never asks at the console,
-/// so its note names the `.env` it reads.
+/// Where the key in `env` came from, or what to do without one, for a
+/// startup line such as "Gemini API key (GEMINI_API_KEY): …". A missing key
+/// always starts with "missing" (the smoke test reads it); a service never
+/// asks at the console, so its note names the `.env` it reads.
 fn key_note(
+    env: &str,
     origin: Option<config::KeyOrigin>,
     service: bool,
     loopback: bool,
@@ -133,11 +172,35 @@ fn key_note(
     match origin {
         Some(origin) => format!("from {}", origin.describe()),
         None if service => format!(
-            "missing; set GEMINI_API_KEY in {} and restart the service",
+            "missing; set {env} in {} and restart the service",
             dotenv.display()
         ),
-        None if loopback => "missing; set GEMINI_API_KEY or enter it in the browser".into(),
-        None => "missing; set GEMINI_API_KEY and restart".into(),
+        None if loopback => format!("missing; set {env} or enter it in the browser"),
+        None => format!("missing; set {env} and restart"),
+    }
+}
+
+/// The note on the startup line "Anthropic API key (ANTHROPIC_API_KEY): …".
+/// Without a key it is "missing" only when Claude writes the text by default
+/// (`text_provider`); otherwise only a page that chooses Claude needs one.
+fn anthropic_key_note(
+    text_provider: TextProvider,
+    origin: Option<config::KeyOrigin>,
+    service: bool,
+    loopback: bool,
+    dotenv: &std::path::Path,
+) -> String {
+    match (origin, text_provider) {
+        (None, TextProvider::Gemini) => {
+            "not set; needed only when a page chooses Claude to write the text".into()
+        }
+        (origin, _) => key_note(
+            TextProvider::Anthropic.key_env(),
+            origin,
+            service,
+            loopback,
+            dotenv,
+        ),
     }
 }
 
@@ -171,18 +234,43 @@ const RESTART_NEEDED: KeyTexts = KeyTexts {
     not_saved: "Set GEMINI_API_KEY and restart.",
 };
 
-/// Asks the person at the console for a Gemini API key, checks it with Google
-/// and saves it in `.env` (`dotenv`); returns the saved key. Enter alone (or
-/// no console input) goes on without one, and so do three keys that could
-/// not be used, or a `.env` that cannot be written: on a `loopback` bind the
-/// browser then asks, otherwise the person is told to set the key and
-/// restart. A key Google could not check (busy, offline) is saved only if
-/// the person says so.
+const ANTHROPIC_BROWSER_ASKS: KeyTexts = KeyTexts {
+    prompt: "Paste your Anthropic API key (shown as *), or press Enter to enter it in the browser instead: ",
+    ..BROWSER_ASKS
+};
+
+/// Without the key Claude cannot write the text, but recordings still work:
+/// the way out may also be letting Gemini write it.
+const ANTHROPIC_RESTART_NEEDED: KeyTexts = KeyTexts {
+    prompt: "Paste your Anthropic API key (shown as *), or press Enter to skip: ",
+    skipped: "No key entered; set ANTHROPIC_API_KEY and restart, or set TEXT_PROVIDER=gemini.",
+    gave_up: "No usable key after three tries; set ANTHROPIC_API_KEY and restart, or set TEXT_PROVIDER=gemini.",
+    not_saved: "Set ANTHROPIC_API_KEY and restart.",
+};
+
+/// What the console key prompt for `provider` says on a `loopback` bind or not.
+fn key_texts(provider: TextProvider, loopback: bool) -> &'static KeyTexts {
+    match (provider, loopback) {
+        (TextProvider::Gemini, true) => &BROWSER_ASKS,
+        (TextProvider::Gemini, false) => &RESTART_NEEDED,
+        (TextProvider::Anthropic, true) => &ANTHROPIC_BROWSER_ASKS,
+        (TextProvider::Anthropic, false) => &ANTHROPIC_RESTART_NEEDED,
+    }
+}
+
+/// Asks the person at the console for `provider`'s API key, checks it with
+/// its company and saves it in `.env` (`dotenv`) under its own name; returns
+/// the saved key. Enter alone (or no console input) goes on without one, and
+/// so do three keys that could not be used, or a `.env` that cannot be
+/// written: on a `loopback` bind the browser then asks, otherwise the person
+/// is told to set the key and restart. A key the company could not check
+/// (busy, offline) is saved only if the person says so.
 ///
-/// `ask` reads a masked key, `confirm` a [y/N] answer, `check` asks Google
-/// and `say` prints a line: the console and the network, injected for tests.
-/// Nothing here prints or logs the key.
+/// `ask` reads a masked key, `confirm` a [y/N] answer, `check` asks the
+/// company and `say` prints a line: the console and the network, injected
+/// for tests. Nothing here prints or logs the key.
 fn ask_for_key(
+    provider: TextProvider,
     dotenv: &std::path::Path,
     loopback: bool,
     mut ask: impl FnMut(&str) -> Option<String>,
@@ -190,15 +278,19 @@ fn ask_for_key(
     mut check: impl FnMut(&str) -> Result<(), llm::LlmError>,
     mut say: impl FnMut(&str),
 ) -> Option<String> {
-    let texts = if loopback {
-        &BROWSER_ASKS
-    } else {
-        &RESTART_NEEDED
-    };
-    say(&format!(
-        "No Gemini API key was found in the environment or in {}.",
+    let texts = key_texts(provider, loopback);
+    let company = provider.company();
+    let not_found = format!(
+        "No {} was found in the environment or in {}.",
+        provider.key_name(),
         dotenv.display()
-    ));
+    );
+    match provider {
+        TextProvider::Gemini => say(&not_found),
+        TextProvider::Anthropic => say(&format!(
+            "{not_found} TEXT_PROVIDER=anthropic needs it for the text; recordings still use the Gemini key."
+        )),
+    }
     for _ in 0..KEY_ATTEMPTS {
         let typed = ask(texts.prompt).unwrap_or_default();
         let key = typed.trim();
@@ -206,40 +298,41 @@ fn ask_for_key(
             say(texts.skipped);
             return None;
         }
-        if let Some(problem) = config::browser_key_problem(key) {
+        if let Some(problem) = config::browser_key_problem(provider, key) {
             say(problem);
             continue;
         }
         let checked = match check(key) {
             Ok(()) => true,
-            Err(error @ llm::LlmError::KeyRejected) => {
+            Err(error @ (llm::LlmError::KeyRejected | llm::LlmError::ClaudeKeyRejected)) => {
                 say(&error.to_string());
                 continue;
             }
             Err(error) => {
-                say(&format!("Could not check the key with Google. {error}"));
+                say(&format!("Could not check the key with {company}. {error}"));
                 if !confirm("Save it anyway? [y/N] ") {
                     continue;
                 }
                 false
             }
         };
-        return match config::remember_in_dotenv(dotenv, "GEMINI_API_KEY", key) {
+        return match config::remember_in_dotenv(dotenv, provider.key_env(), key) {
             Ok(()) => {
                 if checked {
                     say(&format!(
-                        "Key checked with Google and saved in {}.",
+                        "Key checked with {company} and saved in {}.",
                         dotenv.display()
                     ));
                 } else {
                     say(&format!(
-                        "Key saved in {} without a check by Google.",
+                        "Key saved in {} without a check by {company}.",
                         dotenv.display()
                     ));
                 }
                 tracing::info!(
                     checked,
-                    "Gemini API key entered at the console and saved in .env"
+                    "{} entered at the console and saved in .env",
+                    provider.key_name()
                 );
                 Some(key.to_string())
             }
@@ -261,6 +354,7 @@ mod tests {
     use std::collections::VecDeque;
 
     const KEY: &str = "AIzaTestKey_0123456789-abc";
+    const ANTHROPIC_KEY: &str = "sk-ant-api03-TestKey_0123456789-abcAA";
 
     /// What one run of the console key prompt did.
     struct Run {
@@ -290,17 +384,33 @@ mod tests {
         google: Vec<Result<(), LlmError>>,
         answers: &[bool],
     ) -> Run {
-        let texts = if loopback {
-            &BROWSER_ASKS
-        } else {
-            &RESTART_NEEDED
-        };
+        prompt_for(
+            TextProvider::Gemini,
+            loopback,
+            dotenv,
+            typed,
+            google,
+            answers,
+        )
+    }
+
+    /// `prompt_on`, for `provider`'s key; `company` answers the checks.
+    fn prompt_for(
+        provider: TextProvider,
+        loopback: bool,
+        dotenv: &std::path::Path,
+        typed: &[Option<&str>],
+        company: Vec<Result<(), LlmError>>,
+        answers: &[bool],
+    ) -> Run {
+        let texts = key_texts(provider, loopback);
         let mut typed: VecDeque<Option<String>> =
             typed.iter().map(|t| t.map(str::to_string)).collect();
-        let mut google = VecDeque::from(google);
+        let mut company = VecDeque::from(company);
         let mut answers: VecDeque<bool> = answers.iter().copied().collect();
         let (mut lines, mut prompts, mut questions, mut checks) = (Vec::new(), 0, 0, 0);
         let saved = ask_for_key(
+            provider,
             dotenv,
             loopback,
             |text| {
@@ -315,14 +425,16 @@ mod tests {
             },
             |_| {
                 checks += 1;
-                google.pop_front().expect("checked once too often")
+                company.pop_front().expect("checked once too often")
             },
             |line| lines.push(line.to_string()),
         );
-        assert!(
-            !lines.iter().any(|line| line.contains(KEY)),
-            "the key was printed: {lines:?}"
-        );
+        for key in [KEY, ANTHROPIC_KEY] {
+            assert!(
+                !lines.iter().any(|line| line.contains(key)),
+                "the key was printed: {lines:?}"
+            );
+        }
         Run {
             saved,
             lines,
@@ -414,7 +526,7 @@ mod tests {
         assert_eq!(
             run.lines[1..],
             [
-                config::browser_key_problem("not a key")
+                config::browser_key_problem(TextProvider::Gemini, "not a key")
                     .unwrap()
                     .to_string(),
                 format!("Key checked with Google and saved in {}.", dotenv.display()),
@@ -496,7 +608,9 @@ mod tests {
     #[test]
     fn a_missing_key_note_starts_with_missing() {
         let dotenv = std::path::Path::new("dir").join(".env");
-        let note = |origin, service, loopback| key_note(origin, service, loopback, &dotenv);
+        let note = |origin, service, loopback| {
+            key_note("GEMINI_API_KEY", origin, service, loopback, &dotenv)
+        };
         assert_eq!(
             note(Some(config::KeyOrigin::DotEnv), true, true),
             "from .env"
@@ -563,5 +677,180 @@ mod tests {
         assert_eq!(run.lines.len(), 3, "{:?}", run.lines);
         assert!(run.lines[1].starts_with("Cannot read "), "{:?}", run.lines);
         assert_eq!(run.lines[2], "The browser will ask for the key.");
+    }
+
+    #[test]
+    fn an_anthropic_key_is_saved_under_its_own_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let dotenv = dir.path().join(".env");
+        std::fs::write(&dotenv, format!("GEMINI_API_KEY={KEY}\n")).unwrap();
+        // A key Anthropic rejects is asked for again, as one Google rejects is.
+        let run = prompt_for(
+            TextProvider::Anthropic,
+            true,
+            &dotenv,
+            &[
+                Some("sk-ant-api03-WrongKey_0123456789"),
+                Some(ANTHROPIC_KEY),
+            ],
+            vec![Err(LlmError::ClaudeKeyRejected), Ok(())],
+            &[],
+        );
+        assert_eq!(run.saved.as_deref(), Some(ANTHROPIC_KEY));
+        assert_eq!((run.prompts, run.checks, run.questions), (2, 2, 0));
+        assert_eq!(
+            run.lines,
+            [
+                format!(
+                    "No Anthropic API key was found in the environment or in {}. TEXT_PROVIDER=anthropic needs it for the text; recordings still use the Gemini key.",
+                    dotenv.display()
+                ),
+                LlmError::ClaudeKeyRejected.to_string(),
+                format!(
+                    "Key checked with Anthropic and saved in {}.",
+                    dotenv.display()
+                ),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dotenv).unwrap(),
+            format!("GEMINI_API_KEY={KEY}\nANTHROPIC_API_KEY={ANTHROPIC_KEY}\n")
+        );
+        // A key Anthropic could not check is saved only when the person says so.
+        let dotenv = dir.path().join("unchecked.env");
+        let run = prompt_for(
+            TextProvider::Anthropic,
+            true,
+            &dotenv,
+            &[Some(ANTHROPIC_KEY)],
+            vec![Err(LlmError::Busy)],
+            &[true],
+        );
+        assert_eq!(run.saved.as_deref(), Some(ANTHROPIC_KEY));
+        assert_eq!(
+            run.lines[1..],
+            [
+                format!("Could not check the key with Anthropic. {}", LlmError::Busy),
+                format!(
+                    "Key saved in {} without a check by Anthropic.",
+                    dotenv.display()
+                ),
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(&dotenv).unwrap(),
+            format!("ANTHROPIC_API_KEY={ANTHROPIC_KEY}\n")
+        );
+    }
+
+    #[test]
+    fn the_anthropic_network_prompt_never_promises_the_browser() {
+        let dir = tempfile::tempdir().unwrap();
+        let dotenv = dir.path().join(".env");
+        let anthropic = |loopback, typed: &[Option<&str>], checks| {
+            prompt_for(
+                TextProvider::Anthropic,
+                loopback,
+                &dotenv,
+                typed,
+                checks,
+                &[],
+            )
+        };
+        assert_eq!(
+            ANTHROPIC_BROWSER_ASKS.prompt,
+            "Paste your Anthropic API key (shown as *), or press Enter to enter it in the browser instead: "
+        );
+        let run = anthropic(true, &[Some("")], vec![]);
+        assert_eq!(
+            run.lines[1..],
+            ["No key entered; the browser will ask for it."]
+        );
+        let run = anthropic(false, &[Some("")], vec![]);
+        assert_eq!(run.saved, None);
+        assert_eq!(
+            run.lines[1..],
+            ["No key entered; set ANTHROPIC_API_KEY and restart, or set TEXT_PROVIDER=gemini."]
+        );
+        let run = anthropic(
+            false,
+            &[Some("short"), Some("short"), Some("short")],
+            vec![],
+        );
+        assert_eq!(
+            run.lines[1],
+            "That does not look like an Anthropic API key (wrong length)."
+        );
+        assert_eq!(
+            run.lines.last().map(String::as_str),
+            Some(
+                "No usable key after three tries; set ANTHROPIC_API_KEY and restart, or set TEXT_PROVIDER=gemini."
+            )
+        );
+        for line in &run.lines {
+            assert!(!line.contains("browser"), "{line}");
+        }
+        std::fs::create_dir(&dotenv).unwrap();
+        let run = anthropic(false, &[Some(ANTHROPIC_KEY)], vec![Ok(())]);
+        assert_eq!(run.saved, None);
+        assert_eq!(
+            run.lines.last().map(String::as_str),
+            Some("Set ANTHROPIC_API_KEY and restart.")
+        );
+        for line in [
+            ANTHROPIC_RESTART_NEEDED.prompt,
+            ANTHROPIC_RESTART_NEEDED.skipped,
+            ANTHROPIC_RESTART_NEEDED.gave_up,
+            ANTHROPIC_RESTART_NEEDED.not_saved,
+        ] {
+            assert!(!line.contains("browser"), "{line}");
+            assert!(!line.contains("GEMINI_API_KEY"), "{line}");
+        }
+    }
+
+    #[test]
+    fn anthropic_key_notes() {
+        let dotenv = std::path::Path::new("dir").join(".env");
+        let note = |text_provider, origin, service, loopback| {
+            anthropic_key_note(text_provider, origin, service, loopback, &dotenv)
+        };
+        for (service, loopback) in [(true, true), (false, true), (false, false)] {
+            // Gemini writes the text by default: only a page that chooses
+            // Claude needs the key, so it is not "missing".
+            assert_eq!(
+                note(TextProvider::Gemini, None, service, loopback),
+                "not set; needed only when a page chooses Claude to write the text"
+            );
+            assert!(
+                note(TextProvider::Anthropic, None, service, loopback)
+                    .starts_with("missing; set ANTHROPIC_API_KEY ")
+            );
+            for text_provider in TextProvider::ALL {
+                assert_eq!(
+                    note(
+                        text_provider,
+                        Some(config::KeyOrigin::Windows),
+                        service,
+                        loopback
+                    ),
+                    "from the Windows environment"
+                );
+            }
+        }
+        assert_eq!(
+            note(TextProvider::Anthropic, None, true, true),
+            format!(
+                "missing; set ANTHROPIC_API_KEY in {} and restart the service",
+                dotenv.display()
+            )
+        );
+        assert_eq!(
+            note(TextProvider::Anthropic, None, false, true),
+            "missing; set ANTHROPIC_API_KEY or enter it in the browser"
+        );
+        assert_eq!(
+            note(TextProvider::Anthropic, None, false, false),
+            "missing; set ANTHROPIC_API_KEY and restart"
+        );
     }
 }

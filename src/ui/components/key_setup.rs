@@ -1,43 +1,109 @@
 use dioxus::prelude::*;
 
-use crate::application::settings::{KeySource, KeyStatus, api_key_status, set_api_key};
+use crate::application::settings::{
+    KeyBoxPlace, KeySource, KeyStatuses, api_key_status, key_box_place, set_api_key,
+};
+use crate::domain::TextProvider;
 use crate::ui::jobs::sleep_ms;
 
 const KEY_SETUP_CSS: Asset = asset!("/assets/styling/key_setup.css");
-/// How often the key status is asked again, so a key Google rejects during
-/// any step (a script, questions, a recording) brings this box up. The server
-/// answers from memory; nothing is sent to Google.
+/// How often the key status is asked again, so a key its company rejects
+/// during any step (a script, questions, a recording) brings its box up. The
+/// server answers from memory; nothing is sent to Google or Anthropic.
 const KEY_STATUS_POLL_MS: u32 = 5_000;
 
-/// Shown on every page while the server has no Gemini API key or Google
-/// rejected the one in use: explains the risk, then lets the teacher paste a
-/// key (only in a browser on the server's own computer).
+/// Both providers' key statuses, provided by the `Navbar` layout; `None`
+/// until the first answer. Written by `KeySetup`'s poll and by a `KeyBox`
+/// whose key was accepted.
+#[derive(Clone, Copy)]
+pub struct KeyStatusCtx(pub Signal<Option<KeyStatuses>>);
+
+/// Shown on every page: keeps `KeyStatusCtx` up to date, and puts the key box
+/// of each provider whose key the server needs whatever a page chooses (see
+/// `key_box_place`) above the page while that key is missing or rejected.
 #[component]
 pub fn KeySetup() -> Element {
-    let mut status = use_signal(|| None::<KeyStatus>);
-    let mut key = use_signal(String::new);
-    let mut remember = use_signal(|| false);
-    let mut busy = use_signal(|| false);
-    let mut error = use_signal(|| None::<String>);
+    let KeyStatusCtx(mut statuses) = use_context::<KeyStatusCtx>();
 
     use_future(move || async move {
         loop {
-            if let Ok(current) = api_key_status().await
-                && *status.peek() != Some(current)
-            {
-                status.set(Some(current));
+            if let Ok(current) = api_key_status().await {
+                let changed = *statuses.peek() != Some(current);
+                if changed {
+                    statuses.set(Some(current));
+                }
             }
             sleep_ms(KEY_STATUS_POLL_MS).await;
         }
     });
 
-    let Some(current) = status() else {
+    let Some(current) = statuses() else {
+        return rsx! {};
+    };
+    let at_top = |provider: TextProvider| {
+        key_box_place(provider, current.of(provider), current.text_default, false)
+            == KeyBoxPlace::Top
+    };
+    // One `if` per provider, so a box that goes away never hands its typed
+    // key or error to the other.
+    rsx! {
+        if at_top(TextProvider::Gemini) {
+            KeyBox { provider: TextProvider::Gemini }
+        }
+        if at_top(TextProvider::Anthropic) {
+            KeyBox { provider: TextProvider::Anthropic }
+        }
+    }
+}
+
+/// What a key box says that differs by provider.
+struct BoxTexts {
+    /// The API the key may not be allowed to use.
+    api: &'static str,
+    /// What anyone who can open the page could do with the key.
+    spend: &'static str,
+    /// How to limit the damage of a leaked key.
+    advice: &'static str,
+}
+
+fn box_texts(provider: TextProvider) -> BoxTexts {
+    match provider {
+        TextProvider::Gemini => BoxTexts {
+            api: "the Gemini API",
+            spend: "spend your Gemini credit",
+            advice: "Use a key restricted to the Generative Language API, and revoke it in Google AI Studio if you suspect it leaked.",
+        },
+        TextProvider::Anthropic => BoxTexts {
+            api: "the Claude API",
+            spend: "spend on your Anthropic account",
+            advice: "Set a spend limit for the key's workspace in the Claude Console, and delete the key there if you suspect it leaked. The free check proves the key works, not that the account has credit.",
+        },
+    }
+}
+
+/// `provider`'s key box, while its key is missing or rejected: explains the
+/// risk, then lets the teacher paste a key (only in a browser on the
+/// server's own computer). Where it goes is the caller's choice
+/// (`key_box_place`).
+#[component]
+pub fn KeyBox(provider: TextProvider) -> Element {
+    let KeyStatusCtx(mut statuses) = use_context::<KeyStatusCtx>();
+    let mut key = use_signal(String::new);
+    let mut remember = use_signal(|| false);
+    let mut busy = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+
+    let Some(current) = statuses().map(|all| all.of(provider)) else {
         return rsx! {};
     };
     let missing = current.source == KeySource::Missing;
     if !missing && !current.rejected {
         return rsx! {};
     }
+    let key_env = provider.key_env();
+    let key_name = provider.key_name();
+    let company = provider.company();
+    let BoxTexts { api, spend, advice } = box_texts(provider);
     let operator_key = matches!(
         current.source,
         KeySource::Environment | KeySource::WindowsEnvironment | KeySource::DotEnv
@@ -53,21 +119,21 @@ pub fn KeySetup() -> Element {
         document::Link { rel: "stylesheet", href: KEY_SETUP_CSS }
         section { class: "key-setup",
             if missing {
-                h2 { "Gemini API key needed" }
+                h2 { "{key_name} needed" }
                 p {
                     "No key was found in the "
-                    code { "GEMINI_API_KEY" }
+                    code { "{key_env}" }
                     " environment variable (process or Windows) or in "
                     code { ".env" }
                     ". Setting the environment variable and restarting is the safe way."
                 }
             } else {
-                h2 { "Google rejected the Gemini API key" }
+                h2 { "{company} rejected the {key_name}" }
                 p {
-                    "The key from {place} does not work: it may be mistyped, revoked, or not allowed to use the Gemini API. "
+                    "The key from {place} does not work: it may be mistyped, revoked, or not allowed to use {api}. "
                     if operator_key {
                         "Fix "
-                        code { "GEMINI_API_KEY" }
+                        code { "{key_env}" }
                         " there and restart the app"
                         if current.can_enter {
                             ", or paste a working key below; it replaces the rejected key until the app restarts."
@@ -88,9 +154,9 @@ pub fn KeySetup() -> Element {
                     code { ".env" }
                     ". This app has "
                     strong { "no login" }
-                    ": anyone who can open this page can spend your Gemini credit. Only do this in a browser on the server's own computer. Prefer setting the "
-                    code { "GEMINI_API_KEY" }
-                    " environment variable. Use a key restricted to the Generative Language API, and revoke it in Google AI Studio if you suspect it leaked."
+                    ": anyone who can open this page can {spend}. Only do this in a browser on the server's own computer. Prefer setting the "
+                    code { "{key_env}" }
+                    " environment variable. {advice}"
                 }
             }
             if current.can_enter {
@@ -106,11 +172,14 @@ pub fn KeySetup() -> Element {
                         busy.set(true);
                         error.set(None);
                         spawn(async move {
-                            match set_api_key(typed, remember).await {
-                                Ok(current) => status.set(Some(current)),
+                            let answer = set_api_key(provider, typed, remember).await;
+                            // Before the shared statuses: an accepted key
+                            // takes this box away.
+                            busy.set(false);
+                            match answer {
+                                Ok(current) => statuses.set(Some(current)),
                                 Err(e) => error.set(Some(e.to_string())),
                             }
-                            busy.set(false);
                         });
                     },
                     input {
@@ -118,8 +187,8 @@ pub fn KeySetup() -> Element {
                         r#type: "password",
                         autocomplete: "off",
                         spellcheck: "false",
-                        placeholder: "Paste your Gemini API key",
-                        aria_label: "Gemini API key",
+                        placeholder: "Paste your {key_name}",
+                        aria_label: "{key_name}",
                         value: "{key}",
                         disabled: busy(),
                         oninput: move |event| key.set(event.value()),
@@ -137,7 +206,7 @@ pub fn KeySetup() -> Element {
                     } else {
                         p { class: "muted",
                             "A key pasted here lasts until the app restarts: "
-                            code { "GEMINI_API_KEY" }
+                            code { "{key_env}" }
                             " in {priority_place} takes priority over "
                             code { ".env" }
                             "."
@@ -147,13 +216,13 @@ pub fn KeySetup() -> Element {
                         class: "download-button info",
                         r#type: "submit",
                         disabled: busy() || key.read().trim().is_empty(),
-                        if busy() { "Checking with Google…" } else { "Use this key" }
+                        if busy() { "Checking with {company}…" } else { "Use this key" }
                     }
                 }
             } else {
                 p { class: "muted",
                     "A key can be entered here only in a browser on the server's own computer, and not at all while the server listens on a network address (IP=0.0.0.0 or a LAN address, as in Docker). Ask whoever runs the server to set "
-                    code { "GEMINI_API_KEY" }
+                    code { "{key_env}" }
                     " and restart it."
                 }
             }

@@ -26,10 +26,11 @@ grading, candidate management, official-exam claims, any other skill.
                            │ validates with          │ adapts through
                     ┌──────▼──────────┐       ┌──────▼──────────────────────┐
                     │  Domain (pure)  │       │  Infrastructure (server)    │
-                    │  format, exam,  │       │  llm/gemini  prompts        │
-                    │  passage, task, │       │  tts         audio (wav,    │
-                    │  speaker, voice,│       │  (voices)    program)       │
-                    │  speech, usage, │       │  jobs        exams, usage   │
+                    │  format, exam,  │       │  llm/gemini  llm/claude     │
+                    │  passage, task, │       │  llm/text    prompts        │
+                    │  speaker, voice,│       │  tts         audio (wav,    │
+                    │  speech, usage, │       │  (voices)    program)       │
+                    │  provider,      │       │  jobs        exams, usage   │
                     │  validation,    │       │  config      secrets        │
                     │  audio program  │       │  startup     rate_limiter   │
                     └─────────────────┘       └─────────────────────────────┘
@@ -61,6 +62,8 @@ src/
     speech.rs             speech markup: SPEECH_TAGS, EXAM_SPEECH_TAGS, display/speech text, markup problems
     task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty
     usage.rs              Usage (tokens + µUSD), UsageStep (+ Voices, Naming; always_listed), ExamUsage (per step, budget)
+    provider.rs           TextProvider { Gemini, Anthropic }: who writes the text; key (TEXT_PROVIDER value, serde
+                          name), label, company, key_env, key_name, resolve(choice, default) (never the other one)
     exam.rs               Exam aggregate: parts, answer key, completeness; ExamPart.recorded_for (stale recordings)
     audio.rs              AudioTrack, AudioProgram (tones, pauses, replays derived from the format)
     validation.rs         invariants -> Vec<ValidationIssue>; grounding of keys in the passage; validate_exam (structural completeness)
@@ -68,25 +71,37 @@ src/
                           (self-validating; recordings refuse Auto, shared or wrong-gender voices)
     error.rs              DomainError (teacher-readable)
   application/            #[server] functions = use cases; DTOs shared with the browser
-    topics.rs             suggest_topic                       (every Gemini use case takes `exam: Option<Uuid>`
-    passages.rs           generate_passage -> PassageDraft     for the usage ledger; the part page passes None)
+    topics.rs             suggest_topic                       (every use case that calls a model takes `exam:
+    passages.rs           generate_passage -> PassageDraft     Option<Uuid>` for the usage ledger; the part page passes None)
     tasks.rs              generate_task    -> TaskDraft { task, issues }
-    naming.rs             summarize_topics: a few words for download names (GEMINI_SUMMARY_MODEL, no thinking level)
+    naming.rs             summarize_topics: a few words for download names (the provider's summary model:
+                          GEMINI_SUMMARY_MODEL with no thinking level, or ANTHROPIC_SUMMARY_MODEL at effort low)
+                          The four text use cases (topics, passages, tasks, naming) end with `provider:
+                          Option<TextProvider>` (None: TEXT_PROVIDER), handed to TextClient::from_config
     audio.rs              start_part_audio, start_exam_audio, audio_job_status -> JobView { .., track: AudioTrack }, audio_url
-    usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record() after every Gemini call
-    settings.rs           api_key_status -> KeyStatus, set_api_key (Local requests only, never over a working
-                          operator key); entry_refusal (pure, takes `local: bool`)
+    usage.rs              exam_usage -> ExamUsage, usage_totals -> UsageTotals; record(step, exam, model, &Usage) after
+                          every Gemini or Claude call
+    settings.rs           api_key_status -> KeyStatuses { text_default, gemini, anthropic }, set_api_key(provider, ..)
+                          (Local requests only, never over a working operator key, checked with the provider's
+                          company); entry_refusal(provider, ..) (pure, takes `local: bool`); key_box_place (pure:
+                          Top, BesideChoice or Hidden)
     voices.rs             voice_catalogue, voice_preview (catalogue or this key's designed voices) -> VoiceSample;
                           design_voice -> DesignedVoice, designed_voices -> DesignedVoices, delete_voice
                           (design: Local or Published, design_refusal; delete: Local only and app-made voices
                           only, delete_refusal; DesignedVoice.deletable); prepare_speakers (server, async)
-    exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job), ExamSummary
+    exams.rs              save_exam, list_exams, load_exam, delete_exam; SavedExam (exam + topics + recording job +
+                          text_provider, left out when None), ExamSummary
   infrastructure/         #[cfg(feature = "server")] only; no #[server] here
     config.rs             StartupOptions (--portable, --config-dir, --no-open, --non-interactive, --service NAME;
                           interactive()), AppConfig validated once from .env < Windows registry environment <
                           process environment (address, public_address from PUBLIC_PORT, public_hosts from
-                          PUBLIC_HOST); KeyOrigin; remember_in_dotenv (owner-only .env: 0600, protected DACL on
-                          Windows where the volume keeps permissions; FAT/exFAT cannot, and the console says so)
+                          PUBLIC_HOST, text_provider from TEXT_PROVIDER, the ANTHROPIC_* settings; a malformed
+                          Anthropic setting stops startup only with TEXT_PROVIDER=anthropic, else it is a notice
+                          and anthropic_problem); find_key (one rule for both keys), api_key(provider),
+                          key_origin_of(provider), browser_key_problem(provider, key); ANTHROPIC_BASE_URL and
+                          ANTHROPIC_AUTH_TOKEN are never read; KeyOrigin; remember_in_dotenv (owner-only .env:
+                          0600, protected DACL on Windows where the volume keeps permissions; FAT/exFAT cannot,
+                          and the console says so)
     console.rs            interactive (pure), real-console checks, in_session_zero (Windows), ask_yes_no ([y/N]),
                           ask_secret (masked with *; Ctrl+C ends the program with the console restored)
     ingress.rs            Origin { Local, Published, Remote }: classify (pure), of_parts (plain routes), current
@@ -100,9 +115,11 @@ src/
                           takeover.rs ([y/N] stop of a console copy or a Windows service + restart watcher);
                           win32.rs (Windows only: process handle, Toolhelp, TCP listener table, service
                           control manager)
-    secrets.rs            the API key requests use: typed in the browser (memory only), else configured;
-                          remembers the key Google last rejected (KeyStatus.rejected)
-    mod.rs                prepare (config, dirs, logging) and finish (console key prompt, key note, notices,
+    secrets.rs            the API keys requests use, one slot per provider: typed in the browser (memory only),
+                          else configured; remembers the key each company last rejected (KeyStatus.rejected);
+                          a Claude key never replaces or marks the Gemini key, nor the reverse
+    mod.rs                prepare (config, dirs, logging) and finish (console key prompts: Gemini, then Anthropic
+                          only with TEXT_PROVIDER=anthropic; key notes, the text provider, notices,
                           config::initialize)
     usage.rs              UsageStore: `usage` ledger table in jobs.db (one row per step run, any outcome)
     exams.rs              ExamStore: `exams` table (SavedExam JSON body + summary columns) in jobs.db; pins recording jobs
@@ -115,8 +132,17 @@ src/
                           generate_brief(model) (no thinking level, 20 s, 1,024 output tokens),
                           synthesize(SpeechRequest); Voices API: list_voices, get_voice, delete_voice,
                           create_voice (POST /v1beta/voices, store: true, never retried after a timeout);
-                          one retry policy; usage meter shared by clones
-    llm/pricing.rs        price table per model (intro until 2026-12-31, list after; one price for 3.5 Flash-Lite),
+                          its own retry policy; usage meter shared by clones; LlmError (Gemini and Claude* variants)
+    llm/claude.rs         ClaudeClient on POST https://api.anthropic.com/v1/messages (root hard-coded, x-api-key,
+                          anthropic-version 2023-06-01; text only): generate_text, generate_json<T> (JSON asked for
+                          by the prompt only), generate_brief (summary model, effort low, no fallback); check_key
+                          (GET /v1/models?limit=1, free); fallbacks: "default" on text-model requests; retries
+                          inside a 100 s budget; usage meter shared by clones, priced per usage.iterations
+    llm/text.rs           TextClient { Gemini, Claude }, a plain enum: from_config(choice) (TextProvider::resolve
+                          against TEXT_PROVIDER; never switches provider), text_model, summary_model, usage,
+                          generate_text, generate_json<T>, generate_brief
+    llm/pricing.rs        price table per model (Gemini: intro until 2026-12-31, list after, one price for 3.5
+                          Flash-Lite; Claude: one price each for Sonnet 5.5, Sonnet 5, Haiku 5.5, Opus 5.5),
                           cost_micro_usd
     prompts/              topic_prompt, passage_prompt (names and wording that fit each speaker; the speech-tag
                           DELIVERY block when expressive), task_prompt over the transcript (+ TaskDraftDto),
@@ -136,18 +162,22 @@ src/
                           hourly clean-up (AUDIO_RETENTION_HOURS, SPEECH_CACHE_HOURS, voice samples after 30 days)
     jobs/serve.rs         serve_audio, serve_voice_sample: plain axum handlers streaming a WAV (audio/wav, Range;
                           Cache-Control: private, no-cache on every answer)
-    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5, VoiceDelete 5, Naming 30)
+    rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5, VoiceDelete 5, Naming 30;
+                          one KeyEntry for both keys)
   export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
   export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
   export/naming.rs        download names: LocalStamp, slug_words (Vietnamese folded to ASCII), test_type, summary_slug,
                           fallback_summary, file_stem, file_name
-  ui/                     components (audio player, exam library, issue list, key setup, loading popup, speaker modal:
-                          SpeakerCards + SpeakerEditModal, voices: VoiceCatalogueCtx, VoicePicker and the dialog's
-                          DesignedVoicesPanel, auto download: AutoDownloadToggle), views (home, exam, navbar: loads
-                          the voice catalogue once)
+  ui/                     components (audio player, exam library, issue list, key setup: KeySetup, KeyBox and
+                          KeyStatusCtx, loading popup, speaker modal: SpeakerCards + SpeakerEditModal, text provider:
+                          TextProviderPicker with the KeyBox it may show beside the choice, voices:
+                          VoiceCatalogueCtx, VoicePicker and the dialog's DesignedVoicesPanel, auto download:
+                          AutoDownloadToggle), views (home, exam, navbar: loads the voice catalogue once and
+                          provides KeyStatusCtx)
     jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
     clock.rs              local-time formatting and now_stamp (js-sys Date in the browser, UTC fallback on the server)
-    naming.rs             DraftNaming (summary per topics, frozen stem, draft token), prefetch, stem, download
+    naming.rs             DraftNaming (summary per topics, frozen stem, draft token), prefetch (the page's text
+                          provider writes the summary; NameRequest.provider), stem, download
     prefs.rs              browser preferences in localStorage: auto_download
 ```
 
@@ -198,14 +228,23 @@ in `prompts/items.rs`, one arm in `export/markdown.rs` and one in
 ## Generation pipeline
 
 ```
-topic ──► passage_prompt ──► Gemini text ──► Passage::parse ──► validate_passage ──► PassageDraft
-                                                                       │
-          for each TaskSpec of the part:                               ▼
-          task_prompt(passage) ──► Gemini JSON ──► TaskDraftDto ──► Task ──► validate_task(passage) ──► TaskDraft
-                                                                       │
-          AudioRequest ──► job ──► synthesize_passage ──► WAV on disk ◄─┘
+topic ──► passage_prompt ──► Gemini/Claude text ──► Passage::parse ──► validate_passage ──► PassageDraft
+                                                                              │
+          for each TaskSpec of the part:                                      ▼
+          task_prompt(passage) ──► Gemini/Claude JSON ──► TaskDraftDto ──► Task ──► validate_task(passage) ──► TaskDraft
+                                                                              │
+          AudioRequest ──► job ──► synthesize_passage ──► WAV on disk ◄────────┘
           ExamAudioRequest ──► job ──► every part ──► render_program ──► one WAV
 ```
+
+The text steps (topic, script, questions and the download-name summary) go
+through `llm::TextClient` to the run's **text provider**: the page's choice
+(`HomeState.text_provider`, `ExamState.text_provider`), else the server's
+`TEXT_PROVIDER` (`TextProvider::resolve`). Both pages show the choice ("Text
+written by", `TextProviderPicker`, fixed while anything runs); the exam page
+saves it with the exam, and a new exam or format keeps it. The prompts are
+the same for both providers. A failed request is an error for the teacher;
+it is never repeated with the other provider. Speech is always Gemini's.
 
 The browser orchestrates. For one part, `ui/views/home.rs` chains these use
 cases: `generate_passage`, then, unless the script has Error-severity
@@ -230,9 +269,9 @@ example `IELTS-Listening-Part1_Booking-A-Hotel-Room-Online_06-10-2026_14-32-05.d
 (the exam page drops the part). The pure pieces are in `export/naming.rs`;
 `ui/naming.rs` holds the state. Right after a script is written (on the exam
 page, once the last script of a run is in) the page asks `summarize_topics`
-to sum up the draft's theme and topics in five words; the summary is kept
-with the topics it sums up, so it is out of date as soon as they change and
-is never flagged. The first download of a draft takes the browser's time and
+to sum up the draft's theme and topics in five words, with the summary model
+of the page's text provider; the summary is kept with the topics it sums up,
+so it is out of date as soon as they change and is never flagged. The first download of a draft takes the browser's time and
 fixes the stem for every other file of that draft, so its DOCX and WAV share
 a name; a step that changes a downloadable file (script, questions,
 recording) starts a new draft. A download waits at most ten seconds for the
@@ -258,6 +297,104 @@ must have exactly the required distinct letters; numbering must match the
 spec. Failures are returned as **issues** beside the draft, never hidden.
 The teacher edits; nothing is "final" until they say so.
 
+## Claude text
+
+When a run's text provider is Claude, `ClaudeClient` (`llm/claude.rs`)
+writes its topic, scripts, questions and download-name summary. It writes
+text only; speech, voice samples and designed voices stay with Gemini, whose
+text requests are described with its speech requests in the next section.
+
+* Every text request goes to the **Messages API**, `POST /v1/messages` under
+  the hard-coded root `https://api.anthropic.com/v1`. `ANTHROPIC_BASE_URL` and
+  `ANTHROPIC_AUTH_TOKEN`, which other Anthropic tools (Claude Code among them)
+  set, are never read, and redirects are not followed, since reqwest would
+  carry `x-api-key` to another host. The key travels in `x-api-key`, marked
+  sensitive so no debug print shows it, with `anthropic-version: 2023-06-01`.
+  The Messages API keeps no conversation and has no per-request `store`
+  option: what Anthropic retains follows the organisation's data-retention
+  policy.
+* Models are configuration: `claude-sonnet-5-5` for topics, scripts and
+  questions (`ANTHROPIC_TEXT_MODEL`) and `claude-haiku-5-5` for download-name
+  summaries (`ANTHROPIC_SUMMARY_MODEL`). A request carries `model`,
+  `max_tokens` (8,192, or 1,024 for a summary) as a guard against runaway
+  answers, one fixed `system` line ("Output only what the user message asks
+  for, with no preamble or closing remarks."), the prompt as one user turn,
+  and `output_config.effort` (`ANTHROPIC_EFFORT`, default `low`; always `low`
+  for a summary), the one thinking control. The prompts were written for
+  Gemini, which returns bare output; without the `system` line a preamble
+  would break `Passage::parse` or become a file name. No request carries
+  `thinking`, `temperature`, `top_p`, `top_k`, an assistant prefill,
+  `cache_control` or `stream`: 5.5 models refuse some of them and the app
+  needs none.
+* Questions are JSON asked for by the prompt only: it ends with the same
+  "Respond with a single JSON object and nothing else." as Gemini's, but
+  there is no JSON mode like Gemini's `response_format`. The object is taken
+  from inside code fences, or from the first `{` to the last `}` when words
+  surround it, then parsed into `TaskDraftDto`.
+  Structured outputs are deferred: a schema's first compilation can take
+  longer than the tunnel allows.
+* **Fallback.** Text-model requests send `"fallbacks": "default"` with
+  `anthropic-beta: server-side-fallback-2026-07-01`: a request Sonnet 5.5's
+  safety classifier declines runs again on `claude-sonnet-5` inside the same
+  request. The summary request sends neither (Haiku 5.5 has no fallback).
+  This is a fallback between Claude models only; a run never moves from
+  Claude to Gemini, or back.
+* The answer is the text of every `text` block, joined; thinking and
+  fallback blocks are skipped, so the first block is never assumed to be the
+  text. The response is metered first, then `stop_reason` is checked:
+  `end_turn` and `stop_sequence` pass; `max_tokens` (cut off),
+  `model_context_window_exceeded` and any other reason are malformed
+  replies; `refusal` is `LlmError::ClaudeRefused`, which names the category
+  in words (computer security, biological safety, AI development, its own
+  reasoning, otherwise usage policy) and suggests another wording or Gemini.
+* **Time budget.** Text server functions answer synchronously, and
+  Cloudflare Tunnel cuts a request at 125 s, so one call, retries included,
+  has 100 s (20 s for a summary). 429 (except the spend-cap 429,
+  `enforced_spend_limit_reached`), 500, 502, 503 and 529 are retried at most
+  twice, and only when the error came within 10 s of the attempt's start,
+  `x-should-retry` is not `false`, `retry-after` (if sent) is at most 20 s,
+  and the next attempt still has 60 s of the budget (5 s for a summary; to
+  be set again from the latency the paid probe measures). The wait is
+  `retry-after` as sent, else 1 s and then 2 s, each times a random factor
+  from 0.5 to 1.5 (from the standard library's `RandomState`, no extra
+  crate), so parts refused together do not come back together. A
+  connection that never opened is retried once: it was never sent, so never
+  billed. Nothing is retried after a timeout once connected (logged:
+  Anthropic may still bill it) or after a 504, which Anthropic documents as
+  retryable but which comes near the tunnel's limit, after work that may be
+  billed.
+* **Errors.** Only a 401 marks the Anthropic key rejected
+  (`ClaudeActiveKeyRejected`, naming where the key came from, so the key box
+  offers a replacement). 402, a 400 whose message speaks of the credit
+  balance, usage limits or a spend limit, and the spend-cap 429 are
+  `ClaudeAccountBlocked`: the key works, the account may not run requests.
+  A 404 on a Messages request names the model and the
+  `ANTHROPIC_TEXT_MODEL` and `ANTHROPIC_SUMMARY_MODEL` settings, a 413 says
+  the request is too large, other 4xx are `ClaudeRejected`, other 5xx
+  `Busy`. The teacher reads
+  `error.message` (cut to 300 characters) only from Anthropic's own error
+  envelope, `{"type": "error", "error": {"type", "message", "details"?}}`;
+  any other body, such as a proxy's HTML page, is logged with the
+  `request-id` and replaced by a fixed sentence, so no HTTP status or page
+  reaches the teacher. `retry-after`, `request-id` and `x-should-retry` are
+  read before the body. Without a key the error is `ClaudeNoApiKey`; with a
+  malformed Anthropic setting (while Gemini is the default) it is
+  `ClaudeMisconfigured`, until the setting is fixed and the server restarts.
+* **Key check.** `ClaudeClient::check_key` sends `GET /v1/models?limit=1`
+  (15 s, free, never retried, touching neither `secrets` nor a meter): a
+  success is a good key, 401 `ClaudeKeyRejected`, the account problems above
+  `ClaudeAccountBlocked`, 403 `ClaudeRejected`, any other 429 or 5xx `Busy`,
+  a timeout `Timeout`. It proves the key, not that the account has credit:
+  a lack of credit shows on the first text request, as a readable error.
+* `claude_paid_probe` (ignored, about $0.03; ask first) runs the free key
+  check and token counts, then a topic, the longest IELTS script, its
+  questions and a summary, each parsed and validated as the app does, and
+  prints latency, served model, `stop_reason`, request id and cost.
+  `text_provider_compare_probe` (`llm/text.rs`, ignored, about $0.17)
+  writes one IELTS exam's whole text with Gemini and with Claude from the
+  same topics and compares scripts and question blocks written, replies that
+  did not parse, the validator's errors and warnings, latency and cost.
+
 ## Text-to-speech constraints
 
 * Every Gemini call goes to the **Interactions API**
@@ -267,8 +404,8 @@ The teacher edits; nothing is "final" until they say so.
   is read from the last `model_output` step; `thought` steps are skipped; an
   `incomplete` status (max tokens) or a content-block code (`safety`, ...)
   becomes a readable error, after the response has been metered.
-* Models are pinned: `gemini-3.8-flash` (GA) for text and
-  `gemini-3.8-flash-tts` (stable) for speech, both configuration. Text
+* Models are pinned: `gemini-3.8-flash` (GA) for text, when Gemini writes it,
+  and `gemini-3.8-flash-tts` (stable) for speech, both configuration. Text
   requests send `thinking_level` (`GEMINI_THINKING_LEVEL`, default `low`;
   3.8 Flash cannot turn thinking off and rejects `minimal`) and
   `max_output_tokens: 8192` as a guard against runaway answers. The
@@ -406,11 +543,15 @@ parsed, so a reply that is cut off or fails to parse still counts. The
 server function (or recording job) then writes one row to the `usage` table
 of `jobs.db`: step, exam id (none from the part page), model, requests,
 reused chunks, input / cached / output / thinking tokens and the price in
-µUSD at the rate in force (`llm/pricing.rs`: 3.8 introductory prices until
-2026-12-31, list prices after; unknown models are counted as unpriced).
-Rows are written whatever the outcome and outlive their exam. The exam page
-shows the exam's spend per step beside `EXAM_BUDGET_USD` (default $0.70,
-warning only); the saved-exams panel shows the last 24 hours and 30 days.
+µUSD at the rate in force (`llm/pricing.rs`: Gemini 3.8 introductory prices
+until 2026-12-31, list prices after; one Claude price; unknown models are
+counted as unpriced). The ledger has no provider column: the model
+(`gemini-…`, `claude-…`) tells them apart, and `application::usage::record`
+takes the `Usage` of whichever client made the call. Rows are written
+whatever the outcome and outlive their exam. The exam page shows the exam's
+"AI spend" per step beside `EXAM_BUDGET_USD` (default $0.70, warning only);
+the saved-exams panel shows the server's AI spend for the last 24 hours and
+30 days, and where each API key comes from.
 
 Measured 2026-09-28 for one full IELTS exam at thinking `low`: $0.308 now,
 $0.616 at 2027 list prices (text $0.039, recording $0.269 for 29,728 audio
@@ -428,6 +569,40 @@ download-name summaries under `naming` ("file names"); both show in the
 exam's spend line only once they have cost something (`always_listed`).
 3.5 Flash-Lite has one price ($0.30 input, $0.03 cached, $2.50 output per
 million tokens) before and after 2027.
+
+Claude has one price too, the same before and after 2027 (USD per million
+tokens, input / cached input / output; checked 2026-10-14):
+`claude-sonnet-5-5` 2 / 0.10 / 10; `claude-sonnet-5`, where a declined
+request falls back, 2 / 0.20 / 10 (its cached rate to be checked again; no
+request is cached yet); `claude-haiku-5-5` 0.10 / 0.01 / 0.50 for
+prompts of at most 100,000 tokens (a download-name prompt is a few hundred);
+`claude-opus-5-5` 4 / 0.20 / 20, for an operator who sets it as
+`ANTHROPIC_TEXT_MODEL`. Any other model id, a dated one included, has no
+price and shows "+?". Claude's usage is read so that nothing counts twice:
+cache reads and writes are added to the input tokens, thinking is taken out
+of the output tokens and priced at the output rate, and a response that fell
+back lists every attempt in `usage.iterations`, each priced at its own
+model's rates (an attempt that names none at the served model's, then the
+requested one's). No request sends `cache_control`, so a reported cache
+write is logged and priced at the input rate. A refusal before any output is
+counted although Anthropic bills it for some categories only, so the ledger
+may show a little more than Anthropic charged, never less; a billed answer
+whose body cannot be read is logged as spend the meter does not see.
+
+Measured 2026-10-14 with `text_provider_compare_probe` (the four IELTS
+parts, scripts written four at once, then their six question blocks, effort
+and thinking level `low`): Gemini 3.8 Flash $0.039, 10,239 input and 8,395
+output tokens; Claude Sonnet 5.5 **$0.130**, 15,241 input and 9,924 output
+tokens, no thinking reported. Both wrote every script and question block,
+every reply parsed, and the validator found 5 errors and 2 warnings in
+Gemini's text, 6 and 1 in Claude's. Scripts took 10.3 s on average (11.6 s
+at most) with Gemini and 11.0 s (12.4 s) with Claude; question blocks 6.5 s
+(8.7 s) and 6.1 s (7.4 s); no request was retried. The recording costs the
+same whichever provider writes the text, so a whole IELTS exam with Claude
+text is about $0.45 now and $0.77 at 2027 Gemini prices. `claude_paid_probe`
+the same day: the longest script (IELTS Part 4, expressive, 619 words, no
+issues) took 11.3 s and $0.015, its questions 7.1 s and $0.016, the
+Haiku summary 1.1 s and $0.00004; the fallback beta header was accepted.
 
 ## Jobs
 
@@ -479,7 +654,9 @@ the tab and come back. `application/exams.rs` defines `SavedExam` (the
 `Exam`, the topic typed for each part, the recording job id and the stale
 flag for a script regenerated since the recording; speaker changes are not
 flagged but derived from each part's `recorded_for` and each script's
-`written_for`) and four server functions: `save_exam`, `list_exams`, `load_exam`,
+`written_for`; and the text provider chosen for the exam, `text_provider`,
+left out of the JSON when there is no choice, so such an exam is saved
+exactly as 0.9 saved it, and older exams load without one) and four server functions: `save_exam`, `list_exams`, `load_exam`,
 `delete_exam`. `infrastructure/exams.rs` stores one row per `Exam::id` in
 the `exams` table of `jobs.db`: the `SavedExam` as JSON plus the columns the
 list needs (title, format key, part counts, `recording_job`, timestamps),
@@ -506,9 +683,14 @@ recordings no saved exam refers to are kept. The same server also ships as
 a portable Windows EXE and Linux AppImage (`--portable`: `.env`,
 `voices.json` and `data/` beside the package, browser opened after startup;
 saved exams and their recordings travel with the folder); see
-`docs/portable.md`. Put a reverse proxy with TLS and **some
+`docs/portable.md`. The container reads its settings from `.env`
+(`env_file`), not from the host's environment, so `ANTHROPIC_API_KEY` and
+`TEXT_PROVIDER` belong there too. Put a reverse proxy with TLS and **some
 authentication** in front before exposing it: the app has rate limits but
-no login, and every request spends Gemini credit.
+no login, and every request spends money on the operator's Google account,
+and on the Anthropic account for text Claude writes. Anyone who reaches the
+pages, Published requests included, may choose Claude for a run, so set a
+spend limit for the key's workspace in the Claude Console.
 
 The intended public shape is a Windows service plus Cloudflare Tunnel: the
 release binary runs under NSSM with `--service NAME` (no console prompts, no
@@ -638,3 +820,7 @@ after the binds, replaced in one step; the lock file itself stays empty.
    `default_voices.json` updated from it (`docs/voices.md`).
 6. Voice Replication (a voice made from a recording of a real person): left
    out of 0.8 by decision; Voice Design covers voices described in words.
+7. Claude text, after the paid probes have measured it: structured outputs
+   for question JSON, prompt caching of the prefix the question blocks of a
+   part share, streaming, spend shown per provider, and the part page
+   remembering its text-provider choice.

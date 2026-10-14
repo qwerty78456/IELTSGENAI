@@ -12,7 +12,8 @@ pub enum Bucket {
     Passage,
     Task,
     Audio,
-    /// A Gemini API key typed into the browser.
+    /// An API key (Gemini or Anthropic) typed into the browser; one limit
+    /// for both.
     KeyEntry,
     /// A paid voice sample ("Preview"); stored samples are free and not counted.
     VoiceSample,

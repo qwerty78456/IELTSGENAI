@@ -5,4 +5,5 @@ pub mod issue_list;
 pub mod key_setup;
 pub mod loading_popup;
 pub mod speaker_modal;
+pub mod text_provider;
 pub mod voices;

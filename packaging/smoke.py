@@ -1,4 +1,4 @@
-"""Exercise the actual portable artifact without Gemini calls or real credentials."""
+"""Exercise the actual portable artifact without Gemini or Anthropic calls or real credentials."""
 import argparse
 import json
 import os
@@ -22,6 +22,9 @@ artifact = args.artifact.resolve()
 env = {k: v for k, v in os.environ.items() if k not in {
     "GEMINI_API_KEY", "IP", "PORT", "PUBLIC_PORT", "PUBLIC_HOST", "DATA_DIR", "VOICES_PATH", "MUSIC_PATH",
     "GEMINI_TEXT_MODEL", "GEMINI_TTS_MODEL", "GEMINI_SUMMARY_MODEL", "GEMINI_THINKING_LEVEL",
+    "TEXT_PROVIDER", "ANTHROPIC_API_KEY", "ANTHROPIC_TEXT_MODEL", "ANTHROPIC_SUMMARY_MODEL", "ANTHROPIC_EFFORT",
+    # Never read by the app (other Anthropic tools such as Claude Code set them), and kept away all the same.
+    "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN",
     "EXAM_BUDGET_USD", "SPEECH_CACHE_HOURS", "AUDIO_RETENTION_HOURS", "RUST_LOG",
     "DIOXUS_PUBLIC_PATH", "APPIMAGE",
 }}
@@ -29,9 +32,11 @@ env["APPIMAGE_EXTRACT_AND_RUN"] = "1"
 env["NO_COLOR"] = "1"
 # The Windows registry environment cannot be scrubbed and overrides .env; a
 # blank process value overrides both and means no published port (and no
-# tunnel hostname).
+# tunnel hostname), and Gemini writing the text. A blank ANTHROPIC_API_KEY
+# would not do the same: a blank key never hides one further down.
 env["PUBLIC_PORT"] = ""
 env["PUBLIC_HOST"] = ""
+env["TEXT_PROVIDER"] = ""
 # The tunnel hostname of the published-port run below.
 PUBLIC_HOST = "exams.example.org"
 # What the server answers and expects (src/infrastructure/instance, jobs).
@@ -54,8 +59,8 @@ def fetch(request):
     except urllib.error.HTTPError as error:
         with error:
             return error.code, error.headers, error.read()
-def windows_key_persisted():
-    """Whether the Windows user or machine environment holds GEMINI_API_KEY (value not read out)."""
+def windows_key_persisted(name):
+    """Whether the Windows user or machine environment holds the key `name` (value not read out)."""
     if os.name != "nt":
         return False
     import winreg
@@ -64,7 +69,7 @@ def windows_key_persisted():
     for root, path in scopes:
         try:
             with winreg.OpenKey(root, path) as key:
-                if str(winreg.QueryValueEx(key, "GEMINI_API_KEY")[0]).strip():
+                if str(winreg.QueryValueEx(key, name)[0]).strip():
                     return True
         except OSError:
             pass
@@ -102,9 +107,16 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
                 raise AssertionError(logpath.read_text(errors="replace"))
             try:
                 with urllib.request.urlopen(url, timeout=1) as response:
-                    return process, url, response.read().decode()
+                    html = response.read().decode()
             except (OSError, TimeoutError):
                 time.sleep(0.1)
+                continue
+            # Every start says where the Anthropic key came from, or that it is not set.
+            logs = logpath.read_text(errors="replace")
+            if "Anthropic API key (ANTHROPIC_API_KEY): " not in logs:
+                stop(process)
+                raise AssertionError(logs[-5000:])
+            return process, url, html
         process.kill()
         raise AssertionError("Server did not become ready")
     def stop_request(headers):
@@ -159,6 +171,8 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
         failure(setting, {setting: value})
     # A published port needs the tunnel hostname it serves.
     failure("PUBLIC_HOST must name the Cloudflare Tunnel hostname", {"PUBLIC_PORT": str(public_port)})
+    # Gemini or Claude (Anthropic) writes the text, no one else.
+    failure("TEXT_PROVIDER must be gemini or anthropic", {"TEXT_PROVIDER": "openai"})
     voices.write_text("{broken", encoding="utf-8")
     failure("voices.json")
     assert voices.read_text() == "{broken"
@@ -279,6 +293,13 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
         logs = logpath.read_text(errors="replace")
         assert "0.7 format" in logs, logs[-5000:]
         assert voices.read_bytes() == customised_0_7 and not retired.exists()
+        # Gemini writes the text by default, so a missing Anthropic key is no
+        # error: only a page that chooses Claude needs one.
+        assert "Text provider (TEXT_PROVIDER): gemini" in logs, logs[-5000:]
+        if windows_key_persisted("ANTHROPIC_API_KEY"):
+            print("NOT TESTED: starting without an Anthropic key; ANTHROPIC_API_KEY is set in the Windows environment.")
+        else:
+            assert "ANTHROPIC_API_KEY): not set" in logs, logs[-5000:]
         route = re.search(r"POST (/\S*audio_job_status\S*)", logs)
         assert route, logs[-5000:]
         request = urllib.request.Request(url + route[1], data=json.dumps({"job_id": "fixture"}).encode(),
@@ -355,7 +376,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     # Without a key anywhere the server still starts and asks for one in the
     # browser. On Windows the key may also come from the registry, which this
     # test must not change.
-    if windows_key_persisted():
+    if windows_key_persisted("GEMINI_API_KEY"):
         print("NOT TESTED: starting without a key; GEMINI_API_KEY is set in the Windows environment.")
     else:
         config.write_text(f"IP=127.0.0.1\nPORT={port}\n", encoding="utf-8")
@@ -446,7 +467,7 @@ with tempfile.TemporaryDirectory(prefix="IELTS portable résumé ") as temporary
     assert (base / "custom configuration" / "voices.json").is_file()
     assert not (payloads() - existing_payloads), payloads() - existing_payloads
     print("PASS: first run, malformed config, preservation, 0.7 voices.json (renamed or kept), paths,")
-    print("      logs/database failures, port conflict,")
+    print("      logs/database failures, port conflict, text provider setting, startup key lines,")
     print("      pages/assets/WASM/CSS, server function, audio range/download and caching,")
     print("      interrupted recordings, /instance (local only), published port, second copies refused,")
     print("      stop by another copy, successful exit codes, shutdown, relocation and explicit configuration directory.")

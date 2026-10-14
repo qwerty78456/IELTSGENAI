@@ -213,15 +213,49 @@ reserved for per-part recordings and is not written yet.
 `Music`, `Tone`, `Silence { ms }`, `Announcement(String)`, `Passage { part }`,
 with a replay for `Twice` parts and the checking time at the end.
 
+## Text provider
+
+### `TextProvider` (`provider.rs`)
+Who writes a draft's text (topics, scripts, questions and the download-name
+summaries): `Gemini` (Google) | `Anthropic` (Claude). Speech, voice samples and
+designed voices are always Gemini's.
+- `key()` — `"gemini"` | `"anthropic"`: the `TEXT_PROVIDER` value and the serde
+  name; `from_key(key)` is its exact inverse (the caller trims and lowercases).
+- `label()` — "Gemini (Google)" | "Claude (Anthropic)", what the "Text written
+  by" choice shows; `company()` — "Google" | "Anthropic", who checks the key and
+  runs the model.
+- `key_env()` — `GEMINI_API_KEY` | `ANTHROPIC_API_KEY`; `key_name()` — "Gemini
+  API key" | "Anthropic API key", for messages.
+- `ALL` in UI order, with `ALL[p as usize] == p` (the server's key slots are
+  indexed so).
+- `resolve(choice, default)` — the page's choice, else the server's default;
+  never the other provider. A failed request is not repeated with the other
+  one.
+
+The environment variable names live on this domain enum although they are
+configuration: the server's configuration (infrastructure), the server
+functions' signatures and the UI all need them, and the domain is the one
+layer all three may depend on. It is the only place the domain names a
+setting.
+
+A run's provider is the page state's `text_provider: Option<TextProvider>`
+(`None`: the server's `TEXT_PROVIDER`), passed with every text request
+(`suggest_topic`, `generate_passage`, `generate_task`, `summarize_topics`). A
+saved exam keeps it in `SavedExam.text_provider` (`#[serde(default,
+skip_serializing_if = "Option::is_none")]`): an exam without a choice is
+saved exactly as 0.9 saved it, and exams saved before 0.10 load as `None`.
+
 ## Usage
 
 ### `Usage`
-What Gemini billed for one or more requests: `requests`, `reused` (speech
-answered from the cache, free), `input_tokens` (cached included),
-`cached_tokens`, `output_tokens` (text or audio), `thinking_tokens`,
-`micro_usd` (price when the requests were made, in millionths of a dollar) and
-`unpriced` (requests whose model has no known price). `add`, `usd()`,
-`cost_text()` ("$0.412", "+?" when something is unpriced).
+What the AI services (Gemini, Claude) billed for one or more requests:
+`requests`, `reused` (speech answered from the cache, free), `input_tokens`
+(cached included; for Claude, cache reads and writes included),
+`cached_tokens`, `output_tokens` (text or audio; thinking not included),
+`thinking_tokens`, `micro_usd` (price when the requests were made, in
+millionths of a dollar) and `unpriced` (requests whose model has no known
+price). `add`, `usd()`, `cost_text()` ("$0.412", "+?" when something is
+unpriced). The model a row of the ledger names tells the providers apart.
 
 ### `UsageStep`
 `Topic` | `Script` | `Questions` | `Recording` | `Voices` (samples and designed

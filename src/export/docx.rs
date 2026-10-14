@@ -577,6 +577,7 @@ mod tests {
             recording: None,
             recording_stale: false,
             expressive: false,
+            text_provider: None,
             created_at_secs: 0,
             updated_at_secs: 0,
         };

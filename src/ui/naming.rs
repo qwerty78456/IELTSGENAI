@@ -2,13 +2,13 @@
 //! (`export::naming`).
 //!
 //! Each page state carries a `DraftNaming`. Right after a script is written
-//! the page asks Gemini for a five-word summary of the draft's topics
-//! (`prefetch`); the summary is kept with the topics it sums up, so it is out
-//! of date as soon as they change, and never flagged. The first download of
-//! a draft takes the browser's time and fixes the stem for every other file
-//! of that draft (`stem`), so its DOCX and WAV share a name. A step that
-//! replaces a file of the draft (a new script, new questions, a new
-//! recording) starts a new draft (`DraftNaming::new_draft`); a first
+//! the page asks its text provider for a five-word summary of the draft's
+//! topics (`prefetch`); the summary is kept with the topics it sums up, so it
+//! is out of date as soon as they change, and never flagged. The first
+//! download of a draft takes the browser's time and fixes the stem for every
+//! other file of that draft (`stem`), so its DOCX and WAV share a name. A
+//! step that replaces a file of the draft (a new script, new questions, a
+//! new recording) starts a new draft (`DraftNaming::new_draft`); a first
 //! recording or first questions keep the name. A download never waits more
 //! than ten seconds for a summary: without one the files are named after the
 //! topics themselves.
@@ -19,6 +19,7 @@ use dioxus::prelude::*;
 use uuid::Uuid;
 
 use crate::application::naming::summarize_topics;
+use crate::domain::TextProvider;
 use crate::export::naming::{fallback_summary, file_name, file_stem, summary_slug};
 use crate::ui::clock::now_stamp;
 use crate::ui::components::audio_player::{download_bytes, download_text, download_url};
@@ -38,13 +39,13 @@ fn next_draft() -> u32 {
     DRAFTS.fetch_add(1, Ordering::Relaxed)
 }
 
-/// A summary and whether Gemini wrote it (otherwise it was made from the
+/// A summary and whether a model wrote it (otherwise it was made from the
 /// topics after a failed request, and the next draft asks again).
 #[derive(Debug, Clone)]
 struct Summary {
     source: Vec<String>,
     words: String,
-    from_gemini: bool,
+    from_model: bool,
 }
 
 /// How the downloads of the current draft are named.
@@ -104,6 +105,9 @@ pub struct NameRequest {
     pub source: Vec<String>,
     /// The saved exam the summary's spend is booked to.
     pub exam: Option<Uuid>,
+    /// The page's text provider, which writes the summary (none: the
+    /// server's `TEXT_PROVIDER`).
+    pub provider: Option<TextProvider>,
 }
 
 /// What a download saves.
@@ -126,12 +130,17 @@ fn has_topic(source: &[String]) -> bool {
     source.iter().any(|t| !t.trim().is_empty())
 }
 
-/// Asks Gemini to sum up `source` unless its summary is here or on its way.
-/// The request runs as a task of its own, in the scope of the task that calls
-/// this (the root for exam pipelines, the part page otherwise), so a download
-/// that stops waiting never cancels a call Google bills.
-pub fn prefetch<S>(mut state: Signal<S>, source: Vec<String>, exam: Option<Uuid>)
-where
+/// Asks the page's text provider (`provider`; none: the server's default)
+/// to sum up `source` unless its summary is here or on its way. The request
+/// runs as a task of its own, in the scope of the task that calls this (the
+/// root for exam pipelines, the part page otherwise), so a download that
+/// stops waiting never cancels a call Google or Anthropic bills.
+pub fn prefetch<S>(
+    mut state: Signal<S>,
+    source: Vec<String>,
+    exam: Option<Uuid>,
+    provider: Option<TextProvider>,
+) where
     S: AsRef<DraftNaming> + AsMut<DraftNaming> + 'static,
 {
     if !has_topic(&source) {
@@ -140,17 +149,17 @@ where
     {
         let s = state.peek();
         let naming = naming_of(&*s);
-        let written = naming.summary_for(&source).is_some_and(|s| s.from_gemini);
+        let written = naming.summary_for(&source).is_some_and(|s| s.from_model);
         if written || naming.asking.as_ref() == Some(&source) {
             return;
         }
     }
     naming_mut(&mut *state.write()).asking = Some(source.clone());
     spawn(async move {
-        let reply = summarize_topics(source.clone(), exam).await;
-        let gemini = reply.ok().and_then(|line| summary_slug(&line));
-        let from_gemini = gemini.is_some();
-        let words = gemini.unwrap_or_else(|| fallback_summary(&source));
+        let reply = summarize_topics(source.clone(), exam, provider).await;
+        let written = reply.ok().and_then(|line| summary_slug(&line));
+        let from_model = written.is_some();
+        let words = written.unwrap_or_else(|| fallback_summary(&source));
         let mut s = state.write();
         let naming = naming_mut(&mut *s);
         if naming.asking.as_ref() == Some(&source) {
@@ -159,7 +168,7 @@ where
         naming.keep(Summary {
             source,
             words,
-            from_gemini,
+            from_model,
         });
     });
 }
@@ -180,7 +189,12 @@ where
         return stem;
     }
     let stamp = now_stamp();
-    prefetch(state, request.source.clone(), request.exam);
+    prefetch(
+        state,
+        request.source.clone(),
+        request.exam,
+        request.provider,
+    );
     let mut waited_ms = 0;
     let words = loop {
         let ready = naming_of(&*state.peek())

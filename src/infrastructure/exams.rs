@@ -518,6 +518,26 @@ mod tests {
             StoreSave::Deleted
         ));
     }
+    /// A draft deleted before its first save landed: the tombstone written
+    /// for the never-saved id refuses that delayed first save.
+    #[tokio::test]
+    async fn deleting_a_never_saved_id_fences_off_its_first_save() {
+        let (_dir, _jobs, exams) = stores().await;
+        let exam = Exam::new(ExamFormat::hsg_national(), "Never saved", "");
+        let id = exam.id.to_string();
+        assert_eq!(
+            exams.delete(&id, 0).await.unwrap(),
+            StoreDelete::AlreadyDeleted
+        );
+        assert!(matches!(
+            exams
+                .save(input(&exam, 0, "late-create", "late", None))
+                .await
+                .unwrap(),
+            StoreSave::Deleted
+        ));
+        assert!(exams.get(&id).await.unwrap().is_none());
+    }
     #[tokio::test]
     async fn concurrent_delete_and_save_never_resurrect_an_exam() {
         let (_dir, _jobs, exams) = stores().await;

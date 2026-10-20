@@ -212,6 +212,7 @@ fn parse_id(id: &str) -> Result<String, ServerFnError> {
 /// Saves only the version the client read; retries carry the identical request.
 #[server]
 pub async fn save_exam(request: SaveRequest) -> Result<SaveOutcome, ServerFnError> {
+    crate::infrastructure::ingress::require_app_access()?;
     let store = crate::infrastructure::exams::ExamStore::global().await;
     save_with_store(&store, request).await
 }
@@ -289,8 +290,9 @@ async fn save_with_store(
 #[server]
 pub async fn list_exams() -> Result<Vec<ExamSummary>, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::exams::ExamStore;
+    use crate::infrastructure::{exams::ExamStore, ingress};
 
+    ingress::require_app_access()?;
     let rows = ExamStore::global().await.list().await.map_err(user_error)?;
     Ok(rows
         .into_iter()
@@ -309,8 +311,9 @@ pub async fn list_exams() -> Result<Vec<ExamSummary>, ServerFnError> {
 #[server]
 pub async fn load_exam(id: String) -> Result<SavedExam, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::{exams::ExamStore, jobs::JobStore};
+    use crate::infrastructure::{exams::ExamStore, ingress, jobs::JobStore};
 
+    ingress::require_app_access()?;
     let id = parse_id(&id)?;
     let (row, body) = ExamStore::global()
         .await
@@ -349,8 +352,10 @@ pub async fn delete_exam(
     use crate::application::user_error;
     use crate::infrastructure::{
         exams::{ExamStore, StoreDelete},
-        jobs,
+        ingress, jobs,
     };
+
+    ingress::require_app_access()?;
     let id = parse_id(&id)?;
     let result = ExamStore::global()
         .await
@@ -380,6 +385,16 @@ mod tests {
     /// A body as 0.7.1 saved it: HSG with Part 1 recorded by three Female
     /// British speakers, written before speakers had voices.
     const SAVED_BY_0_7_1: &str = include_str!("fixtures/saved_exam_0_7_1.json");
+
+    #[test]
+    fn a_saved_format_that_differs_from_the_preset_still_saves() {
+        // Presets may change in a later release; exams saved before keep
+        // their own copy of the format and must still save.
+        let mut saved: SavedExam = serde_json::from_str(SAVED_BY_0_7_1).unwrap();
+        saved.exam.format.parts[0].brief = "An older brief.".into();
+        saved.exam.format.candidate_fields.clear();
+        check(&saved).unwrap();
+    }
 
     #[test]
     fn a_0_7_1_saved_exam_still_loads() {

@@ -191,7 +191,8 @@ fn current_statuses(local: bool) -> KeyStatuses {
 pub async fn api_key_status() -> Result<KeyStatuses, ServerFnError> {
     use crate::infrastructure::ingress;
 
-    Ok(current_statuses(ingress::current().is_local()))
+    let origin = ingress::require_app_access()?;
+    Ok(current_statuses(origin.is_local()))
 }
 
 /// Checks `key` with `provider`'s company and keeps it in memory; with
@@ -210,7 +211,8 @@ pub async fn set_api_key(
         rate_limiter, secrets,
     };
 
-    let local = ingress::current().is_local();
+    let origin = ingress::require_app_access()?;
+    let local = origin.is_local();
     let status = current_status(provider, local);
     // Refused requests do not use up the rate limit of the server's own computer.
     if let Some(reason) = entry_refusal(provider, status.source, status.rejected, local) {

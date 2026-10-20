@@ -97,8 +97,9 @@ pub fn delete_refusal(local: bool) -> Option<&'static str> {
 /// no Gemini request.
 #[server]
 pub async fn voice_catalogue() -> Result<VoiceCatalogue, ServerFnError> {
-    use crate::infrastructure::config::config;
+    use crate::infrastructure::{config::config, ingress};
 
+    ingress::require_app_access()?;
     let catalog = &config().voices;
     Ok(VoiceCatalogue {
         voices: catalog.voices().to_vec(),
@@ -120,10 +121,12 @@ pub async fn voice_preview(
     use crate::domain::UsageStep;
     use crate::infrastructure::{
         config::config,
+        ingress,
         llm::{GeminiClient, LlmError},
         rate_limiter, tts,
     };
 
+    ingress::require_app_access()?;
     Voice::check_id(&voice_id).map_err(user_error)?;
     let voice = match config().voices.find(&voice_id) {
         Some(voice) => voice.clone(),
@@ -172,7 +175,7 @@ pub async fn design_voice(
     use crate::domain::UsageStep;
     use crate::infrastructure::{ingress, llm::GeminiClient, rate_limiter, tts};
 
-    let origin = ingress::current();
+    let origin = ingress::require_app_access()?;
     if let Some(reason) = design_refusal(origin.may_design_voices()) {
         return Err(ServerFnError::new(reason));
     }
@@ -201,7 +204,7 @@ pub async fn designed_voices() -> Result<DesignedVoices, ServerFnError> {
     use crate::application::user_error;
     use crate::infrastructure::{ingress, llm::GeminiClient, tts};
 
-    let origin = ingress::current();
+    let origin = ingress::require_app_access()?;
     let client = GeminiClient::from_config().map_err(user_error)?;
     let voices = tts::designed_voices(&client).await.map_err(user_error)?;
     let made_here = if origin.is_local() {
@@ -229,7 +232,8 @@ pub async fn delete_voice(voice_id: String) -> Result<(), ServerFnError> {
     use crate::application::user_error;
     use crate::infrastructure::{ingress, llm::GeminiClient, rate_limiter, tts};
 
-    if let Some(reason) = delete_refusal(ingress::current().is_local()) {
+    let origin = ingress::require_app_access()?;
+    if let Some(reason) = delete_refusal(origin.is_local()) {
         return Err(ServerFnError::new(reason));
     }
     Voice::check_id(&voice_id).map_err(user_error)?;

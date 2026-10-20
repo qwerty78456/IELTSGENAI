@@ -23,8 +23,9 @@ pub async fn generate_task(
 ) -> Result<TaskDraft, ServerFnError> {
     use crate::application::{usage, user_error};
     use crate::domain::{UsageStep, validate_task};
-    use crate::infrastructure::{llm::TextClient, prompts, rate_limiter};
+    use crate::infrastructure::{ingress, llm::TextClient, prompts, rate_limiter};
 
+    ingress::require_app_access()?;
     let (part, spec) = request.validate().map_err(user_error)?;
     rate_limiter::check(rate_limiter::Bucket::Task).map_err(ServerFnError::new)?;
     let client = TextClient::from_config(provider).map_err(user_error)?;

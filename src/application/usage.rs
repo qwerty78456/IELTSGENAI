@@ -35,8 +35,9 @@ pub(crate) async fn record(
 #[server]
 pub async fn exam_usage(exam: Uuid) -> Result<ExamUsage, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::{config::config, usage::UsageStore};
+    use crate::infrastructure::{config::config, ingress, usage::UsageStore};
 
+    ingress::require_app_access()?;
     let mut usage = UsageStore::global()
         .await
         .for_exam(&exam.to_string())
@@ -50,8 +51,9 @@ pub async fn exam_usage(exam: Uuid) -> Result<ExamUsage, ServerFnError> {
 #[server]
 pub async fn usage_totals() -> Result<UsageTotals, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::{jobs::now_secs, usage::UsageStore};
+    use crate::infrastructure::{ingress, jobs::now_secs, usage::UsageStore};
 
+    ingress::require_app_access()?;
     let store = UsageStore::global().await;
     let now = now_secs();
     Ok(UsageTotals {

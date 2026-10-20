@@ -23,8 +23,9 @@ pub async fn generate_passage(
 ) -> Result<PassageDraft, ServerFnError> {
     use crate::application::{usage, user_error};
     use crate::domain::UsageStep;
-    use crate::infrastructure::{llm::TextClient, prompts, rate_limiter};
+    use crate::infrastructure::{ingress, llm::TextClient, prompts, rate_limiter};
 
+    ingress::require_app_access()?;
     let spec = request.validate().map_err(user_error)?;
     rate_limiter::check(rate_limiter::Bucket::Passage).map_err(ServerFnError::new)?;
     let exam_format = request.format.format();

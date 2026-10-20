@@ -8,7 +8,10 @@
 //!
 //! Every answer, errors included, says `Cache-Control: private, no-cache`:
 //! `private` keeps recordings out of shared caches (Cloudflare), `no-cache`
-//! still lets the browser revalidate a large WAV cheaply (304).
+//! still lets the browser revalidate a large WAV cheaply (304). On a loopback
+//! bind a request that names neither this computer nor the tunnel (a page
+//! whose name was rebound here) gets 403 with the reason
+//! (`ingress::stream_access`); a link from another site still plays.
 
 use dioxus::server::axum::{
     body::Body,
@@ -27,15 +30,32 @@ use super::store::{JobState, JobStore};
 const CACHE_CONTROL: &str = "private, no-cache";
 
 /// `GET /audio/{job_id}`: the WAV of a completed job, or 404 with a
-/// teacher-readable reason.
+/// teacher-readable reason; 403 with one when the request did not reach the
+/// app by its own address (`ingress::stream_access`).
 pub async fn serve_audio(path: Path<String>, request: Request) -> Response {
+    if let Some(refusal) = refusal(&request) {
+        return not_shared(refusal);
+    }
     not_shared(audio(path, request).await)
 }
 
 /// `GET /voice-sample/{voice_id}`: the stored sample of a voice, or 404.
 /// Nothing is synthesised here; `application::voices` makes samples.
 pub async fn serve_voice_sample(path: Path<String>, request: Request) -> Response {
+    if Voice::check_id(&path).is_err() {
+        return not_shared(not_found("Voice sample not found"));
+    }
+    if let Some(refusal) = refusal(&request) {
+        return not_shared(refusal);
+    }
     not_shared(voice_sample(path, request).await)
+}
+
+/// 403 with the teacher-readable reason, when the request may not stream.
+fn refusal(request: &Request) -> Option<Response> {
+    super::super::ingress::may_stream(request.extensions(), request.headers())
+        .err()
+        .map(|message| (StatusCode::FORBIDDEN, message).into_response())
 }
 
 /// Marks a response private and to be revalidated (see the module comment).

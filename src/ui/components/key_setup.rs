@@ -11,6 +11,8 @@ const KEY_SETUP_CSS: Asset = asset!("/assets/styling/key_setup.css");
 /// during any step (a script, questions, a recording) brings its box up. The
 /// server answers from memory; nothing is sent to Google or Anthropic.
 const KEY_STATUS_POLL_MS: u32 = 5_000;
+/// Failed polls in a row before the page says why.
+const KEY_STATUS_FAILURES_SHOWN: u32 = 3;
 
 /// Both providers' key statuses, provided by the `Navbar` layout; `None`
 /// until the first answer. Written by `KeySetup`'s poll and by a `KeyBox`
@@ -24,19 +26,44 @@ pub struct KeyStatusCtx(pub Signal<Option<KeyStatuses>>);
 #[component]
 pub fn KeySetup() -> Element {
     let KeyStatusCtx(mut statuses) = use_context::<KeyStatusCtx>();
+    // Why the server keeps refusing this page (opened by another address
+    // than its own, or the server is gone): every other step would fail the
+    // same way. Shown after a few failures in a row, so a restart passes.
+    let mut refused = use_signal(|| None::<String>);
 
     use_future(move || async move {
+        let mut failures = 0;
         loop {
-            if let Ok(current) = api_key_status().await {
-                let changed = *statuses.peek() != Some(current);
-                if changed {
-                    statuses.set(Some(current));
+            match api_key_status().await {
+                Ok(current) => {
+                    failures = 0;
+                    let changed = *statuses.peek() != Some(current);
+                    if changed {
+                        statuses.set(Some(current));
+                    }
+                    if refused.peek().is_some() {
+                        refused.set(None);
+                    }
+                }
+                Err(error) => {
+                    failures += 1;
+                    let message = Some(error.to_string());
+                    if failures >= KEY_STATUS_FAILURES_SHOWN && *refused.peek() != message {
+                        refused.set(message);
+                    }
                 }
             }
             sleep_ms(KEY_STATUS_POLL_MS).await;
         }
     });
 
+    if let Some(message) = refused() {
+        return rsx! {
+            section { class: "key-setup", role: "alert",
+                p { "{message}" }
+            }
+        };
+    }
     let Some(current) = statuses() else {
         return rsx! {};
     };

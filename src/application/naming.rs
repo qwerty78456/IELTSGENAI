@@ -18,12 +18,13 @@ pub async fn summarize_topics(
 ) -> Result<String, ServerFnError> {
     use crate::application::{usage, user_error};
     use crate::domain::UsageStep;
-    use crate::infrastructure::{llm::TextClient, prompts, rate_limiter};
+    use crate::infrastructure::{ingress, llm::TextClient, prompts, rate_limiter};
 
-    rate_limiter::check(rate_limiter::Bucket::Naming).map_err(ServerFnError::new)?;
+    ingress::require_app_access()?;
     if topics.iter().all(|t| t.trim().is_empty()) {
         return Err(ServerFnError::new("There is no topic to sum up"));
     }
+    rate_limiter::check(rate_limiter::Bucket::Naming).map_err(ServerFnError::new)?;
     let client = TextClient::from_config(provider).map_err(user_error)?;
     let reply = client
         .generate_brief(&prompts::summary_prompt(&topics))

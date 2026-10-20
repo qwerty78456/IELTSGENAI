@@ -1,6 +1,13 @@
 //! Where a request comes from: this computer, the app's published port (the
 //! Cloudflare Tunnel), or anywhere else.
 //!
+//! Every server function first asks `require_app_access`. A page of another
+//! site is refused on every bind. On a loopback bind the request must also
+//! name this computer (main port) or the tunnel (`PUBLIC_PORT`); anything
+//! else is refused, which keeps DNS-rebound pages and proxies on the main
+//! port out. A server bound to a network address cannot tell its own names,
+//! so it answers every other request as `Remote`, as before 0.10.1.
+//!
 //! What changes the operator's Google project or key is decided per request:
 //! a key typed in the browser and deleting a designed voice only for `Local`
 //! requests, designing a voice also for `Published` ones. A request is
@@ -38,6 +45,16 @@ impl Origin {
     }
 }
 
+/// Why `app_access` refuses a request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// A page of another site made it (`Sec-Fetch-Site: cross-site` or `same-site`).
+    OtherSite,
+    /// On a loopback bind, it named neither this computer nor the tunnel, or
+    /// a proxy forwarded it to the main port.
+    NotThisAddress,
+}
+
 /// Request extension added by the `PUBLIC_PORT` listener to every request it
 /// accepts (`startup` layers it over the whole router).
 #[derive(Debug, Clone, Copy)]
@@ -60,7 +77,9 @@ pub const FORWARDING_HEADERS: &[&str] = &[
 ];
 
 /// Sent by current browsers: `cross-site` when a page of another site made
-/// the request (a link, a form, a `no-cors` fetch).
+/// the request (a link, a form, a `no-cors` fetch), `same-site` when a page
+/// of another origin of the same site did (`localhost:3000` is same-site to
+/// `localhost:8080`: sites ignore ports).
 const SEC_FETCH_SITE: &str = "sec-fetch-site";
 
 /// Classifies one request; the first rule that matches wins:
@@ -68,9 +87,9 @@ const SEC_FETCH_SITE: &str = "sec-fetch-site";
 ///    `0.0.0.0` bind is never local, and its published port is reachable
 ///    without Cloudflare Access, so it is not trusted either);
 /// 2. the browser says a page of another site made it
-///    (`Sec-Fetch-Site: cross-site`) → `Remote`: the published port listens
-///    on this computer, so without this any web page open here could design
-///    voices through it without passing Cloudflare Access;
+///    (`Sec-Fetch-Site: cross-site` or `same-site`) → `Remote`: the published
+///    port listens on this computer, so without this any web page open here
+///    could design voices through it without passing Cloudflare Access;
 /// 3. it arrived on the published listener → `Published` when its `Host`
 ///    (port aside) is one of `public_hosts` (`PUBLIC_HOST`) and its
 ///    `Origin`, if present, names one of them too; otherwise `Remote` (a
@@ -88,16 +107,129 @@ pub fn classify(
     public_hosts: &[String],
     headers: &HeaderMap,
 ) -> Origin {
+    if !loopback_bind || other_site(headers) {
+        return Origin::Remote;
+    }
+    by_address(published, public_hosts, headers)
+}
+
+/// Whether a server function may answer, and with which origin: a page of
+/// another site never; on a network bind anything else as `Remote`; on a
+/// loopback bind only `Local` and `Published` requests (rules 3-7 of
+/// `classify`).
+pub fn app_access(
+    published: bool,
+    loopback_bind: bool,
+    public_hosts: &[String],
+    headers: &HeaderMap,
+) -> Result<Origin, Refusal> {
+    if other_site(headers) {
+        return Err(Refusal::OtherSite);
+    }
     if !loopback_bind {
-        return Origin::Remote;
+        return Ok(Origin::Remote);
     }
-    if headers
-        .get_all(SEC_FETCH_SITE)
-        .iter()
-        .any(|site| site.as_bytes().eq_ignore_ascii_case(b"cross-site"))
-    {
-        return Origin::Remote;
+    match by_address(published, public_hosts, headers) {
+        Origin::Remote => Err(Refusal::NotThisAddress),
+        origin => Ok(origin),
     }
+}
+
+/// Whether `/audio/{job}` and `/voice-sample/{voice}` may stream: like
+/// `app_access`, but a link from another site (an e-mail, a learning
+/// platform) still plays, since its page cannot read the answer.
+pub fn stream_access(
+    published: bool,
+    loopback_bind: bool,
+    public_hosts: &[String],
+    headers: &HeaderMap,
+) -> Result<(), Refusal> {
+    if !loopback_bind {
+        return Ok(());
+    }
+    match by_address(published, public_hosts, headers) {
+        Origin::Remote => Err(Refusal::NotThisAddress),
+        _ => Ok(()),
+    }
+}
+
+/// What the teacher reads when a request is refused: where to open the app.
+pub fn refusal_message(refusal: Refusal, port: u16, public_hosts: &[String]) -> String {
+    match refusal {
+        Refusal::OtherSite => {
+            "A page of another website sent this request, so the app refused it. \
+             Open the app from its own address and try again."
+                .to_string()
+        }
+        Refusal::NotThisAddress => {
+            let tunnel = match public_hosts.first() {
+                Some(host) => format!(", or https://{host}/ through the tunnel"),
+                None => String::new(),
+            };
+            format!(
+                "This app answers only on this computer's own address: open http://localhost:{port}/ \
+                 in a browser on this computer{tunnel}. A proxy in front of the app must use PUBLIC_PORT."
+            )
+        }
+    }
+}
+
+/// The origin of a request to a plain axum route (no request context there).
+pub fn of_parts(extensions: &Extensions, headers: &HeaderMap) -> Origin {
+    classify(
+        extensions.get::<PublishedListener>().is_some(),
+        loopback_bind(),
+        &super::config::config().public_hosts,
+        headers,
+    )
+}
+
+/// The first statement of every `#[server]` function: refuses what
+/// `app_access` refuses, with a teacher-readable reason, and returns the
+/// request's origin for the decisions that depend on it. Call it before any
+/// `.await`: the request context does not follow `tokio::spawn`. Without a
+/// request (a server-side call, a background task) it refuses.
+pub fn require_app_access() -> Result<Origin, dioxus::prelude::ServerFnError> {
+    use dioxus::prelude::ServerFnError;
+    let Some(context) = dioxus::fullstack::FullstackContext::current() else {
+        return Err(ServerFnError::new(
+            "This request did not come from the app's page",
+        ));
+    };
+    let config = super::config::config();
+    // Dioxus offers only a write lock on the request parts; it is held just
+    // for this read.
+    let parts = context.parts_mut();
+    app_access(
+        parts.extensions.get::<PublishedListener>().is_some(),
+        config.address.ip().is_loopback(),
+        &config.public_hosts,
+        &parts.headers,
+    )
+    .map_err(|refusal| {
+        ServerFnError::new(refusal_message(
+            refusal,
+            config.address.port(),
+            &config.public_hosts,
+        ))
+    })
+}
+
+/// `stream_access` for a plain route's request, with the refusal's message.
+pub fn may_stream(extensions: &Extensions, headers: &HeaderMap) -> Result<(), String> {
+    let config = super::config::config();
+    stream_access(
+        extensions.get::<PublishedListener>().is_some(),
+        config.address.ip().is_loopback(),
+        &config.public_hosts,
+        headers,
+    )
+    .map_err(|refusal| refusal_message(refusal, config.address.port(), &config.public_hosts))
+}
+
+/// Rules 3-7 of `classify`: what the request's addresses say, ignoring the
+/// bind and the browser's `Sec-Fetch-Site`.
+fn by_address(published: bool, public_hosts: &[String], headers: &HeaderMap) -> Origin {
     if published {
         let named = |authority: &str| {
             host_part(authority).is_some_and(|host| {
@@ -133,32 +265,12 @@ pub fn classify(
     Origin::Local
 }
 
-/// The origin of a request to a plain axum route (no request context there).
-pub fn of_parts(extensions: &Extensions, headers: &HeaderMap) -> Origin {
-    classify(
-        extensions.get::<PublishedListener>().is_some(),
-        loopback_bind(),
-        &super::config::config().public_hosts,
-        headers,
-    )
-}
-
-/// The origin of the request a `#[server]` function is answering. Call it at
-/// the start of the body: the request context does not follow `tokio::spawn`.
-/// Without a request (a server-side call, a background task) it is `Remote`.
-pub fn current() -> Origin {
-    let Some(context) = dioxus::fullstack::FullstackContext::current() else {
-        return Origin::Remote;
-    };
-    // Dioxus offers only a write lock on the request parts; it is held just
-    // for this read.
-    let parts = context.parts_mut();
-    classify(
-        parts.extensions.get::<PublishedListener>().is_some(),
-        loopback_bind(),
-        &super::config::config().public_hosts,
-        &parts.headers,
-    )
+/// A page of another site made the request (`cross-site`, `same-site`).
+fn other_site(headers: &HeaderMap) -> bool {
+    headers.get_all(SEC_FETCH_SITE).iter().any(|site| {
+        let site = site.as_bytes().trim_ascii();
+        site.eq_ignore_ascii_case(b"cross-site") || site.eq_ignore_ascii_case(b"same-site")
+    })
 }
 
 /// Whether the server listens on a loopback address only (127.0.0.1, ::1).
@@ -181,11 +293,15 @@ fn loopback_origin(origin: &str) -> bool {
     origin_authority(origin).is_some_and(loopback_authority)
 }
 
-/// The `host[:port]` of `Origin: scheme://host[:port]`; `None` for `null`
-/// or anything without a scheme.
+/// The `host[:port]` of `Origin: http(s)://host[:port]`; `None` for `null`,
+/// another scheme, or anything without one.
 fn origin_authority(origin: &str) -> Option<&str> {
     let (scheme, rest) = origin.split_once("://")?;
-    (!scheme.is_empty()).then(|| rest.split('/').next().unwrap_or_default())
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority = rest.split('/').next().unwrap_or_default();
+    (!authority.is_empty() && !authority.contains(['?', '#'])).then_some(authority)
 }
 
 /// The host of `host[:port]` (a name or an IPv4 address; never a bracketed
@@ -199,7 +315,8 @@ fn host_part(authority: &str) -> Option<&str> {
 }
 
 /// `host[:port]` (as in `Host`) where the host is `localhost`, a name under
-/// `.localhost`, a 127.x.y.z address or `[::1]`. Case-insensitive.
+/// `.localhost` (browsers resolve those to this computer themselves), a
+/// 127.x.y.z address or `[::1]`. Case-insensitive.
 fn loopback_authority(authority: &str) -> bool {
     let authority = authority.trim();
     if let Some(bracketed) = authority.strip_prefix('[') {
@@ -266,6 +383,11 @@ mod tests {
 
     fn published(pairs: &[(&str, &str)]) -> Origin {
         classify(true, true, &tunnel(), &headers(pairs))
+    }
+
+    /// `app_access` on the main port of a loopback bind.
+    fn main_port(pairs: &[(&str, &str)]) -> Result<Origin, Refusal> {
+        app_access(false, true, &tunnel(), &headers(pairs))
     }
 
     #[test]
@@ -358,6 +480,7 @@ mod tests {
             "",
             "exams.example.org",
             "https://exams.example.org.attacker.example",
+            "ftp://exams.example.org",
         ] {
             assert_eq!(
                 published(&[host, ("origin", origin)]),
@@ -383,7 +506,9 @@ mod tests {
     #[test]
     fn pages_of_other_sites_are_remote_on_both_ports() {
         let host = ("host", "127.0.0.1:8081");
-        for site in ["cross-site", "Cross-Site"] {
+        // `same-site`: a page of another port of this computer
+        // (http://localhost:3000) is not this app.
+        for site in ["cross-site", "Cross-Site", "same-site", " Same-Site "] {
             // A web page open on this computer cannot use the published port
             // to get past Cloudflare Access.
             assert_eq!(
@@ -397,7 +522,7 @@ mod tests {
                 "{site}"
             );
         }
-        for site in ["same-origin", "same-site", "none"] {
+        for site in ["same-origin", "none"] {
             assert_eq!(
                 published(&[("host", "exams.example.org"), ("sec-fetch-site", site)]),
                 Origin::Published,
@@ -513,6 +638,8 @@ mod tests {
             "http://[::2]:8080",
             "127.0.0.1:8080",
             "://127.0.0.1",
+            "file://localhost",
+            "http://localhost?x",
         ] {
             assert_eq!(
                 local(&[host, ("origin", origin)]),
@@ -525,7 +652,167 @@ mod tests {
     }
 
     #[test]
-    fn no_request_context_is_remote() {
-        assert_eq!(current(), Origin::Remote);
+    fn app_access_on_a_loopback_bind_needs_this_computer_or_the_tunnel() {
+        for allowed in [
+            vec![
+                ("host", "127.0.0.1:8080"),
+                ("origin", "http://127.0.0.1:8080"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+            // `dx serve`: the browser on localhost:8080, the app behind the
+            // dev proxy on another loopback port.
+            vec![
+                ("host", "127.0.0.1:54321"),
+                ("origin", "http://localhost:8080"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+            vec![("host", "[::1]:8080"), ("origin", "http://[::1]:8080")],
+            vec![("host", "app.localhost:8080")],
+            // A script on this computer sends no browser headers.
+            vec![("host", "127.0.0.1:8080")],
+        ] {
+            assert_eq!(main_port(&allowed), Ok(Origin::Local), "{allowed:?}");
+        }
+        for refused in [
+            // DNS rebinding: the page and the request name another host.
+            vec![
+                ("host", "evil.example:8080"),
+                ("origin", "http://evil.example:8080"),
+                ("sec-fetch-site", "same-origin"),
+            ],
+            vec![("host", "127.0.0.1:8080"), ("x-forwarded-for", "10.0.0.2")],
+            vec![("host", "127.0.0.1:8080"), ("origin", "null")],
+            vec![
+                ("host", "127.0.0.1:8080"),
+                ("origin", "https://evil.example"),
+            ],
+            vec![],
+        ] {
+            assert_eq!(
+                main_port(&refused),
+                Err(Refusal::NotThisAddress),
+                "{refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn app_access_refuses_other_sites_on_every_bind() {
+        for site in ["cross-site", "same-site", " Same-Site "] {
+            let page = headers(&[("host", "127.0.0.1:8080"), ("sec-fetch-site", site)]);
+            let tunnel_page = headers(&[("host", "exams.example.org"), ("sec-fetch-site", site)]);
+            assert_eq!(
+                app_access(false, true, &tunnel(), &page),
+                Err(Refusal::OtherSite)
+            );
+            assert_eq!(
+                app_access(true, true, &tunnel(), &tunnel_page),
+                Err(Refusal::OtherSite)
+            );
+            assert_eq!(
+                app_access(false, false, &tunnel(), &page),
+                Err(Refusal::OtherSite)
+            );
+        }
+        for site in ["same-origin", "none"] {
+            let page = headers(&[("host", "127.0.0.1:8080"), ("sec-fetch-site", site)]);
+            assert_eq!(app_access(false, true, &tunnel(), &page), Ok(Origin::Local));
+            assert_eq!(
+                app_access(false, false, &tunnel(), &page),
+                Ok(Origin::Remote)
+            );
+        }
+    }
+
+    #[test]
+    fn app_access_on_the_published_listener() {
+        let through_tunnel = headers(&[
+            ("host", "exams.example.org"),
+            ("origin", "https://exams.example.org"),
+            ("cf-connecting-ip", "203.0.113.7"),
+            ("sec-fetch-site", "same-origin"),
+        ]);
+        assert_eq!(
+            app_access(true, true, &tunnel(), &through_tunnel),
+            Ok(Origin::Published)
+        );
+        // The published port opened directly, or without PUBLIC_HOST.
+        let direct = headers(&[("host", "localhost:8081")]);
+        assert_eq!(
+            app_access(true, true, &tunnel(), &direct),
+            Err(Refusal::NotThisAddress)
+        );
+        assert_eq!(
+            app_access(true, true, &[], &through_tunnel),
+            Err(Refusal::NotThisAddress)
+        );
+    }
+
+    #[test]
+    fn a_network_bind_answers_any_host_as_in_0_10() {
+        for pairs in [
+            vec![
+                ("host", "exams.school.example"),
+                ("origin", "https://exams.school.example"),
+            ],
+            // nginx's default `proxy_set_header Host $proxy_host`.
+            vec![
+                ("host", "127.0.0.1:8080"),
+                ("origin", "https://exams.school.example"),
+                ("x-forwarded-for", "10.0.0.2"),
+            ],
+            vec![
+                ("host", "[2001:db8::1]:8080"),
+                ("origin", "http://[2001:db8::1]:8080"),
+            ],
+            vec![],
+        ] {
+            let map = headers(&pairs);
+            assert_eq!(
+                app_access(false, false, &tunnel(), &map),
+                Ok(Origin::Remote)
+            );
+            assert_eq!(app_access(true, false, &tunnel(), &map), Ok(Origin::Remote));
+            assert_eq!(stream_access(false, false, &tunnel(), &map), Ok(()));
+        }
+    }
+
+    #[test]
+    fn audio_links_from_other_sites_still_play() {
+        let link = headers(&[("host", "localhost:8080"), ("sec-fetch-site", "cross-site")]);
+        assert_eq!(stream_access(false, true, &tunnel(), &link), Ok(()));
+        let rebound = headers(&[("host", "evil.example:8080")]);
+        assert_eq!(
+            stream_access(false, true, &tunnel(), &rebound),
+            Err(Refusal::NotThisAddress)
+        );
+        let tunnel_link = headers(&[
+            ("host", "exams.example.org"),
+            ("sec-fetch-site", "cross-site"),
+        ]);
+        assert_eq!(stream_access(true, true, &tunnel(), &tunnel_link), Ok(()));
+    }
+
+    #[test]
+    fn refusals_tell_the_teacher_where_to_open_the_app() {
+        let other = refusal_message(Refusal::OtherSite, 8080, &[]);
+        assert!(other.contains("another website"), "{other}");
+        let local_only = refusal_message(Refusal::NotThisAddress, 8080, &[]);
+        assert!(
+            local_only.contains("http://localhost:8080/"),
+            "{local_only}"
+        );
+        assert!(local_only.contains("PUBLIC_PORT"), "{local_only}");
+        assert!(!local_only.contains("tunnel"), "{local_only}");
+        let with_tunnel = refusal_message(Refusal::NotThisAddress, 8080, &tunnel());
+        assert!(
+            with_tunnel.contains("https://exams.example.org/ through the tunnel"),
+            "{with_tunnel}"
+        );
+    }
+
+    #[test]
+    fn no_request_context_is_refused() {
+        assert!(require_app_access().is_err());
     }
 }

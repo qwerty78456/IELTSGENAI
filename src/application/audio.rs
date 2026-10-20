@@ -65,8 +65,9 @@ pub async fn start_part_audio(
     exam: Option<Uuid>,
 ) -> Result<AudioStarted, ServerFnError> {
     use crate::application::{user_error, voices::prepare_speakers};
-    use crate::infrastructure::{jobs, rate_limiter};
+    use crate::infrastructure::{ingress, jobs, rate_limiter};
 
+    ingress::require_app_access()?;
     let speakers = prepare_speakers(request.speakers, &[])
         .await
         .map_err(ServerFnError::new)?;
@@ -75,13 +76,14 @@ pub async fn start_part_audio(
         ..request
     };
     request.validate().map_err(user_error)?;
-    rate_limiter::check(rate_limiter::Bucket::Audio).map_err(ServerFnError::new)?;
+    // A request refused for being too many spends no rate limit.
     let store = jobs::JobStore::global().await;
     if store.active_count().await.map_err(user_error)? >= MAX_ACTIVE_JOBS {
         return Err(ServerFnError::new(
             "Too many recordings are being made right now. Please wait a minute.",
         ));
     }
+    rate_limiter::check(rate_limiter::Bucket::Audio).map_err(ServerFnError::new)?;
     let job_id = store
         .create(jobs::JobKind::PartAudio)
         .await
@@ -104,8 +106,9 @@ pub async fn start_exam_audio(
     exam: Option<Uuid>,
 ) -> Result<ExamAudioStarted, ServerFnError> {
     use crate::application::{user_error, voices::prepare_exam_speakers};
-    use crate::infrastructure::{jobs, rate_limiter};
+    use crate::infrastructure::{ingress, jobs, rate_limiter};
 
+    ingress::require_app_access()?;
     let mut request = request;
     let line_ups: Vec<Vec<SpeakerConfig>> =
         request.parts.iter().map(|p| p.speakers.clone()).collect();
@@ -124,13 +127,13 @@ pub async fn start_exam_audio(
         })?;
     }
     request.validate().map_err(user_error)?;
-    rate_limiter::check(rate_limiter::Bucket::Audio).map_err(ServerFnError::new)?;
     let store = jobs::JobStore::global().await;
     if store.active_count().await.map_err(user_error)? >= MAX_ACTIVE_JOBS {
         return Err(ServerFnError::new(
             "Too many recordings are being made right now. Please wait a minute.",
         ));
     }
+    rate_limiter::check(rate_limiter::Bucket::Audio).map_err(ServerFnError::new)?;
     let job_id = store
         .create(jobs::JobKind::ExamAudio)
         .await
@@ -187,8 +190,9 @@ async fn track_at(id: &str, path: &std::path::Path) -> Option<AudioTrack> {
 #[server]
 pub async fn audio_job_status(job_id: String) -> Result<JobView, ServerFnError> {
     use crate::application::user_error;
-    use crate::infrastructure::jobs::JobStore;
+    use crate::infrastructure::{ingress, jobs::JobStore};
 
+    ingress::require_app_access()?;
     let record = JobStore::global()
         .await
         .get(&job_id)

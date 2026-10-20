@@ -1,6 +1,6 @@
 # Saved-exam data safety
 
-Saved exams use optimistic concurrency and session-local drafts. The shared layout owns the save queue, so switching between exams or between One part and Whole exam does not discard pending work. Unsaved drafts are held in memory only. Closing or reloading the tab loses drafts that have not reached the server; the browser's leave-page warning is advisory.
+Saved exams use optimistic concurrency and session-local drafts. The shared layout owns the save queue (and the One part page's state), so switching between exams or between One part and Whole exam does not discard pending work. Unsaved drafts are held in memory only. Closing or reloading the tab loses drafts that have not reached the server; the browser's leave-page warning is advisory.
 
 ## Save protocol
 
@@ -10,7 +10,9 @@ The last mutation ID and hash form a per-exam retry receipt. A lost response is 
 
 A conflict pauses only that exam. The session panel offers the local draft, explicit overwrite, or loading the latest server version. Both replacement actions require confirmation. Overwrite uses the freshly read revision, so a further concurrent edit conflicts again. Network failures require a manual retry and retain the original request and latest draft.
 
-Deletion pauses that exam's queue until an in-flight save has a known outcome. It compares revisions and writes a permanent ID-only tombstone in the same transaction. Edits made after confirming deletion are retained as a draft that can be saved under a new ID. There is no trash, version history, cross-tab draft synchronization or crash recovery.
+Deletion pauses that exam's queue until an in-flight save has a known outcome. It compares revisions and writes a permanent ID-only tombstone in the same transaction. Deleting an ID that was never saved writes the tombstone too, so a delayed first save of that draft cannot create it. Edits made after confirming deletion are retained as a draft that can be saved under a new ID. There is no trash, version history, cross-tab draft synchronization or crash recovery.
+
+The draft of an exam that is not open can be discarded from the session panel after a confirmation, unless it is being saved or deleted; an ID the server deleted stays refused. The open exam's draft is never offered for discarding, because its edits are on screen. On the exam page the panel lists the open exam only when its save needs the teacher (failed, conflict, deleted, refused, or a notice); its ordinary state is the page's own status line.
 
 ## Recording lifetime
 

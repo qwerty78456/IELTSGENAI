@@ -544,8 +544,13 @@ body {
     transition: background 0.2s;
 }
 
-.button-secondary:hover {
+.button-secondary:hover:not(:disabled) {
     background: #f8f9fa;
+}
+
+.button-secondary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .button-primary {
@@ -559,8 +564,13 @@ body {
     transition: background 0.2s;
 }
 
-.button-primary:hover {
+.button-primary:hover:not(:disabled) {
     background: #2980b9;
+}
+
+.button-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 /* Generation Results Styles */
@@ -648,10 +658,19 @@ body {
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
-.download-button:hover {
+.download-button:hover:not(:disabled) {
     background: #218838;
     transform: translateY(-1px);
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Every download button has a colour class after this rule, so the disabled
+   state is carried by opacity and the cursor, not a background. */
+.download-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
 }
 
 .loading-state {
@@ -707,7 +726,7 @@ body {
     background: #28a745;
 }
 
-.download-button.primary:hover {
+.download-button.primary:hover:not(:disabled) {
     background: #218838;
 }
 
@@ -715,7 +734,7 @@ body {
     background: #6c757d;
 }
 
-.download-button.secondary:hover {
+.download-button.secondary:hover:not(:disabled) {
     background: #5a6268;
 }
 
@@ -723,7 +742,7 @@ body {
     background: #17a2b8;
 }
 
-.download-button.info:hover {
+.download-button.info:hover:not(:disabled) {
     background: #138496;
 }
 
@@ -957,6 +976,10 @@ body {
     background: #5a6268;
 }
 
+.generate-button.secondary:disabled {
+    background: #95a5a6;
+}
+
 .note-box {
     display: flex;
     align-items: center;
@@ -1171,6 +1194,6 @@ a.download-button {
     background: #dc3545;
 }
 
-.download-button.danger:hover {
+.download-button.danger:hover:not(:disabled) {
     background: #c82333;
 }

@@ -158,6 +158,19 @@ impl SaveQueue {
         self.deleted.insert(id);
         self.library_epoch = self.library_epoch.wrapping_add(1);
     }
+    /// Drops a draft the teacher no longer wants, unless it is being sent or
+    /// deleted (a save whose answer is still to come must keep its receipt).
+    /// What the server keeps is untouched, and an id in `deleted` stays
+    /// refused. Never offered for the open exam, whose edits are on screen.
+    pub fn discard(&mut self, id: Uuid) -> bool {
+        match self.drafts.get(&id) {
+            Some(draft) if draft.status != SaveStatus::Sending && !draft.deleting => {
+                self.drafts.remove(&id);
+                true
+            }
+            _ => false,
+        }
+    }
     pub fn evict_clean(&mut self, active: Uuid) {
         self.drafts
             .retain(|id, d| *id == active || d.dirty() || d.deleting || d.warning.is_some());
@@ -323,5 +336,49 @@ mod tests {
         acknowledge(&mut q, id, 2);
         assert_eq!(q.drafts[&id].snapshot.recording_job.as_deref(), Some("new"));
         assert!(q.drafts[&id].dirty());
+    }
+    #[test]
+    fn discard_drops_only_idle_drafts() {
+        let mut q = SaveQueue::default();
+        let a = snapshot("A");
+        let id = a.exam.id;
+        q.stage(a, true);
+        q.begin(id, false).unwrap();
+        // Sending: the answer and its receipt are still to come.
+        assert!(!q.discard(id));
+        q.finish(id, Err("offline".into()));
+        assert!(q.needs_warning());
+        assert!(q.discard(id));
+        assert!(!q.drafts.contains_key(&id));
+        assert!(!q.needs_warning());
+        assert!(!q.discard(id), "already gone");
+        // An unarmed draft (typed, never saved) can go too.
+        let b = snapshot("B");
+        let unarmed = b.exam.id;
+        q.stage(b, false);
+        assert!(q.discard(unarmed));
+    }
+    #[test]
+    fn discard_refuses_a_draft_being_deleted() {
+        let mut q = SaveQueue::default();
+        let a = snapshot("A");
+        let id = a.exam.id;
+        q.stage(a, true);
+        q.drafts.get_mut(&id).unwrap().deleting = true;
+        assert!(!q.discard(id));
+        assert!(q.drafts.contains_key(&id));
+    }
+    #[test]
+    fn a_discarded_deleted_draft_stays_refused() {
+        let mut q = SaveQueue::default();
+        let a = snapshot("A");
+        let id = a.exam.id;
+        q.stage(a.clone(), true);
+        q.begin(id, false).unwrap();
+        q.finish(id, Ok(SaveOutcome::Deleted));
+        assert!(q.discard(id));
+        q.stage(a, true);
+        assert!(!q.drafts.contains_key(&id));
+        assert!(!q.needs_warning());
     }
 }

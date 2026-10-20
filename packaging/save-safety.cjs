@@ -214,6 +214,24 @@ async function until(check, label) {
         console.log('PASS: edits during and after a confirmed deletion survive navigation');
 
         await b.getByRole('button',{name:'New exam',exact:true}).click();
+        await title(b).fill('Draft to discard'); await b.getByRole('button',{name:'New exam',exact:true}).click();
+        const discardRow = b.locator('.session-draft').filter({hasText:'Draft to discard'});
+        await discardRow.getByRole('button',{name:'Discard draft'}).click();
+        await b.getByRole('button',{name:'Keep draft',exact:true}).click();
+        await discardRow.waitFor();
+        await discardRow.getByRole('button',{name:'Discard draft'}).click();
+        await b.getByRole('button',{name:'Yes, discard',exact:true}).click();
+        await discardRow.waitFor({state:'detached'});
+        await title(b).fill('Open exam typed');
+        assert.equal(await b.locator('.session-draft').filter({hasText:'Open exam typed'}).count(),0,'the open exam is not listed on its own page');
+        await b.getByRole('link',{name:'One part',exact:true}).click();
+        const openRow = b.locator('.session-draft').filter({hasText:'Open exam typed'});
+        await openRow.waitFor();
+        assert.equal(await openRow.getByRole('button',{name:'Discard draft'}).count(),0,'no discard for the open exam');
+        await b.getByRole('link',{name:'Whole exam',exact:true}).click();
+        console.log('PASS: discard asks first and never touches the open exam');
+
+        await b.getByRole('button',{name:'New exam',exact:true}).click();
         await title(b).fill('Unarmed local draft'); await b.getByRole('button',{name:'New exam',exact:true}).click();
         await b.locator('.session-draft').filter({hasText:'Unarmed local draft'}).getByRole('button',{name:'Open draft'}).click();
         await waitTitle(b,'Unarmed local draft');

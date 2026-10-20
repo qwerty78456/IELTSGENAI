@@ -1,7 +1,10 @@
 //! Home view: choose a format and a part, then generate the script, the
 //! questions and the audio, in one go or one piece at a time.
 //!
-//! The view holds one `HomeState` signal. Every server call goes through
+//! The view uses one `HomeState` signal, provided by the `Navbar` layout so
+//! that a visit to the exam page keeps the part and its running steps (they
+//! are `spawn_forever` tasks; a `run` counter drops late results of a
+//! cancelled or superseded run). Every server call goes through
 //! `crate::application`; every rule check is already done by the domain, the
 //! view only displays issues. The one-click pipeline runs in the browser by
 //! chaining the same server functions the individual buttons use: the script
@@ -19,6 +22,7 @@
 //! of date is derived, never flagged: the script against its `written_for`
 //! ("Rewrite" or "Keep"), the recording against `recorded_for`.
 
+use dioxus::core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::application::audio::{audio_url, start_part_audio};
@@ -327,12 +331,12 @@ fn start_audio(
         return;
     }
     let run = state.peek().run;
-    spawn(run_audio(state, run, request));
+    spawn_forever(run_audio(state, run, request));
 }
 
 #[component]
 pub fn Home() -> Element {
-    let mut state = use_signal(HomeState::default);
+    let mut state = use_context::<Signal<HomeState>>();
     let catalogue = use_context::<VoiceCatalogueCtx>();
 
     let speakers = use_memo(move || effective_speakers(&state()));
@@ -364,7 +368,7 @@ pub fn Home() -> Element {
             state().run,
             state().text_provider,
         );
-        spawn(async move {
+        spawn_forever(async move {
             let outcome = suggest_topic(format, part, String::new(), None, provider).await;
             if !still_current(state, run) {
                 return;
@@ -388,7 +392,7 @@ pub fn Home() -> Element {
         };
         state.write().reset_results();
         let run = state().run;
-        spawn(async move {
+        spawn_forever(async move {
             run_script(state, run, request).await;
         });
     };
@@ -398,7 +402,7 @@ pub fn Home() -> Element {
             return;
         };
         let (format, part, run) = (state().format, state().part, state().run);
-        spawn(run_tasks(state, run, format, part, passage, speakers()));
+        spawn_forever(run_tasks(state, run, format, part, passage, speakers()));
     };
 
     let handle_generate_audio = move |_| start_audio(state, catalogue, speakers(), false);
@@ -419,7 +423,7 @@ pub fn Home() -> Element {
         let run = state().run;
         let (format, part) = (request.format, request.part);
         let current_speakers = request.speakers.clone();
-        spawn(async move {
+        spawn_forever(async move {
             let Some(passage) = run_script(state, run, request).await else {
                 return;
             };
@@ -445,7 +449,7 @@ pub fn Home() -> Element {
         };
         state.write().audio_error = None;
         let run = state().run;
-        spawn(fetch_audio(state, run, job_id));
+        spawn_forever(fetch_audio(state, run, job_id));
     };
 
     // The one-click pipeline: script, then questions and recording side by side.
@@ -461,7 +465,7 @@ pub fn Home() -> Element {
         let run = state().run;
         let (format, part) = (request.format, request.part);
         let current_speakers = request.speakers.clone();
-        spawn(async move {
+        spawn_forever(async move {
             let Some(passage) = run_script(state, run, request).await else {
                 return;
             };
@@ -909,7 +913,7 @@ fn download_part(
     let (Some(request), Some(content)) = (part_name(&state.peek()), content) else {
         return;
     };
-    spawn(download(state, request, content, role, extension));
+    spawn_forever(download(state, request, content, role, extension));
 }
 
 /// Paper, key and transcript as DOCX, once there are questions.

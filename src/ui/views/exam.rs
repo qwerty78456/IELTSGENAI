@@ -1322,7 +1322,10 @@ fn note_edit(state: Signal<ExamState>) {
     let mut queue = state.peek().saves;
     queue.write().invalidate_open();
     let id = stage_current(state, false);
-    let sequence = queue.peek().drafts[&id].sequence;
+    // An exam deleted elsewhere with no draft left takes no edits.
+    let Some(sequence) = queue.peek().drafts.get(&id).map(|d| d.sequence) else {
+        return;
+    };
     spawn_forever(async move {
         sleep_ms(EDIT_DEBOUNCE_MS).await;
         if queue
@@ -1362,8 +1365,14 @@ fn install_exam(mut state: Signal<ExamState>, saved: SavedExam) {
     }
 }
 fn open_exam(mut state: Signal<ExamState>, id: Uuid) {
-    flush_before_leaving(state);
     let mut queue = state.peek().saves;
+    // Already open: reinstalling it would only drop its messages and name.
+    // An older request to open another exam is still cancelled.
+    if state.peek().exam.id == id {
+        queue.write().invalidate_open();
+        return;
+    }
+    flush_before_leaving(state);
     let token = queue.write().invalidate_open();
     let local = queue.peek().drafts.get(&id).map(|d| d.snapshot.clone());
     if let Some(saved) = local {
@@ -1417,7 +1426,9 @@ fn delete_saved_exam(mut state: Signal<ExamState>, id: Uuid) {
                 Some(d) if d.status == SaveStatus::Sending => sleep_ms(25).await,
                 Some(d) => {
                     if d.pending.is_some() {
-                        queue.write().drafts.get_mut(&id).unwrap().deleting = false;
+                        if let Some(draft) = queue.write().drafts.get_mut(&id) {
+                            draft.deleting = false;
+                        }
                         state.write().library_error = Some(
                             "Resolve the failed save with Retry before deleting this exam.".into(),
                         );
@@ -1898,24 +1909,43 @@ async fn fetch_exam_audio(mut state: Signal<ExamState>, run: u32, job_id: String
     }
 }
 
-/// Session-wide controls remain mounted on both routes.
+/// Session-wide controls remain mounted on both routes. On the exam page the
+/// open exam is listed only when its save needs the teacher (failed,
+/// conflict, deleted, refused, or a notice): its ordinary state is on the
+/// page's own status line.
 #[component]
 pub fn SaveStatusPanel() -> Element {
     let state = use_context::<Signal<ExamState>>();
     let mut queue = use_context::<Signal<SaveQueue>>();
     let navigator = use_navigator();
+    let on_exam_page = matches!(use_route::<crate::Route>(), crate::Route::ExamView {});
     let mut confirmation = use_signal(|| None::<(Uuid, SavedExam, bool)>);
+    let mut discarding = use_signal(|| None::<(Uuid, String)>);
     let mut message = use_signal(|| None::<String>);
     let mut resolving = use_signal(|| false);
     use_before_unload(queue);
     let active = use_memo(move || state.read().exam.id);
     use_effect(move || queue.write().evict_clean(active()));
     let busy = state.read().is_busy();
+    let open = active();
     let mut drafts: Vec<_> = queue
         .read()
         .drafts
         .iter()
-        .filter(|(_, d)| d.dirty() || d.warning.is_some())
+        .filter(|(id, d)| {
+            let needs_teacher = matches!(
+                d.status,
+                SaveStatus::Failed(_)
+                    | SaveStatus::Conflict
+                    | SaveStatus::Deleted
+                    | SaveStatus::Invalid(_)
+            ) || d.warning.is_some();
+            if on_exam_page && **id == open {
+                needs_teacher
+            } else {
+                d.dirty() || needs_teacher
+            }
+        })
         .map(|(id, d)| (*id, d.clone()))
         .collect();
     drafts.sort_by(|a, b| {
@@ -1951,6 +1981,18 @@ pub fn SaveStatusPanel() -> Element {
                         button { disabled: busy || draft.deleting, onclick: move |_| {
                             open_exam(state, id); navigator.push(crate::Route::ExamView {});
                         }, "Open draft" }
+                        // The open exam's edits are on screen; discarding its
+                        // draft would only hide them from saving.
+                        if id != open {
+                            button {
+                                disabled: draft.deleting || draft.status == SaveStatus::Sending,
+                                onclick: {
+                                    let title = draft.snapshot.exam.title.clone();
+                                    move |_| discarding.set(Some((id, title.clone())))
+                                },
+                                "Discard draft"
+                            }
+                        }
                         if matches!(draft.status, SaveStatus::Ready | SaveStatus::Failed(_)) {
                             button { disabled: draft.deleting, onclick: move |_| {
                                 if let Some(d) = queue.write().drafts.get_mut(&id) { d.armed = true; }
@@ -2008,6 +2050,24 @@ pub fn SaveStatusPanel() -> Element {
                             navigator.push(crate::Route::ExamView {});
                         }
                     }, if overwrite { "Confirm overwrite" } else { "Discard edits and open" } }
+                }
+            }
+        }
+        if let Some((id, title)) = discarding() {
+            div { class: "save-confirm-backdrop",
+                section { class: "save-confirm", role: "dialog", "aria-modal": "true", "aria-label": "Confirm discarding a draft",
+                    h2 { "Discard this draft?" }
+                    p { "{title}" }
+                    p { "The changes in this tab that never reached the server are lost. What the server keeps stays in Saved exams." }
+                    button { onclick: move |_| discarding.set(None), "Keep draft" }
+                    button { onclick: move |_| {
+                        discarding.set(None);
+                        // It may have been opened, or started saving, meanwhile.
+                        let discarded = id != state.peek().exam.id && queue.write().discard(id);
+                        if !discarded {
+                            message.set(Some("This draft is open, being saved or being deleted; try again when that finishes.".into()));
+                        }
+                    }, "Yes, discard" }
                 }
             }
         }

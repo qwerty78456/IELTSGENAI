@@ -201,7 +201,8 @@ installing Python, then runs the full smoke suite as an unprivileged user,
 including permission errors and missing browser helpers. Windows smoke tests
 do not alter system browser associations to force a browser-launch failure.
 
-See [the v0.10.0 verification record](portable-verification-v0.10.0.md),
+See [the v0.11.0 verification record](portable-verification-v0.11.0.md),
+[the v0.10.0 verification record](portable-verification-v0.10.0.md),
 [the v0.9.1 Windows verification record](portable-verification-v0.9.1.md),
 [the v0.9.0 verification record](portable-verification-v0.9.0.md), [the
 v0.8.2 record](portable-verification-v0.8.2.md), [the

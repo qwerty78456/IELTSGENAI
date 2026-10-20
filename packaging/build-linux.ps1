@@ -17,7 +17,12 @@ try {
     Check-Exit
     podman --connection $Connection exec $container tar --no-same-owner -xf /tmp/source.tar -C /build
     Check-Exit
-    podman --connection $Connection exec $container bash packaging/build-linux.sh
+    # dx build asks `cargo metadata` for the crates of every platform under a short
+    # timeout; on a slow network it gives up. Fetch them all first, without a timeout,
+    # then build offline.
+    podman --connection $Connection exec $container cargo fetch --locked
+    Check-Exit
+    podman --connection $Connection exec -e CARGO_NET_OFFLINE=true $container bash packaging/build-linux.sh
     Check-Exit
     podman --connection $Connection cp ($container + ':/build/dist/.') dist
     Check-Exit

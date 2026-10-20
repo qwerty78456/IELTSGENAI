@@ -3,6 +3,227 @@
 Mọi thay đổi đáng kể của dự án được ghi ở đây. Định dạng theo tinh thần
 [Keep a Changelog](https://keepachangelog.com/vi/1.1.0/), phiên bản theo SemVer.
 
+## [0.11.0] – 2026-10-20 — ✏️ "Giáo viên sửa được kịch bản và câu hỏi." · "Teachers can edit scripts and questions."
+
+Đến 0.10.0, kịch bản, câu hỏi và đáp án chỉ xem được; muốn sửa một chữ phải sinh
+lại (tốn tiền) hoặc sửa trong file Word, khi đó bản thu và đề đã lưu không còn
+khớp. **Từ 0.11.0, cả hai trang có "Edit script" và "Edit Q.." để sửa kịch bản
+và từng khối câu hỏi kèm đáp án ngay trong app; sửa xong, lỗi được kiểm lại và
+đề tự lưu.** Bản này cũng sửa cách đếm "AND/OR A NUMBER", kiểm tra cho Note
+completion, vài lỗi in trên đề (rubric "A, B, C or C", khung Số phách trên đề
+IELTS), và khóa chặt quyền truy cập: mọi server function đều kiểm, trang của
+website khác bị từ chối, và trên bind loopback chỉ request từ chính máy này
+hoặc qua tunnel mới được trả lời.
+*Up to 0.10.0 scripts, questions and keys could only be read; changing one word
+meant a paid regeneration or an edit in the Word file, after which the recording
+and the saved exam no longer matched. **From 0.11.0 both pages have "Edit script"
+and "Edit Q.." to edit a part's script and each question block with its key in
+the app; an edit is checked again and the exam saves itself.** This release
+also fixes how "AND/OR A NUMBER" is counted, checks note completion, fixes a few
+printed-paper mistakes (the "A, B, C or C" rubric, the Vietnamese candidate
+block on IELTS papers) and tightens access: every server function checks it,
+pages of other sites are refused, and on a loopback bind only requests from
+this computer or through the tunnel are answered.*
+
+### English
+
+#### What's new
+
+- **Edit a part's script** ("Edit script") on both pages, one "Speaker A: ..."
+  turn per line. The typed text is kept when you visit the other page. A
+  speaker label the part does not have ("speaker b:", "Speaker C:" in a
+  dialogue of two) or a label without its colon is refused with its line
+  number, instead of being joined to the previous turn and read aloud. The
+  edit applies only to the script it started from, and nothing that reads the
+  script (questions, recording, regeneration) starts while the editor is open.
+  An applied edit re-checks the script and the questions, gives the downloads
+  a new name and, on the exam page, saves the exam; a recording of the old
+  script is shown as out of date.
+- **Edit a question block** ("Edit Q..") with the fields its question type
+  prints: the notes or summary text with its gaps (even when the model sent
+  none), shared options and multiple-choice options to add or remove, a letter
+  or T/F/NG choice for the key, and accepted text answers one per line, kept as
+  typed ("2,500", "24/7", spaces). Stray summaries or options can be removed.
+  The editor never refuses to save; the validator shows what is wrong. Escape
+  closes it.
+- **"Discard draft"** in the session panel, after a confirmation, for a draft
+  of an exam that is not open (never while it is being saved or deleted).
+
+#### Fixed
+
+- **Word limits.** With "AND/OR A NUMBER" one number is free beside the words:
+  "15 May", "25 dollars", "3.5 million", "one hundred and twenty" pass ONE WORD
+  AND/OR A NUMBER, while "first aid", "half price" or "salt and pepper" still
+  count every word and "15 May 2026" has two numbers. Without it, a token in
+  digits ("25 cats") is refused, but words like "A4" or "COVID-19" are words.
+- **Note completion** (IELTS Parts 1 and 4) now needs its text with every gap
+  (n)______, like summary completion: a missing or repeated gap is an error, a
+  gap without its blank line a warning. Shared options, summary text or stems
+  the paper does not print get warnings that say so. A sentence-completion stem
+  needs its blank.
+- **Printed papers:** the multiple-choice rubric names each letter once ("A, B
+  or C"); the Họ và tên / Số báo danh / Số phách block is printed for HSG only;
+  "Your answers" heads answer boxes only; the paper and the announcer say
+  "Listen to an interview once", not the app's labels such as "interview (host
+  + 2 guests)".
+- **Access.** Every server function checks access first. A page of another
+  website (`Sec-Fetch-Site: cross-site` or `same-site`) is refused on every
+  bind. On a loopback bind a Remote request (a DNS-rebound page, a proxy on the
+  main port, `PUBLIC_PORT` opened directly) is refused with the address to
+  open. `/audio` and `/voice-sample` check only the address, so a recording
+  linked from an e-mail still plays.
+- The One part page keeps its results and running steps when you visit Whole
+  exam. The session panel no longer pops up while you type in the open exam.
+- A refused request (a theme too long, no topic to sum up, too many recordings
+  running) no longer uses up its rate limit.
+- Scripts above 200 turns, 3,000 words or 30,000 characters are an error on the
+  page and are refused by question and recording requests; question requests
+  check their speakers.
+- The navbar is readable and marks the page shown; disabled buttons look
+  disabled.
+
+#### Inside
+
+- `ingress::require_app_access` first in every server function, with a test
+  that scans `src/application`; a pure core (`classify`, `app_access`,
+  `stream_access`, `refusal_message`) behind thin wrappers. Names under
+  `.localhost` stay this computer.
+- `Passage::parse_edited`, `Passage::size_problem`; `Task::printed_summary`,
+  `prints_stems` and `printed_shared_options` shared by Markdown and DOCX;
+  `ExamFormat.candidate_fields`; `PassageKind::description`.
+- `HomeState` lives in the `Navbar` layout; both pages run their steps as
+  `spawn_forever` tasks. New components `script_editor.rs` (`ScriptEdit`) and
+  `task_editor.rs` (`TaskDraft`).
+- Deleting a never-saved exam id writes its tombstone, as in 0.9.1.
+- Docker: `dx build --release --web --cargo-args=--locked`, `./server
+  --non-interactive`, and a `.dockerignore` that keeps `.env` files, `data/` and
+  every `target/` out of the build context.
+- 367 unit tests (0.10.0: 318); plain `cargo test` compiles again (146 tests).
+  `save-safety.cjs` gains a discard group.
+
+#### Known, for a later release
+
+- On a network bind (Docker, LAN) the app checks no `Host`, so it is not
+  protected against DNS rebinding there; keep authentication in front.
+- Opening an exam whose recording failed still shows "Recording the exam..." for
+  5 s before the error; the Gemini client has no overall time budget or jitter;
+  the exam list reads every exam's body; joining a whole exam's WAV takes up to
+  ~200 MB of memory; closing the Windows console window skips the clean
+  shutdown.
+
+#### Upgrading
+
+- A proxy or `cloudflared` aimed at the **main port** of a loopback bind is now
+  refused: point it at `PUBLIC_PORT` with `PUBLIC_HOST`, as the docs already
+  said. A tunnel ingress that rewrites `Host` (`httpHostHeader`) is refused too.
+- Exams saved before may show new issues when opened (note completion without
+  its text, a gap without its blank line); they block nothing.
+- The first exam recording after the upgrade reads the announcements again once
+  (their wording changed; a few cents).
+
+### Tiếng Việt
+
+#### Có gì mới
+
+- **Sửa kịch bản của một part** ("Edit script") trên cả hai trang, mỗi lượt
+  "Speaker A: ..." một dòng. Chữ đang gõ được giữ khi sang trang kia. Nhãn
+  người nói mà part không có ("speaker b:", "Speaker C:" trong hội thoại hai
+  người) hoặc nhãn thiếu dấu hai chấm bị báo kèm số dòng, thay vì bị nối vào
+  lượt trước rồi đọc to. Sửa chỉ áp vào đúng kịch bản lúc mở editor, và trong
+  lúc editor mở thì không bước nào đọc kịch bản (câu hỏi, ghi âm, sinh lại)
+  được chạy. Áp dụng xong, kịch bản và câu hỏi được kiểm lại, file tải về đổi
+  tên mới và trang đề thi tự lưu; bản thu đọc kịch bản cũ được báo là cũ.
+- **Sửa một khối câu hỏi** ("Edit Q..") với đúng các trường dạng bài đó in ra:
+  đoạn ghi chú hoặc tóm tắt có ô trống (kể cả khi model không gửi), thêm/bớt
+  phương án dùng chung và phương án trắc nghiệm, chọn chữ cái hoặc T/F/NG cho
+  đáp án, và đáp án văn bản mỗi dòng một biến thể, giữ nguyên như đã gõ
+  ("2,500", "24/7", dấu cách). Bỏ được đoạn tóm tắt hoặc phương án thừa.
+  Editor không bao giờ chặn Lưu; validator báo lỗi. Phím Escape đóng editor.
+- **"Discard draft"** trong khung nháp của phiên, sau khi xác nhận, cho nháp
+  của đề không đang mở (không bao giờ lúc nháp đang được lưu hoặc xóa).
+
+#### Sửa lỗi
+
+- **Giới hạn số từ.** Với "AND/OR A NUMBER", một con số đi kèm được miễn:
+  "15 May", "25 dollars", "3.5 million", "one hundred and twenty" đạt ONE WORD
+  AND/OR A NUMBER, còn "first aid", "half price" hay "salt and pepper" vẫn tính
+  đủ từ và "15 May 2026" có hai con số. Khi không cho số, token viết bằng chữ
+  số ("25 cats") bị từ chối, nhưng "A4" hay "COVID-19" vẫn là từ.
+- **Note completion** (IELTS Part 1 và 4) giờ phải có đoạn text với đủ ô
+  (n)______ như Summary completion: thiếu hoặc lặp ô là lỗi, ô thiếu đường kẻ
+  là cảnh báo. Phương án dùng chung, đoạn tóm tắt hay câu hỏi mà đề không in ra
+  có cảnh báo nói rõ. Câu của Sentence completion phải có chỗ trống.
+- **Đề in:** rubric trắc nghiệm liệt kê mỗi chữ cái một lần ("A, B or C"); khung
+  Họ và tên / Số báo danh / Số phách chỉ in cho đề HSG; "Your answers" chỉ in
+  trên ô trả lời; đề và phát thanh viên nói "Listen to an interview once" thay
+  vì đọc nhãn của app như "interview (host + 2 guests)".
+- **Quyền truy cập.** Mọi server function kiểm quyền trước tiên. Trang của
+  website khác (`Sec-Fetch-Site: cross-site` hoặc `same-site`) bị từ chối trên
+  mọi kiểu bind. Trên bind loopback, request Remote (trang bị DNS rebinding,
+  proxy vào cổng chính, mở thẳng `PUBLIC_PORT`) bị từ chối kèm địa chỉ cần mở.
+  `/audio` và `/voice-sample` chỉ kiểm địa chỉ, nên bản thu gửi qua email vẫn
+  phát được.
+- Trang One part giữ kết quả và bước đang chạy khi sang Whole exam. Khung nháp
+  của phiên không còn bật lên khi đang gõ vào đề đang mở.
+- Request bị từ chối (chủ đề quá dài, không có chủ đề để tóm tắt, quá nhiều bản
+  thu đang chạy) không còn tốn lượt rate limit.
+- Kịch bản quá 200 lượt, 3.000 từ hoặc 30.000 ký tự là lỗi trên trang và bị từ
+  chối khi sinh câu hỏi hoặc ghi âm; yêu cầu sinh câu hỏi kiểm cả người nói.
+- Thanh điều hướng đọc được và đánh dấu trang đang xem; nút bị khóa trông bị
+  khóa.
+
+#### 🧰 Bên trong
+
+- `ingress::require_app_access` đứng đầu mọi server function, có test quét
+  `src/application`; lõi thuần (`classify`, `app_access`, `stream_access`,
+  `refusal_message`) sau các wrapper mỏng. Tên dưới `.localhost` vẫn là máy này.
+- `Passage::parse_edited`, `Passage::size_problem`; `Task::printed_summary`,
+  `prints_stems` và `printed_shared_options` dùng chung cho Markdown và DOCX;
+  `ExamFormat.candidate_fields`; `PassageKind::description`.
+- `HomeState` nằm trong layout `Navbar`; cả hai trang chạy các bước bằng
+  `spawn_forever`. Component mới `script_editor.rs` (`ScriptEdit`) và
+  `task_editor.rs` (`TaskDraft`).
+- Xóa một đề chưa từng lưu vẫn ghi tombstone như 0.9.1.
+- Docker: `dx build --release --web --cargo-args=--locked`, `./server
+  --non-interactive`, và `.dockerignore` loại file `.env`, `data/` và mọi
+  `target/` khỏi build context.
+- 367 unit test (0.10.0: 318); `cargo test` mặc định biên dịch lại được (146
+  test). `save-safety.cjs` có thêm nhóm Discard.
+
+#### Biết rồi, để bản sau
+
+- Trên bind mạng (Docker, LAN) app không kiểm `Host`, nên không chống được DNS
+  rebinding ở đó; hãy giữ lớp xác thực phía trước.
+- Mở đề có bản thu bị lỗi vẫn hiện "Recording the exam..." 5 giây rồi mới báo
+  lỗi; client Gemini chưa có ngân sách thời gian tổng và jitter; danh sách đề
+  vẫn đọc cả nội dung từng đề; ghép WAV cả đề tốn tới khoảng 200 MB bộ nhớ;
+  đóng cửa sổ console Windows bỏ qua bước tắt sạch.
+
+#### ⚠️ Cần biết khi nâng cấp
+
+- Proxy hoặc `cloudflared` trỏ vào **cổng chính** của bind loopback giờ bị từ
+  chối: trỏ vào `PUBLIC_PORT` kèm `PUBLIC_HOST`, đúng như tài liệu vẫn ghi.
+  Ingress của tunnel viết lại `Host` (`httpHostHeader`) cũng bị từ chối.
+- Đề đã lưu có thể hiện issue mới khi mở (Note completion thiếu đoạn text, ô
+  thiếu đường kẻ); chỉ để xem, không chặn gì.
+- Lần ghi âm cả đề đầu tiên sau khi nâng cấp đọc lại lời phát thanh một lần
+  (câu chữ đã đổi; vài cent).
+
+### 📊 Con số biết nói · Numbers
+
+| Kiểm tra · Check | Kết quả · Result |
+|---|---|
+| `cargo fmt --check` | sạch · clean |
+| `cargo check` web / server / wasm32 | sạch, **0 warning** cả ba · clean, **0 warnings** on all three |
+| `cargo test --features server --no-default-features` | **367/367**, 7 test chạy tay · 7 manual (0.10.0: 318) |
+| `cargo test` (mặc định · default feature) | **146/146**, 1 test chạy tay · 1 manual (0.10.0: không biên dịch được · did not compile) |
+| `cargo clippy` | 8 cảnh báo có từ trước, không thêm cảnh báo mới (0.10.0: 9) · 8 pre-existing warnings, none new (0.10.0: 9) |
+| Review · Review | một bản audit ngoài được 31 agent kiểm chứng và phản biện, mỗi lỗi có bằng chứng file:line; 6 commit theo chủ đề, mỗi commit qua đủ cổng kiểm · an outside audit verified and challenged by 31 agents, every defect with file:line evidence; 6 topical commits, each passing every gate |
+| Ma trận quyền truy cập · Access matrix (curl, server release tách biệt · isolated server) | 28 trường hợp đúng như mong đợi: cùng nguồn đạt; cross-site, same-site, DNS rebinding, `Origin: null`, proxy trên cổng chính bị từ chối kèm lời giải thích; bind mạng sau proxy viết lại `Host` vẫn chạy · 28 cases as expected: same-origin answers; cross-site, same-site, DNS rebinding, `Origin: null`, a proxy on the main port refused with the reason; a network bind behind a `Host`-rewriting proxy still works |
+| Trình duyệt · Browser | gõ từng phím "dynamic retention x", "2,500", "24/7" được giữ nguyên; nhãn sai báo đúng dòng; editor còn nguyên sau khi chuyển trang; Apply không đổi gì thì không lưu · typed key by key, "dynamic retention x", "2,500", "24/7" kept; a wrong label names its line; the editor survives a page visit; an unchanged Apply saves nothing |
+| `save-safety.cjs` (bản release, Brave headless · release bundle, headless Brave) | ✅ **10/10** nhóm, kể cả nhóm Discard mới, 0 lỗi runtime · groups, including the new discard group, 0 runtime errors |
+| Tiền tốn cho 0.11.0 · Spend for 0.11.0 | **0,0039 USD** Gemini (một kịch bản và một tên file để thử editor · one script and one file name to try the editor) |
+
 ## [0.10.0] – 2026-10-14 — ✍️ "Claude viết chữ, Gemini vẫn đọc." · "Claude writes the text, Gemini still reads it aloud."
 
 Đến 0.9.1, mọi chữ của đề (chủ đề, kịch bản, câu hỏi, tên file) đều do Gemini

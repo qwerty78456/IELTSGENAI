@@ -138,7 +138,11 @@ marks nothing. A regenerated script still flags the exam recording
 Vec<SpeakerConfig>` (the line-up the script was written for; `#[serde(default)]`,
 empty before 0.8). `generate_passage` returns `parse(..).for_speakers(&request.speakers)`;
 `speakers_changed(&current) -> SpeakerChange` compares with it (all false when
-empty). `Passage::parse` reads "Speaker A: ..." text. `Line.text` keeps any
+empty). `Passage::parse` reads "Speaker A: ..." text, tolerating model output
+(a line without a known label joins the previous turn). `Passage::parse_edited`
+reads the teacher's edited script and is stricter: a line that starts like a
+speaker label the part does not have ("speaker b:", "Speaker C:" in a dialogue
+of two) or a label without its colon is an error naming the line. `Line.text` keeps any
 speech markup (below); `Line::display_text()` and `Line::speech_text(backchannels)`
 are its two readings. The text views:
 

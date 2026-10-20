@@ -1197,3 +1197,118 @@ a.download-button {
 .download-button.danger:hover:not(:disabled) {
     background: #c82333;
 }
+
+/* Script and question editors */
+.modal-content.wide {
+    max-width: 800px;
+    width: 95%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* The questions scroll; the header and Save stay in view. */
+.modal-content.wide .modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+}
+
+.modal-content.wide .modal-header,
+.modal-content.wide .modal-footer {
+    flex-shrink: 0;
+}
+
+.task-item-card {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+.task-item-card h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.95rem;
+    color: #1e293b;
+}
+
+.choice-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+}
+
+.choice-letter {
+    font-weight: 600;
+    width: 2rem;
+    text-align: center;
+}
+
+.choice-letter-input {
+    width: 3rem;
+    flex: 0 0 3rem;
+    text-align: center;
+}
+
+.preview-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.editor-actions {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    margin: 0.5rem 0;
+}
+
+.editor-note {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.editor-short {
+    min-height: 3.5rem;
+}
+
+.editor-long {
+    min-height: 10rem;
+    font-family: inherit;
+}
+
+.script-edit-area {
+    min-height: 280px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.9rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+}
+
+.edit-task-button {
+    padding: 0.35rem 0.75rem;
+    background: #f1f5f9;
+    border: 1px solid #cbd5e1;
+    border-radius: 4px;
+    color: #334155;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.edit-task-button:hover:not(:disabled) {
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: white;
+}
+
+.edit-task-button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}

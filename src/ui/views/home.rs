@@ -30,9 +30,9 @@ use crate::application::passages::generate_passage;
 use crate::application::tasks::generate_task;
 use crate::application::topics::suggest_topic;
 use crate::domain::{
-    AudioRequest, AudioTrack, FormatId, Passage, PassageRequest, SpeakerConfig, Task, TaskRequest,
-    TextProvider, ValidationIssue, VoiceChoice, assign_voices, has_errors, speaker_change,
-    validate_passage,
+    AudioRequest, AudioTrack, FormatId, Line, Passage, PassageRequest, SpeakerConfig, Task,
+    TaskRequest, TextProvider, ValidationIssue, VoiceChoice, assign_voices, has_errors,
+    speaker_change, validate_passage, validate_task,
 };
 use crate::export::naming::test_type;
 use crate::export::{docx, markdown};
@@ -40,7 +40,9 @@ use crate::ui::components::audio_player::AudioPlayerSection;
 use crate::ui::components::auto_download::AutoDownloadToggle;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::loading_popup::LoadingPopup;
+use crate::ui::components::script_editor::{ScriptEdit, ScriptEditor};
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
+use crate::ui::components::task_editor::TaskEditModal;
 use crate::ui::components::text_provider::TextProviderPicker;
 use crate::ui::components::voices::{
     VoiceCatalogueCtx, speaker_warnings, voices_of_others, with_choice,
@@ -79,11 +81,16 @@ pub struct HomeState {
     pub script_error: Option<String>,
     pub passage: Option<Passage>,
     pub passage_issues: Vec<ValidationIssue>,
+    /// The open script editor and what the teacher typed in it. While it is
+    /// open nothing that reads the script runs.
+    pub script_edit: Option<ScriptEdit>,
 
     pub is_generating_tasks: bool,
     pub tasks_error: Option<String>,
     pub tasks: Vec<Task>,
     pub task_issues: Vec<ValidationIssue>,
+    /// The question block whose editor is open.
+    pub editing_task: Option<usize>,
 
     pub is_generating_audio: bool,
     pub audio_error: Option<String>,
@@ -96,6 +103,9 @@ pub struct HomeState {
     /// by `start_part_audio`). The recording is stale while the speakers
     /// sound different from it (`speaker_change(..).recording`).
     pub recorded_for: Vec<SpeakerConfig>,
+    /// The turns the recording read. It is stale once the script's turns
+    /// differ (an edited script).
+    pub recorded_lines: Vec<Line>,
 
     /// How this part's downloads are named (`ui::naming`).
     pub naming: DraftNaming,
@@ -138,15 +148,18 @@ impl HomeState {
             script_error: None,
             passage: None,
             passage_issues: Vec::new(),
+            script_edit: None,
             is_generating_tasks: false,
             tasks_error: None,
             tasks: Vec::new(),
             task_issues: Vec::new(),
+            editing_task: None,
             is_generating_audio: false,
             audio_error: None,
             audio_job_id: None,
             audio: None,
             recorded_for: Vec::new(),
+            recorded_lines: Vec::new(),
             naming: DraftNaming::default(),
         }
     }
@@ -172,16 +185,51 @@ impl HomeState {
         self.script_error = None;
         self.passage = None;
         self.passage_issues.clear();
+        self.script_edit = None;
         self.is_generating_tasks = false;
         self.tasks_error = None;
         self.tasks.clear();
         self.task_issues.clear();
+        self.editing_task = None;
         self.is_generating_audio = false;
         self.audio_error = None;
         self.audio_job_id = None;
         self.audio = None;
         self.recorded_for.clear();
+        self.recorded_lines.clear();
         self.naming.new_draft();
+    }
+
+    /// The questions' issues against the script, after it was edited or a
+    /// block was.
+    fn revalidate_tasks(&mut self) {
+        self.task_issues = self
+            .tasks
+            .iter()
+            .flat_map(|t| validate_task(t, self.passage.as_ref()))
+            .collect();
+    }
+
+    /// A recording exists and the script's turns are no longer the ones it
+    /// read (the script was edited).
+    fn recording_script_stale(&self) -> bool {
+        self.audio.is_some()
+            && !self.recorded_lines.is_empty()
+            && self
+                .passage
+                .as_ref()
+                .is_some_and(|p| p.lines != self.recorded_lines)
+    }
+
+    /// Nothing that reads the script may start: a step runs or the script
+    /// editor is open.
+    fn locked(&self) -> bool {
+        self.is_busy() || self.script_edit.is_some()
+    }
+
+    /// The questions may be edited: nothing is writing them or the script.
+    fn may_edit_tasks(&self) -> bool {
+        !(self.is_generating_topic || self.is_generating_script || self.is_generating_tasks)
     }
 
     /// The script's issues against the current speakers: after a speaker
@@ -305,6 +353,59 @@ fn set_speakers(mut state: Signal<HomeState>, speakers: Vec<SpeakerConfig>) {
     s.custom_speakers = speakers;
     s.editing_speaker_idx = None;
     s.revalidate_passage();
+}
+
+/// Applies the script editor's text (`ScriptEdit::apply`): the edited script
+/// replaces the passage, the script's and the questions' issues follow it,
+/// and the downloads get a new name. A recording that read the old turns is
+/// then out of date (`recording_script_stale`); nothing is flagged.
+fn apply_script_edit(mut state: Signal<HomeState>, speakers: Vec<SpeakerConfig>) {
+    if state.peek().is_busy() {
+        return;
+    }
+    let labels: Vec<String> = speakers.iter().map(|s| s.label.clone()).collect();
+    let outcome = {
+        let s = state.peek();
+        let Some(edit) = s.script_edit.as_ref() else {
+            return;
+        };
+        edit.apply(s.passage.as_ref(), &labels)
+    };
+    let mut s = state.write();
+    match outcome {
+        Ok(None) => s.script_edit = None,
+        Ok(Some(passage)) => {
+            s.passage = Some(passage);
+            s.script_edit = None;
+            s.revalidate_passage();
+            s.revalidate_tasks();
+            if !has_errors(&s.passage_issues) {
+                s.pipeline_note = None;
+            }
+            s.naming.new_draft();
+        }
+        Err(error) => {
+            if let Some(edit) = s.script_edit.as_mut() {
+                edit.error = Some(error);
+            }
+        }
+    }
+}
+
+/// Puts an edited question block in place of block `index`, unless that block
+/// is gone or another meanwhile, or nothing changed.
+fn apply_task_edit(mut state: Signal<HomeState>, index: usize, edited: Task) {
+    let mut s = state.write();
+    s.editing_task = None;
+    let changed = s
+        .tasks
+        .get(index)
+        .is_some_and(|task| task.spec == edited.spec && *task != edited);
+    if changed {
+        s.tasks[index] = edited;
+        s.revalidate_tasks();
+        s.naming.new_draft();
+    }
 }
 
 /// Starts recording the script with the current speakers; `fresh` asks for
@@ -711,13 +812,13 @@ pub fn Home() -> Element {
                                         div { class: "note-actions",
                                             button {
                                                 class: "voice-button",
-                                                disabled: state().is_busy(),
+                                                disabled: state().locked(),
                                                 onclick: handle_rewrite,
                                                 if state().tasks.is_empty() { "Rewrite the script" } else { "Rewrite script and questions" }
                                             }
                                             button {
                                                 class: "voice-button",
-                                                disabled: state().is_busy(),
+                                                disabled: state().locked(),
                                                 onclick: handle_keep_script,
                                                 "Keep this script"
                                             }
@@ -727,20 +828,51 @@ pub fn Home() -> Element {
                             }
 
                             div { class: "script-preview",
-                                h3 { "Script" }
-                                pre { class: "script-content", "{passage.script_text()}" }
+                                div { class: "preview-header",
+                                    h3 { "Script" }
+                                    if state().script_edit.is_none() {
+                                        button {
+                                            class: "edit-task-button",
+                                            disabled: state().is_busy(),
+                                            onclick: move |_| {
+                                                let mut s = state.write();
+                                                if let Some(passage) = s.passage.clone() {
+                                                    s.script_edit = Some(ScriptEdit::open(&passage));
+                                                }
+                                            },
+                                            "Edit script"
+                                        }
+                                    }
+                                }
+                                if let Some(edit) = state().script_edit.clone() {
+                                    ScriptEditor {
+                                        text: edit.text,
+                                        error: edit.error,
+                                        disabled: state().is_busy(),
+                                        oninput: move |text: String| {
+                                            if let Some(edit) = state.write().script_edit.as_mut() {
+                                                edit.text = text;
+                                                edit.error = None;
+                                            }
+                                        },
+                                        onapply: move |_| apply_script_edit(state, speakers()),
+                                        oncancel: move |_| state.write().script_edit = None,
+                                    }
+                                } else {
+                                    pre { class: "script-content", "{passage.script_text()}" }
+                                }
                             }
 
                             div { class: "download-buttons",
                                 button {
                                     class: "download-button primary",
-                                    disabled: state().is_generating_tasks,
+                                    disabled: state().is_generating_tasks || state().script_edit.is_some(),
                                     onclick: handle_generate_tasks,
                                     if state().is_generating_tasks { "Writing questions..." } else { "Generate questions" }
                                 }
                                 button {
                                     class: "download-button secondary",
-                                    disabled: state().is_generating_audio || !catalogue.is_ready(),
+                                    disabled: state().is_generating_audio || !catalogue.is_ready() || state().script_edit.is_some(),
                                     title: if catalogue.is_ready() { "" } else { "Waiting for the list of voices" },
                                     onclick: handle_generate_audio,
                                     if state().is_generating_audio { "Recording..." } else { "Generate audio" }
@@ -748,7 +880,7 @@ pub fn Home() -> Element {
                                 if state().audio.is_some() {
                                     button {
                                         class: "download-button secondary",
-                                        disabled: state().is_generating_audio || !catalogue.is_ready(),
+                                        disabled: state().is_generating_audio || !catalogue.is_ready() || state().script_edit.is_some(),
                                         title: "Reads every chunk again instead of reusing the earlier take, and pays for this part's speech again.",
                                         onclick: handle_new_take,
                                         "New take (skip cache)"
@@ -786,7 +918,20 @@ pub fn Home() -> Element {
                                         rsx! {
                                             IssueList { issues: state().task_issues.clone() }
                                             div { class: "script-preview",
-                                                h3 { "Questions" }
+                                                div { class: "preview-header",
+                                                    h3 { "Questions" }
+                                                    div { class: "editor-actions",
+                                                        for (index, task) in tasks.iter().enumerate() {
+                                                            button {
+                                                                key: "edit-{index}",
+                                                                class: "edit-task-button",
+                                                                disabled: !state().may_edit_tasks(),
+                                                                onclick: move |_| state.write().editing_task = Some(index),
+                                                                "Edit Q{task.spec.range_label()}"
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 pre { class: "script-content", "{paper}" }
                                                 h3 { "Key" }
                                                 pre { class: "script-content", "{key}" }
@@ -831,6 +976,12 @@ pub fn Home() -> Element {
                                     span { "A voice changed after this recording was made; generate the audio again." }
                                 }
                             }
+                            if state().recording_script_stale() {
+                                div { class: "note-box",
+                                    span { class: "note-icon", "!" }
+                                    span { "The script changed after this recording was made; generate the audio again." }
+                                }
+                            }
 
                             if let Some(track) = state().audio.clone() {
                                 AudioPlayerSection {
@@ -851,13 +1002,15 @@ pub fn Home() -> Element {
             div { class: "generate-button-container",
                 button {
                     class: "generate-button",
-                    disabled: state().is_busy(),
+                    disabled: state().locked(),
+                    title: if state().script_edit.is_some() { "Apply or cancel the script edit first" } else { "" },
                     onclick: handle_generate_all,
                     if state().is_busy() { "Working..." } else { "Generate script, questions and audio" }
                 }
                 button {
                     class: "generate-button secondary",
-                    disabled: state().is_busy(),
+                    disabled: state().locked(),
+                    title: if state().script_edit.is_some() { "Apply or cancel the script edit first" } else { "" },
                     onclick: handle_generate_script,
                     "Script only"
                 }
@@ -868,6 +1021,17 @@ pub fn Home() -> Element {
                     message,
                     submessage,
                     oncancel: move |_| state.write().cancel(),
+                }
+            }
+
+            if let Some(index) = state().editing_task {
+                if let Some(task) = state().tasks.get(index).cloned() {
+                    TaskEditModal {
+                        key: "{state().run}-{index}",
+                        task,
+                        onclose: move |_| state.write().editing_task = None,
+                        onsave: move |edited: Task| apply_task_edit(state, index, edited),
+                    }
                 }
             }
         }
@@ -1033,6 +1197,7 @@ async fn run_tasks(
         s.tasks.clear();
         s.task_issues.clear();
         s.tasks_error = None;
+        s.editing_task = None;
         s.is_generating_tasks = true;
     }
     for task_index in 0..task_count {
@@ -1071,6 +1236,7 @@ async fn run_tasks(
 
 /// Starts the recording job and waits for its WAV.
 async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest) {
+    let lines = request.passage.lines.clone();
     {
         let mut s = state.write();
         // A new take gets a new download name; the first recording keeps the
@@ -1104,6 +1270,7 @@ async fn run_audio(mut state: Signal<HomeState>, run: u32, request: AudioRequest
             s.custom_speakers = started.speakers.clone();
         }
         s.recorded_for = started.speakers;
+        s.recorded_lines = lines;
         s.audio_job_id = Some(started.job_id.clone());
     }
     fetch_audio(state, run, started.job_id).await;

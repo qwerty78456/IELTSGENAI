@@ -48,7 +48,7 @@ use crate::application::topics::suggest_topic;
 use crate::application::usage::{UsageTotals, exam_usage, usage_totals};
 use crate::domain::{
     AudioRequest, AudioTrack, Exam, ExamAudioRequest, ExamUsage, FormatId, PassageRequest,
-    SpeakerConfig, TaskRequest, TextProvider, UsageStep, ValidationIssue, VoiceChoice,
+    SpeakerConfig, Task, TaskRequest, TextProvider, UsageStep, ValidationIssue, VoiceChoice,
     assign_exam_voices, assign_voices, has_errors, validate_exam, validate_passage, validate_task,
 };
 use crate::export::naming::test_type;
@@ -60,7 +60,9 @@ use crate::ui::components::exam_library::ExamLibrary;
 use crate::ui::components::issue_list::IssueList;
 use crate::ui::components::key_setup::KeyStatusCtx;
 use crate::ui::components::loading_popup::LoadingPopup;
+use crate::ui::components::script_editor::{ScriptEdit, ScriptEditor};
 use crate::ui::components::speaker_modal::{SpeakerCards, SpeakerEditModal};
+use crate::ui::components::task_editor::TaskEditModal;
 use crate::ui::components::text_provider::TextProviderPicker;
 use crate::ui::components::voices::{
     VoiceCatalogueCtx, speaker_warnings, voices_of_others, voices_summary, with_choice,
@@ -147,6 +149,11 @@ pub struct ExamState {
     pub run: u32,
     /// The speaker whose edit dialog is open: (part index, speaker index).
     pub editing_speaker: Option<(usize, usize)>,
+    /// The open script editor: (part index, what the teacher typed). One at
+    /// a time; while it is open nothing that reads a script runs.
+    pub script_edit: Option<(usize, ScriptEdit)>,
+    /// The question block whose editor is open: (part index, task index).
+    pub editing_task: Option<(usize, usize)>,
     /// New scripts are expressive (`PassageRequest::expressive`): on for a
     /// new exam, as saved for an opened one (off for exams from before 0.8).
     pub expressive: bool,
@@ -193,6 +200,8 @@ impl ExamState {
             totals: None,
             run: 0,
             editing_speaker: None,
+            script_edit: None,
+            editing_task: None,
             expressive: true,
             text_provider: None,
             naming: DraftNaming::default(),
@@ -319,6 +328,8 @@ impl ExamState {
             totals: self.totals,
             run: self.run + 1,
             editing_speaker: None,
+            script_edit: None,
+            editing_task: None,
             expressive,
             text_provider,
             naming: DraftNaming::default(),
@@ -334,6 +345,25 @@ impl ExamState {
             .as_ref()
             .map(|p| validate_passage(p, &part.spec, &part.speakers))
             .unwrap_or_default();
+    }
+
+    /// Part `i`'s question issues against its script: after the script or a
+    /// block was edited.
+    fn revalidate_tasks(&mut self, i: usize) {
+        let part = &self.exam.parts[i];
+        self.work[i].task_issues = part
+            .tasks
+            .iter()
+            .flat_map(|t| validate_task(t, part.passage.as_ref()))
+            .collect();
+    }
+
+    /// The questions may be edited: no topic, script or questions are being
+    /// written (a recording may run).
+    fn may_edit_tasks(&self) -> bool {
+        !self.work.iter().any(|w| {
+            w.topic_step.is_running() || w.script_step.is_running() || w.tasks_step.is_running()
+        })
     }
 
     /// The parts whose speakers sound different from the exam recording
@@ -513,6 +543,9 @@ pub fn ExamView() -> Element {
 
     let current = state();
     let busy = current.is_busy();
+    // What reads a script may not start while its editor is open.
+    let locked = busy || current.script_edit.is_some();
+    let may_edit_tasks = current.may_edit_tasks();
     let part_count = current.exam.parts.len();
     let exam_issues = validate_exam(&current.exam);
     let has_any_script = current.scripts_done() > 0;
@@ -717,13 +750,13 @@ pub fn ExamView() -> Element {
                 div { class: "download-buttons",
                     button {
                         class: "download-button info",
-                        disabled: busy,
+                        disabled: locked,
                         onclick: handle_suggest_all,
                         "Suggest topics for empty parts"
                     }
                     button {
                         class: "download-button secondary",
-                        disabled: busy || !all_scripts || !catalogue.is_ready(),
+                        disabled: locked || !all_scripts || !catalogue.is_ready(),
                         onclick: handle_render_audio,
                         "Render exam audio"
                     }
@@ -788,6 +821,12 @@ pub fn ExamView() -> Element {
                             .as_ref()
                             .is_some_and(|p| p.speakers_changed(&speakers).script);
                         let recording_stale = has_recording && part.recording_stale();
+                        let no_script_edit = current.script_edit.is_none();
+                        let script_edit = current
+                            .script_edit
+                            .as_ref()
+                            .filter(|(part, _)| *part == i)
+                            .map(|(_, edit)| edit.clone());
                         let number = spec.number;
                         let exam_uuid = current.exam.id;
                         rsx! {
@@ -831,7 +870,7 @@ pub fn ExamView() -> Element {
                                 div { class: "download-buttons",
                                     button {
                                         class: "download-button info",
-                                        disabled: busy,
+                                        disabled: locked,
                                         onclick: move |_| {
                                             let run = state.peek().run;
                                             spawn_forever(suggest_part_topic(state, run, i));
@@ -840,14 +879,14 @@ pub fn ExamView() -> Element {
                                     }
                                     button {
                                         class: "download-button primary",
-                                        disabled: busy,
+                                        disabled: locked,
                                         onclick: move |_| rewrite_part(state, i),
                                         if has_passage { "Regenerate script + questions" } else { "Generate script + questions" }
                                     }
                                     if has_passage {
                                         button {
                                             class: "download-button secondary",
-                                            disabled: busy,
+                                            disabled: locked,
                                             onclick: move |_| {
                                                 let run = state.peek().run;
                                                 spawn_forever(run_part_tasks(state, run, i));
@@ -858,7 +897,7 @@ pub fn ExamView() -> Element {
                                     if has_recording {
                                         button {
                                             class: "download-button info",
-                                            disabled: busy || !all_scripts || !catalogue.is_ready(),
+                                            disabled: locked || !all_scripts || !catalogue.is_ready(),
                                             title: "Renders the exam recording again, reading this part afresh instead of reusing its earlier take. Pays for this part's speech again; the other parts and the announcements are reused.",
                                             onclick: move |_| render_exam_audio(state, Some(number)),
                                             "New take of this part"
@@ -873,13 +912,13 @@ pub fn ExamView() -> Element {
                                             div { class: "note-actions",
                                                 button {
                                                     class: "voice-button",
-                                                    disabled: busy,
+                                                    disabled: locked,
                                                     onclick: move |_| rewrite_part(state, i),
                                                     "Rewrite script and questions"
                                                 }
                                                 button {
                                                     class: "voice-button",
-                                                    disabled: busy,
+                                                    disabled: locked,
                                                     onclick: move |_| keep_part_script(state, i),
                                                     "Keep this script"
                                                 }
@@ -900,12 +939,54 @@ pub fn ExamView() -> Element {
                                 if let Some(passage) = passage.clone() {
                                     details { class: "preview",
                                         summary { "Script: {passage.word_count()} words, about {passage.estimated_minutes():.1} min" }
-                                        pre { class: "script-content", "{passage.script_text()}" }
+                                        if no_script_edit {
+                                            div { class: "editor-actions",
+                                                button {
+                                                    class: "edit-task-button",
+                                                    disabled: busy,
+                                                    onclick: move |_| {
+                                                        let mut s = state.write();
+                                                        if let Some(passage) = s.exam.parts[i].passage.clone() {
+                                                            s.script_edit = Some((i, ScriptEdit::open(&passage)));
+                                                        }
+                                                    },
+                                                    "Edit script"
+                                                }
+                                            }
+                                        }
+                                        if let Some(edit) = script_edit.clone() {
+                                            ScriptEditor {
+                                                text: edit.text,
+                                                error: edit.error,
+                                                disabled: busy,
+                                                oninput: move |text: String| {
+                                                    if let Some((_, edit)) = state.write().script_edit.as_mut() {
+                                                        edit.text = text;
+                                                        edit.error = None;
+                                                    }
+                                                },
+                                                onapply: move |_| apply_part_script_edit(state, i),
+                                                oncancel: move |_| state.write().script_edit = None,
+                                            }
+                                        } else {
+                                            pre { class: "script-content", "{passage.script_text()}" }
+                                        }
                                     }
                                 }
                                 if !tasks.is_empty() {
                                     details { class: "preview",
                                         summary { "Questions and key ({tasks.len()} of {spec.tasks.len()} blocks)" }
+                                        div { class: "editor-actions",
+                                            for (t, task) in tasks.iter().enumerate() {
+                                                button {
+                                                    key: "edit-{i}-{t}",
+                                                    class: "edit-task-button",
+                                                    disabled: !may_edit_tasks,
+                                                    onclick: move |_| state.write().editing_task = Some((i, t)),
+                                                    "Edit Q{task.spec.range_label()}"
+                                                }
+                                            }
+                                        }
                                         pre { class: "script-content", "{paper}" }
                                         pre { class: "script-content", "{key}" }
                                     }
@@ -990,7 +1071,7 @@ pub fn ExamView() -> Element {
             div { class: "generate-button-container",
                 button {
                     class: "generate-button",
-                    disabled: busy,
+                    disabled: locked,
                     onclick: handle_generate_exam,
                     if busy { "Working..." } else { "Generate the whole exam" }
                 }
@@ -1029,6 +1110,17 @@ pub fn ExamView() -> Element {
                     message,
                     submessage,
                     oncancel: move |_| { state.write().cancel(); note_edit(state); },
+                }
+            }
+
+            if let Some((i, t)) = current.editing_task {
+                if let Some(task) = current.exam.parts.get(i).and_then(|p| p.tasks.get(t)).cloned() {
+                    TaskEditModal {
+                        key: "{current.run}-{i}-{t}",
+                        task,
+                        onclose: move |_| state.write().editing_task = None,
+                        onsave: move |edited: Task| apply_part_task_edit(state, i, t, edited),
+                    }
                 }
             }
         }
@@ -1589,6 +1681,86 @@ fn keep_part_script(mut state: Signal<ExamState>, i: usize) {
     note_edit(state);
 }
 
+/// Applies part `i`'s script editor (`ScriptEdit::apply`): the edited script
+/// replaces the passage, the part's script and question issues follow it,
+/// an existing exam recording is out of date (as after a regenerated
+/// script), the downloads get a new name, and the exam is saved.
+fn apply_part_script_edit(mut state: Signal<ExamState>, i: usize) {
+    if state.peek().is_busy() {
+        return;
+    }
+    let outcome = {
+        let s = state.peek();
+        let Some((part, edit)) = s.script_edit.as_ref() else {
+            return;
+        };
+        if *part != i {
+            return;
+        }
+        let labels: Vec<String> = s.exam.parts[i]
+            .speakers
+            .iter()
+            .map(|speaker| speaker.label.clone())
+            .collect();
+        edit.apply(s.exam.parts[i].passage.as_ref(), &labels)
+    };
+    let changed = {
+        let mut s = state.write();
+        match outcome {
+            Ok(None) => {
+                s.script_edit = None;
+                false
+            }
+            Ok(Some(passage)) => {
+                s.exam.parts[i].passage = Some(passage);
+                s.script_edit = None;
+                s.revalidate_passage(i);
+                s.revalidate_tasks(i);
+                if s.audio.track.is_some() || s.audio.job_id.is_some() {
+                    s.audio.stale = true;
+                }
+                s.naming.new_draft();
+                true
+            }
+            Err(error) => {
+                if let Some((_, edit)) = s.script_edit.as_mut() {
+                    edit.error = Some(error);
+                }
+                false
+            }
+        }
+    };
+    if changed {
+        note_edit(state);
+    }
+}
+
+/// Puts an edited question block in place of block `t` of part `i`, unless
+/// that block is gone or another meanwhile, or nothing changed; then the
+/// part's question issues follow, the downloads get a new name and the exam
+/// is saved.
+fn apply_part_task_edit(mut state: Signal<ExamState>, i: usize, t: usize, edited: Task) {
+    let changed = {
+        let mut s = state.write();
+        s.editing_task = None;
+        let changed = s
+            .exam
+            .parts
+            .get(i)
+            .and_then(|part| part.tasks.get(t))
+            .is_some_and(|task| task.spec == edited.spec && *task != edited);
+        if changed {
+            s.exam.parts[i].tasks[t] = edited;
+            s.revalidate_tasks(i);
+            s.naming.new_draft();
+        }
+        changed
+    };
+    if changed {
+        note_edit(state);
+    }
+}
+
 /// The one place a teacher's speaker edit lands on the exam page (the edit
 /// dialog, "Another voice", "Automatic"). The part's speakers get voices
 /// again, preferring voices no other part uses; the passage issues follow
@@ -1694,6 +1866,12 @@ async fn run_part_script(mut state: Signal<ExamState>, run: u32, i: usize) -> bo
         s.work[i].passage_issues.clear();
         s.work[i].tasks_step = Step::Idle;
         s.work[i].task_issues.clear();
+        if s.script_edit.as_ref().is_some_and(|(part, _)| *part == i) {
+            s.script_edit = None;
+        }
+        if s.editing_task.is_some_and(|(part, _)| part == i) {
+            s.editing_task = None;
+        }
         if s.audio.track.is_some() {
             s.audio.stale = true;
         }
@@ -1769,6 +1947,9 @@ async fn run_part_tasks(mut state: Signal<ExamState>, run: u32, i: usize) {
         s.exam.parts[i].tasks.clear();
         s.work[i].task_issues.clear();
         s.work[i].tasks_step = Step::Running;
+        if s.editing_task.is_some_and(|(part, _)| part == i) {
+            s.editing_task = None;
+        }
     }
     stage_current(state, false);
     for task_index in 0..task_count {

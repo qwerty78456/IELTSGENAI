@@ -132,11 +132,21 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   it in the browser with the domain's `assign_voices` / `assign_exam_voices`, writing the state
   only when a voice changed; "Another voice" is `domain::next_voice`. Components keep only
   form-local signals (the speaker dialog's fields, a voice picker's sample, the dialog's
-  `DesignedVoicesPanel` list and form, loaded when opened; on both pages). On the exam page
+  `DesignedVoicesPanel` list and form, loaded when opened; the question editor's `TaskDraft`,
+  `ui/components/task_editor.rs`, with the fields its `TaskKind` prints, turned into a `Task`
+  only on Save and never refusing to save; on both pages). The script editor's text lives in
+  the page state instead (`HomeState.script_edit`, `ExamState.script_edit`: a `ScriptEdit`,
+  `ui/components/script_editor.rs`), so it survives a visit to the other page; Apply reads it
+  with `Passage::parse_edited` (an unknown or misspelt speaker label is refused, not joined to
+  the previous turn) and is refused when the script was replaced meanwhile, and while it is
+  open nothing that reads the script runs. After either edit the page revalidates the script
+  and the questions and calls `new_draft()` (the exam page then `note_edit`). On the exam page
   every speaker edit goes through `set_part_speakers` (reassign, revalidate, `note_edit`).
   Out-of-date scripts and recordings are derived (`Passage::written_for`,
-  `ExamPart::recorded_for`, `HomeState.recorded_for`), never flagged on edit, so opening an
-  old exam or assigning voices marks nothing. Both views only display
+  `ExamPart::recorded_for`, `HomeState.recorded_for` and `HomeState.recorded_lines`), never
+  flagged on edit, so opening an old exam or assigning voices marks nothing; the one flag is the
+  exam recording's `AudioWork.stale`, set when a part's script is regenerated or edited while a
+  recording exists. Both views only display
   issues; rule checks belong to the domain. Browser-side orchestration
   (script first, then questions and recording side by side, `futures_util::future::join`) lives
   in the views and chains the application's server functions; a `run` counter drops late results

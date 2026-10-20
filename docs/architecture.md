@@ -184,7 +184,10 @@ src/
                           KeyStatusCtx, loading popup, speaker modal: SpeakerCards + SpeakerEditModal, text provider:
                           TextProviderPicker with the KeyBox it may show beside the choice, voices:
                           VoiceCatalogueCtx, VoicePicker and the dialog's DesignedVoicesPanel, auto download:
-                          AutoDownloadToggle), views (home, exam, navbar: provides both pages' states,
+                          AutoDownloadToggle, script editor: ScriptEdit (the passage it started from and
+                          the typed text, kept in the page state) and ScriptEditor, task editor: TaskDraft
+                          and TaskEditModal, the fields a TaskKind prints), views (home, exam, navbar:
+                          provides both pages' states,
                           Signal<HomeState> and Signal<ExamState>, the Signal<SaveQueue>, VoiceCatalogueCtx
                           (the voice catalogue, loaded once) and KeyStatusCtx; highlights the link of the
                           page shown, which Dioxus marks aria-current="page")
@@ -316,7 +319,11 @@ options; multiple selection must have exactly the required distinct letters;
 summary and note tasks need their text with each gap once; numbering must
 match the spec. Anything a task carries that the paper does not print gets a
 warning (`docs/domain_model.md`, Validation). Failures are returned as **issues** beside the draft, never hidden.
-The teacher edits; nothing is "final" until they say so.
+The teacher edits; nothing is "final" until they say so. Both pages edit a
+part's script ("Edit script": `Passage::parse_edited` refuses a speaker label
+the part does not have, and the text is applied only to the script it started
+from) and each question block ("Edit Q.."), then show the issues of the edited
+draft; a recording that read the old script is shown as out of date.
 
 ## Claude text
 

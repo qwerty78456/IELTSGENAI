@@ -12,7 +12,9 @@ Generation uses Google Gemini for text and speech. Anthropic Claude can write
 the text instead (topics, scripts, questions and download-name summaries:
 `TEXT_PROVIDER`, or a choice on each page); speech is always Gemini. Every
 generated key is checked against the script by a validator; problems are shown
-next to the draft. The teacher edits; nothing is final until they say so.
+next to the draft. The teacher edits: a part's script ("Edit script") and each
+question block, key included ("Edit Q.."), on both pages; nothing is final
+until they say so.
 
 Read `docs/architecture.md` first. `docs/domain_model.md` and
 `docs/ubiquitous_language.md` define the types and words used everywhere.

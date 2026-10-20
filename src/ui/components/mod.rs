@@ -4,6 +4,8 @@ pub mod exam_library;
 pub mod issue_list;
 pub mod key_setup;
 pub mod loading_popup;
+pub mod script_editor;
 pub mod speaker_modal;
+pub mod task_editor;
 pub mod text_provider;
 pub mod voices;

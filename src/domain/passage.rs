@@ -103,6 +103,30 @@ impl Passage {
         })
     }
 
+    /// Parses a script the teacher edited, one "Speaker A: ..." turn per line
+    /// as `script_text` shows it. Stricter than `parse`, which tolerates model
+    /// output: a line that starts like a speaker label but names no speaker
+    /// of this part ("speaker b:", "Speaker C:" in a dialogue of two), or a
+    /// label without its colon, is refused with its line number instead of
+    /// being joined to the previous turn and read aloud.
+    pub fn parse_edited(
+        part: u8,
+        topic: impl Into<String>,
+        text: &str,
+        labels: &[String],
+    ) -> Result<Self, DomainError> {
+        for (index, raw) in text.lines().enumerate() {
+            let line = raw.trim().trim_start_matches(['*', '-', '#', '>', ' ']);
+            if let Some(problem) = edited_label_problem(line, labels) {
+                return Err(DomainError::InvalidPassage(format!(
+                    "Line {}: {problem}",
+                    index + 1
+                )));
+            }
+        }
+        Self::parse(part, topic, text, labels)
+    }
+
     /// This passage, noted as written for `speakers` ("Written for"). Set
     /// when a script is generated, and again when the teacher keeps a script
     /// after editing its speakers.
@@ -206,6 +230,53 @@ impl Passage {
         }
         None
     }
+}
+
+/// What is wrong with the label of one edited line, if anything
+/// (`Passage::parse_edited`).
+fn edited_label_problem(line: &str, labels: &[String]) -> Option<String> {
+    // "Speaker A or Speaker B", "Speaker A, Speaker B or Speaker C".
+    let speakers = match labels.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    if let Some((head, _)) = line.split_once(':') {
+        let head = head.trim_matches(['*', ' ']);
+        if labels.iter().any(|label| label == head) {
+            return None;
+        }
+        if looks_like_label(head) {
+            return Some(format!(
+                "\"{head}:\" is not a speaker of this part; start each turn with {speakers}:"
+            ));
+        }
+    }
+    for label in labels {
+        let Some(rest) = line.strip_prefix(label.as_str()) else {
+            continue;
+        };
+        // "Speaker AB" is not "Speaker A".
+        if rest.chars().next().is_some_and(char::is_alphanumeric) {
+            continue;
+        }
+        if !rest.trim_start_matches(['*', ' ']).starts_with(':') {
+            return Some(format!("put a colon after \"{label}\""));
+        }
+    }
+    None
+}
+
+/// "Speaker B", "speaker b", "SpeakerC", "Speaker 2": a speaker label in any spelling.
+fn looks_like_label(head: &str) -> bool {
+    let compact: String = head
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase();
+    compact.strip_prefix("speaker").is_some_and(|rest| {
+        (1..=3).contains(&rest.chars().count()) && rest.chars().all(|c| c.is_ascii_alphanumeric())
+    })
 }
 
 /// Size limits of one script (`Passage::size_problem`).
@@ -325,5 +396,73 @@ mod tests {
         // Nothing to compare with: never out of date.
         assert_eq!(passage.speakers_changed(&edited), SpeakerChange::default());
         assert_eq!(passage.speakers_changed(&[]), SpeakerChange::default());
+    }
+
+    fn edit_error(text: &str) -> String {
+        Passage::parse_edited(1, "topic", text, &labels())
+            .unwrap_err()
+            .to_string()
+    }
+
+    #[test]
+    fn edited_text_with_an_unknown_label_is_refused() {
+        let error = edit_error("Speaker A: Hi.\nspeaker b: Yes, that's right.");
+        assert!(error.contains("Line 2"), "{error}");
+        assert!(error.contains("\"speaker b:\" is not a speaker"), "{error}");
+        assert!(error.contains("Speaker A or Speaker B:"), "{error}");
+        let error = edit_error("Speaker A: Hi.\nSpeaker B: Hello.\n**Speaker C:** And me.");
+        assert!(error.starts_with("Line 3: \"Speaker C:\""), "{error}");
+        let three = ["Speaker A", "Speaker B", "Speaker C"].map(String::from);
+        let error = Passage::parse_edited(1, "t", "Speaker A: Hi.\nSpeaker D: Me.", &three)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.ends_with("start each turn with Speaker A, Speaker B or Speaker C:"),
+            "{error}"
+        );
+        // `parse` would have joined it to the previous turn.
+        let lenient = Passage::parse(1, "t", "Speaker A: Hi.\nSpeaker C: Me.", &labels()).unwrap();
+        assert_eq!(lenient.lines.len(), 1);
+    }
+
+    #[test]
+    fn edited_text_needs_the_colon_after_a_label() {
+        let error = edit_error("Speaker A: Hi.\nSpeaker B Yes.");
+        assert_eq!(error, "Line 2: put a colon after \"Speaker B\"");
+        assert!(edit_error("Speaker A").contains("put a colon"));
+    }
+
+    #[test]
+    fn edited_continuation_lines_like_times_are_kept() {
+        let passage = Passage::parse_edited(
+            1,
+            "tour",
+            "Speaker A: The tour starts at\nTime: ten sharp.\nSpeaker B: Great.",
+            &labels(),
+        )
+        .unwrap();
+        assert_eq!(passage.lines.len(), 2);
+        assert_eq!(passage.lines[0].text, "The tour starts at Time: ten sharp.");
+    }
+
+    #[test]
+    fn empty_edited_text_is_refused() {
+        for empty in ["", "   \n  "] {
+            assert_eq!(edit_error(empty), "The script is empty");
+        }
+    }
+
+    #[test]
+    fn edited_text_parses_like_generated_text() {
+        let generated = Passage::parse(
+            1,
+            "topic",
+            "Speaker A: Hello <sigh> there.\nSpeaker B: Hi |mhm| yes.",
+            &labels(),
+        )
+        .unwrap();
+        let edited =
+            Passage::parse_edited(1, "topic", &generated.script_text(), &labels()).unwrap();
+        assert_eq!(edited, generated);
     }
 }

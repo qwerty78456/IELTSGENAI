@@ -8,7 +8,7 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Format** (`ExamFormat`) | The blueprint of an exam: parts, playback rules, task plan, timing. IELTS Listening and HSG Quốc gia are formats. | "template", "mode" |
 | **Part** (`PartSpec`) | One recording and its tasks. Numbered 1–4 in both shipped formats. | "section" (IELTS legacy wording; do not use in code) |
 | **Passage** | The script of one part: ordered lines attributed to speaker labels. | "script" is acceptable in the UI; the type is `Passage` |
-| **Passage kind** (`PassageKind`) | Conversation, Interview (host + guests), Monologue, Excerpt ("part of a talk"). | |
+| **Passage kind** (`PassageKind`) | Conversation, Interview (host + guests), Monologue, Excerpt ("part of a talk"). The paper and the announcer use its `description()` ("Listen to an interview once"), the app and prompts its `label()`. | |
 | **Playback** (`PlayCount`) | Once or Twice. Decides replays in the audio programme. | |
 | **Speaker** (`SpeakerConfig`) | A person heard in the passage: label + gender + accent + role + voice choice. The label is "Speaker A", never a character name. | "voice" (that is the `Voice`) |
 | **Voice** (`Voice`) | The TTS voice a speaker is read with, identified by its id. Two speakers of a part never share one. | "speaker", "actor" |
@@ -28,7 +28,7 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Item** | One numbered question with its key and evidence. | "question" is fine in UI text; the type is `Item` |
 | **Key** (`Answer`) | The accepted answer(s) of an item. | "solution" |
 | **Evidence** | Verbatim words from the passage that justify the key. | |
-| **Word limit** (`WordLimit`) | "NO MORE THAN n WORDS AND/OR A NUMBER". | |
+| **Word limit** (`WordLimit`) | "NO MORE THAN n WORDS AND/OR A NUMBER". With "AND/OR A NUMBER" one number ("15", "3.5 million", "one hundred and twenty") comes free beside the words; without it a token written in digits is not allowed. | |
 | **Exam** | The aggregate: a format filled in with parts, passages, tasks and audio. | "test" in code (fine in prose) |
 | **Answer key** | Every item's key in paper order, derived from the exam. | |
 | **Audio programme** (`AudioProgram`) | The ordered plan of the full recording: music, tone, announcement, pause, passage, replay, checking time. | |
@@ -45,9 +45,9 @@ prompts, docs and conversation. Type names in `src/domain/` match them.
 | **Usage** (`Usage`, `ExamUsage`) | What the AI services (Gemini, Claude) billed for a step: requests, reused chunks, input / cached / output / thinking tokens, and their USD price at the time. An exam's usage adds up every run, failed and superseded ones included. Shown as "AI spend". | "billing" (out of scope), "credits" |
 | **Budget** | The amount one exam should stay under (`EXAM_BUDGET_USD`). Passing it warns; it never blocks. | "quota", "limit" |
 | **Teacher** | The person we serve. | "user" |
-| **Local request** (`ingress::Origin::Local`) | A request from a browser on the server's own computer: the server is bound to a loopback address, the request arrived on `PORT`, carries no forwarding header, names this computer in `Host` (and `Origin`, if sent) and is not cross-site. Only a local request may enter an API key in the browser, delete a designed voice or use `/instance`. | "admin", "localhost request" |
-| **Published request** (`ingress::Origin::Published`) | A request that arrived on `PUBLIC_PORT`, the port Cloudflare Tunnel delivers internet users to (behind Cloudflare Access), to a server bound to a loopback address, naming one of the `PUBLIC_HOST` hostnames in `Host` (and `Origin`, if sent), and not cross-site. Never "this computer"; it may design voices. | "tunnel user" is fine in prose |
-| **Remote request** (`ingress::Origin::Remote`) | Any other request: another computer, a proxy on the main port, a page of another site, a request on `PUBLIC_PORT` for a host that is not a `PUBLIC_HOST` (DNS rebinding), or any request to a server bound to a non-loopback address. It may generate and record, but not change the key or the designed voices. | "external" |
+| **Local request** (`ingress::Origin::Local`) | A request from a browser on the server's own computer: the server is bound to a loopback address, the request arrived on `PORT`, carries no forwarding header, names this computer in `Host` (and `Origin`, if sent) and is not made by a page of another site (`Sec-Fetch-Site` neither `cross-site` nor `same-site`). Only a local request may enter an API key in the browser, delete a designed voice or use `/instance`. | "admin", "localhost request" |
+| **Published request** (`ingress::Origin::Published`) | A request that arrived on `PUBLIC_PORT`, the port Cloudflare Tunnel delivers internet users to (behind Cloudflare Access), to a server bound to a loopback address, naming one of the `PUBLIC_HOST` hostnames in `Host` (and `Origin`, if sent), and not made by a page of another site. Never "this computer"; it may design voices. | "tunnel user" is fine in prose |
+| **Remote request** (`ingress::Origin::Remote`) | Any other request: another computer, a proxy on the main port, a page of another site, a request on `PUBLIC_PORT` for a host that is not a `PUBLIC_HOST` (DNS rebinding), or any request to a server bound to a non-loopback address. Server functions refuse a page of another site on every bind and, on a loopback bind, every Remote request (`ingress::require_app_access`; a link to a recording still plays); on a network bind the others may generate and record, but not change the key or the designed voices. | "external" |
 
 ## Format-specific vocabulary
 

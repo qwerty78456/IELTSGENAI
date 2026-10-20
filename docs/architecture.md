@@ -51,16 +51,19 @@ are unit-tested with plain `cargo test`.
 src/
   main.rs                 wiring only: routes; server build calls infrastructure::startup::run(App)
   domain/                 pure; compiles on wasm and server
-    format.rs             ExamFormat, PartSpec, TaskSpec, TaskKind, WordLimit, PlayCount, PassageKind
+    format.rs             ExamFormat (+ candidate_fields), PartSpec, TaskSpec, TaskKind, WordLimit, PlayCount,
+                          PassageKind (label for the app, description for the paper and the announcer)
                           + presets ExamFormat::ielts_listening(), ::hsg_national()
     speaker.rs            SpeakerConfig (label, gender, accent, role, voice: VoiceChoice), Accent (nine, language_code),
                           SpeakerRole::delivery_style; describe() never names the voice, describe_with_voice() for keys
     voice.rs              Voice, VoiceSource (Library | Designed), VoiceChoice; assign_voices, assign_exam_voices,
                           next_voice, voice_conflicts, speaker_change; VoiceDesignRequest (+ validate)
     passage.rs            Passage / Line, parser for "Speaker A: ..." text, script/transcript views, duration estimate;
-                          written_for + speakers_changed (stale scripts)
+                          written_for + speakers_changed (stale scripts); size_problem (200 turns, 3,000 words,
+                          30,000 characters)
     speech.rs             speech markup: SPEECH_TAGS, EXAM_SPEECH_TAGS, display/speech text, markup problems
-    task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty
+    task.rs               Task, Item, Choice, Answer (letters | text | tfng); null lists read as empty;
+                          printed_summary, prints_stems, printed_shared_options (what the paper prints)
     usage.rs              Usage (tokens + µUSD), UsageStep (+ Voices, Naming; always_listed), ExamUsage (per step, budget)
     provider.rs           TextProvider { Gemini, Anthropic }: who writes the text; key (TEXT_PROVIDER value, serde
                           name), label, company, key_env, key_name, resolve(choice, default) (never the other one)
@@ -68,7 +71,9 @@ src/
     audio.rs              AudioTrack, AudioProgram (tones, pauses, replays derived from the format)
     validation.rs         invariants -> Vec<ValidationIssue>; grounding of keys in the passage; validate_exam (structural completeness)
     commands.rs           PassageRequest (+ expressive), TaskRequest, AudioRequest (+ fresh), ExamAudioRequest
-                          (self-validating; recordings refuse Auto, shared or wrong-gender voices)
+                          (self-validating; recordings refuse Auto, shared or wrong-gender voices; questions and
+                          recordings refuse oversized scripts; each part once in an exam recording);
+                          MIN/MAX_TOPIC_CHARS, MAX_THEME_CHARS
     error.rs              DomainError (teacher-readable)
   application/            #[server] functions = use cases; DTOs shared with the browser
     topics.rs             suggest_topic                       (every use case that calls a model takes `exam:
@@ -104,8 +109,10 @@ src/
                           and the console says so)
     console.rs            interactive (pure), real-console checks, in_session_zero (Windows), ask_yes_no ([y/N]),
                           ask_secret (masked with *; Ctrl+C ends the program with the console restored)
-    ingress.rs            Origin { Local, Published, Remote }: classify (pure), of_parts (plain routes), current
-                          (server functions); PublishedListener; FORWARDING_HEADERS
+    ingress.rs            Origin { Local, Published, Remote }, Refusal: classify, app_access, stream_access,
+                          refusal_message (pure); require_app_access (first statement of every server function),
+                          may_stream (/audio, /voice-sample), of_parts (/instance); PublishedListener;
+                          FORWARDING_HEADERS
     listeners.rs          bind (main, PUBLIC_PORT) with typed BindError, browser_url, one router on both listeners,
                           process-wide shutdown (Ctrl+C, Ctrl+Break, SIGTERM, POST /instance/stop), 5 s drain
     instance/             APP_ID, RunKind (console, service, dev), InstanceInfo; GET /instance, POST /instance/stop
@@ -161,19 +168,28 @@ src/
     jobs/worker.rs        spawn_part_audio, spawn_exam_audio (usage recorded on success and failure),
                           hourly clean-up (AUDIO_RETENTION_HOURS, SPEECH_CACHE_HOURS, voice samples after 30 days)
     jobs/serve.rs         serve_audio, serve_voice_sample: plain axum handlers streaming a WAV (audio/wav, Range;
-                          Cache-Control: private, no-cache on every answer)
+                          Cache-Control: private, no-cache on every answer; 403 with the reason when
+                          ingress::may_stream refuses)
     rate_limiter.rs       per-minute buckets (Bucket::ALL; VoiceSample 30, VoiceDesign 5, VoiceDelete 5, Naming 30;
                           one KeyEntry for both keys)
-  export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam
-  export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes, candidate block, key and transcripts on their own pages)
+  export/markdown.rs      render_part_paper, render_key, render_transcript, render_exam (what a task prints comes from
+                          Task::printed_summary, prints_stems, printed_shared_options, shared with docx.rs)
+  export/docx.rs          render_exam_docx, render_part_docx (docx-rs; answer boxes under "Your answers", the
+                          format's candidate block when it has fields (paper_candidate_fields: HSG yes, IELTS
+                          no), key and transcripts on their own pages); Markdown draws no boxes and prints no
+                          "Your answers"
   export/naming.rs        download names: LocalStamp, slug_words (Vietnamese folded to ASCII), test_type, summary_slug,
                           fallback_summary, file_stem, file_name
   ui/                     components (audio player, exam library, issue list, key setup: KeySetup, KeyBox and
                           KeyStatusCtx, loading popup, speaker modal: SpeakerCards + SpeakerEditModal, text provider:
                           TextProviderPicker with the KeyBox it may show beside the choice, voices:
                           VoiceCatalogueCtx, VoicePicker and the dialog's DesignedVoicesPanel, auto download:
-                          AutoDownloadToggle), views (home, exam, navbar: loads the voice catalogue once and
-                          provides KeyStatusCtx)
+                          AutoDownloadToggle), views (home, exam, navbar: provides both pages' states,
+                          Signal<HomeState> and Signal<ExamState>, the Signal<SaveQueue>, VoiceCatalogueCtx
+                          (the voice catalogue, loaded once) and KeyStatusCtx; highlights the link of the
+                          page shown, which Dioxus marks aria-current="page")
+    save_queue.rs         SaveQueue: the session's exam drafts and their save state (see docs/save-safety.md);
+                          discard drops a draft unless it is being sent or deleted
     jobs.rs               wait_for_job: polls audio_job_status with a per-kind cadence and deadline
     clock.rs              local-time formatting and now_stamp (js-sys Date in the browser, UTC fallback on the server)
     naming.rs             DraftNaming (summary per topics, frozen stem, draft token), prefetch (the page's text
@@ -252,7 +268,9 @@ issues, `start_part_audio` and the `generate_task` loop side by side
 (`futures_util::future::join`), with `ui/jobs.rs` polling the job. Questions
 and synthesis both read the same immutable `Passage`, so nothing on the
 server is shared between them; the recording is the long pole and the
-questions finish while it renders.
+questions finish while it renders. The `HomeState` lives in the `Navbar`
+layout's context and its steps run as `spawn_forever` tasks, so a visit to
+the exam page keeps the part and its running steps.
 
 For the whole exam, `ui/views/exam.rs` runs every part's `generate_passage`
 at once (`join_all`), then every part's `generate_task` loop at once beside
@@ -292,9 +310,12 @@ once to allow a site several automatic downloads.
 
 Validation is the product's quality gate. Text keys must occur verbatim in
 the passage (after normalisation), respect the word limit and the
-number rule; letter keys must exist among the options; multiple selection
-must have exactly the required distinct letters; numbering must match the
-spec. Failures are returned as **issues** beside the draft, never hidden.
+number rule (with "AND/OR A NUMBER" one number is free beside the words;
+without it a token in digits is refused); letter keys must exist among the
+options; multiple selection must have exactly the required distinct letters;
+summary and note tasks need their text with each gap once; numbering must
+match the spec. Anything a task carries that the paper does not print gets a
+warning (`docs/domain_model.md`, Validation). Failures are returned as **issues** beside the draft, never hidden.
 The teacher edits; nothing is "final" until they say so.
 
 ## Claude text
@@ -617,7 +638,7 @@ itself is streamed by a plain axum route, `GET /audio/{job_id}`
 seek and the download link needs no blob. It is deliberately not a server
 function: those redirect requests that accept `text/html`, which is exactly
 what a download link sends. Every answer of `/audio/{job_id}` and
-`/voice-sample/{voice_id}`, 404s and errors included, carries
+`/voice-sample/{voice_id}`, 404s, 403s (see "Request origin") and errors included, carries
 `Cache-Control: private, no-cache`: `private` keeps recordings out of shared
 caches (Cloudflare), `no-cache` still lets the browser revalidate a large WAV
 cheaply (304). An exam job reads two parts at a time and
@@ -670,14 +691,22 @@ single-flight with one queued follow-up, and the snapshot is taken when the
 save is requested, so what is stored is what the teacher saw. Opening a
 saved exam replaces the state the way switching formats does (new `run`),
 recomputes issues with the pure validators instead of storing them, and
-resumes polling a recording job that is still running. Deleting the open
-exam starts a fresh one, or the next auto-save would bring the row back.
-Two tabs editing the same exam: last write wins.
+resumes polling a recording job that is still running; opening the exam
+that is already open changes nothing but still cancels an older request to
+open another. Deleting the open exam starts a fresh one, or the next
+auto-save would bring the row back. Saving has no rate limit. Saves carry
+the revision they read, so two tabs editing the same exam get a conflict
+rather than overwriting each other; `docs/save-safety.md` describes
+conflicts, deletion tombstones and discarding a draft from the session panel
+(`SaveStatusPanel`).
 
 ## Deployment shape
 
 `dx build --release` produces a server binary and a `public/` folder; the
-Dockerfile packages both on `debian:bookworm-slim`. Configuration is
+Dockerfile builds them with `dx build --release --web --cargo-args=--locked`,
+packages both on `debian:bookworm-slim` and starts `./server
+--non-interactive`, and `.dockerignore` keeps `.env` files, `data/`, every
+`target/` and `__pycache__/` out of the build context. Configuration is
 environment only (`.env.example`); `AUDIO_RETENTION_HOURS` decides how long
 recordings no saved exam refers to are kept. The same server also ships as
 a portable Windows EXE and Linux AppImage (`--portable`: `.env`,
@@ -701,13 +730,17 @@ Access decides who reaches it. Requests on `PUBLIC_PORT` whose `Host` (and
 `Origin`, if any) is a `PUBLIC_HOST` are Published, so internet users can
 design voices but never enter a key or delete voices; any other request on
 that port (a page whose name was rebound to 127.0.0.1, a tunnel that rewrites
-`Host`) is Remote. Any reverse proxy other than the tunnel must also target
-`PUBLIC_PORT`: on the main port a proxy is recognised only by the
-forwarding headers it adds. A server bound to anything but a loopback
-address (Docker, a LAN bind) treats every request as Remote, so it never
-accepts an API key from the browser and designs or deletes no voices; its
-`PUBLIC_PORT` is reachable without Access and is treated the same way (a
-startup notice says so).
+`Host`, the port opened directly) is Remote and refused. Any reverse proxy
+other than the tunnel must also target `PUBLIC_PORT`: on the main port a
+proxy is recognised only by the forwarding headers it adds (or a `Host` that
+does not name this computer), and its requests are refused. A server bound
+to anything but a loopback address (Docker, a LAN bind) treats every request
+that no other site's page made as Remote and answers it, so it may generate
+and record but never accepts an API key from the browser and designs or
+deletes no voices; it cannot tell its own names, so it checks no `Host` and
+DNS rebinding is not covered there: the authentication in front is what keeps
+other pages out. Its `PUBLIC_PORT` is reachable without Access and is treated
+the same way (a startup notice says so).
 
 ### Request origin
 
@@ -715,8 +748,10 @@ startup notice says so).
 matches wins:
 
 1. the server is not bound to a loopback address → **Remote**;
-2. `Sec-Fetch-Site: cross-site` (a page of another site made it) →
-   **Remote**, on either port;
+2. `Sec-Fetch-Site: cross-site` or `same-site` (trimmed, any case: a page of
+   another site made it; sites ignore ports, so a page on another port of
+   this computer, `localhost:3000`, is `same-site`) → **Remote**, on either
+   port;
 3. it arrived on the `PUBLIC_PORT` listener → **Published** when its `Host`
    (port aside) is one of the `PUBLIC_HOST` names and its `Origin`, if
    present, names one of them too; otherwise **Remote** (DNS rebinding onto
@@ -727,22 +762,40 @@ matches wins:
    `cf-warp-tag-id`, `cdn-loop`, `x-forwarded-for`, `x-forwarded-host`,
    `x-forwarded-proto`, `forwarded`, `x-real-ip`, `true-client-ip`, `via`) →
    **Remote**;
-5. `Host` is missing or does not name this computer (`localhost`,
-   `*.localhost`, `127.x.y.z`, `[::1]`, any port) → **Remote** (DNS
-   rebinding);
-6. `Origin` is present and does not name this computer, or is `null` →
-   **Remote**;
+5. `Host` is missing or does not name this computer (`localhost`, a name
+   under `.localhost`, which browsers resolve to this computer themselves,
+   `127.x.y.z`, `[::1]`, any port) → **Remote** (DNS rebinding);
+6. `Origin` is present and does not name this computer, is `null`, or is
+   not `http(s)://host[:port]` → **Remote**;
 7. otherwise → **Local**.
 
-Server functions call `ingress::current()` once at the start of their body
-(the request context does not follow `tokio::spawn`; with no request the
-answer is Remote); plain routes use `ingress::of_parts`. The application
-layer keeps its refusals as pure functions of a `bool`
-(`settings::entry_refusal`, `voices::design_refusal`,
-`voices::delete_refusal`), so the browser build compiles them too.
+Every server function starts with `ingress::require_app_access()?`, before
+any `.await` or rate limit (the request context does not follow
+`tokio::spawn`; with no request it refuses), and decides with the `Origin`
+it returns; `application::tests::every_server_function_checks_app_access`
+scans `src/application` so a new one cannot forget it. It applies the pure
+`app_access`: a page of another site (rule 2) is refused on every bind; on a
+loopback bind only Local and Published requests are answered and every
+other one is refused; on a network bind every other request is answered as
+Remote, as in 0.10.0. A refusal is a teacher-readable message
+(`refusal_message`) naming `http://localhost:{PORT}/`, and
+`https://{PUBLIC_HOST}/` through the tunnel when set, and saying that a
+proxy must use `PUBLIC_PORT`; after three failed polls in a row `KeySetup`
+shows it on the page. `/audio/{job_id}` and `/voice-sample/{voice_id}` use
+`stream_access` through `ingress::may_stream`: only rules 3-7 on a loopback
+bind, so a link from another site (an e-mail, a learning platform)
+still plays while a rebound `Host` gets 403 with the reason. `/instance`
+uses `ingress::of_parts` (`classify`). A request refused for what it asks (a
+theme over `MAX_THEME_CHARS`, no topic to sum up, too many active recording
+jobs) spends no rate limit, and saving has none. The application layer keeps
+its refusals as pure functions of a `bool` (`settings::entry_refusal`,
+`voices::design_refusal`, `voices::delete_refusal`), so the browser build
+compiles them too.
 
 | | Local | Published | Remote |
 |---|---|---|---|
+| use the app (every server function) | yes | yes | network bind only; a page of another site never |
+| `/audio/{job_id}`, `/voice-sample/{voice_id}` | yes | yes | network bind, or a link from another site; else 403 |
 | enter an API key in the browser | yes | no | no |
 | design a voice | yes | yes | no |
 | delete a designed voice this app made | yes | no | no |

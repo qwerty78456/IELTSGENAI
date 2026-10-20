@@ -40,7 +40,11 @@ at the prompt ends the program with the console restored, so the launcher's
 "Press Enter to close." still works. Enter alone, a non-interactive run, or
 three unusable keys leave the server to start, log "GEMINI_API_KEY): missing"
 and let the page ask for a key, which it accepts only from a browser on the
-server's own computer (a Local request: loopback bind, main port, no proxy).
+server's own computer (a Local request: loopback bind, main port, no proxy,
+addressed to this computer as localhost, 127.0.0.1 or [::1], not sent by
+another site's page). On a loopback bind any other request is refused, with
+the address to open, unless it came through the tunnel (PUBLIC_PORT, for a
+PUBLIC_HOST name).
 
 The Anthropic key (ANTHROPIC_API_KEY) is found the same way and needed only
 for text written by Claude. With TEXT_PROVIDER=anthropic and no Anthropic key,

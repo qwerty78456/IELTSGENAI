@@ -47,11 +47,14 @@ Two compile targets share the crate. Both checks must stay green after any chang
 ```bash
 cargo check                                           # browser side (default feature = web)
 cargo check --features server --no-default-features   # server side
+cargo test                                            # the tests that need no server
 cargo test  --features server --no-default-features   # all unit tests
 ```
 
-Tests are inline `#[cfg(test)]` modules (domain, export, and server-only infrastructure:
-wav, program, gemini, claude, text, synthesize), so they need the `server` feature. Run one test by name:
+Tests are inline `#[cfg(test)]` modules (domain, export, application, ui, and server-only
+infrastructure: wav, program, gemini, claude, text, synthesize, ingress, …). Plain `cargo test`
+(default feature) compiles and runs those that need no server; the `server` feature runs the
+full set. Run one test by name:
 
 ```bash
 cargo test --features server --no-default-features multiple_select_needs_distinct_letters
@@ -104,17 +107,23 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   (for NSSM) never asks and never opens a browser; other unattended starts (scheduled tasks)
   pass `--non-interactive`, and Windows session 0 is detected and never asked. Startup errors are returned, not panicked. The browser build
   uses `dioxus::launch`.
-- **`src/ui/` talks to the server only through `crate::application`.** The part view holds a
-  single `HomeState` signal; the exam view a single `ExamState` signal provided by the `Navbar`
-  layout. A run's text provider is the page state's `text_provider` (`Option<TextProvider>`,
+- **`src/ui/` talks to the server only through `crate::application`.** The part view uses a
+  single `HomeState` signal and the exam view a single `ExamState` signal, both provided by the
+  `Navbar` layout, and both pages run their steps as `spawn_forever` tasks, so moving between
+  pages drops neither a page's state nor its running steps. A run's text provider is the page state's `text_provider` (`Option<TextProvider>`,
   `None` follows `TEXT_PROVIDER`), chosen in `TextProviderPicker`, bound before each call awaits
   and passed as the last argument of `suggest_topic`, `generate_passage`, `generate_task` and
   `summarize_topics` (`NameRequest.provider`); both pages keep it across a format switch, and the
   exam page saves it (`SavedExam.text_provider`, left out of the body when `None`, so an exam
   without a choice saves exactly as 0.9 did) and calls `note_edit` on a change. `Navbar` also
-  provides two more contexts. `KeyStatusCtx` (`ui/components/key_setup.rs`) holds both keys'
+  provides the session's `SaveQueue` signal (`ui/save_queue.rs`, see `docs/save-safety.md`),
+  shown on both pages by `SaveStatusPanel` (on the exam page it lists the open exam only when
+  its save needs the teacher; "Discard draft", after a confirmation, only for a draft that is
+  not the open exam, and `SaveQueue::discard` refuses one being sent or deleted), and two more
+  contexts. `KeyStatusCtx` (`ui/components/key_setup.rs`) holds both keys'
   `KeyStatuses` (`None` until the first answer); it has two writers, `KeySetup`'s 5 s
-  `api_key_status` poll, which sets it only when it changed, and a `KeyBox` whose key was
+  `api_key_status` poll, which sets it only when it changed (after 3 failed polls in a row
+  `KeySetup` shows the error instead, such as the server's access refusal), and a `KeyBox` whose key was
   accepted (`set_api_key`'s answer). The pure `key_box_place` puts a provider's `KeyBox` at the
   top (the Gemini key, the default provider's, or any rejected key), under the page's
   `TextProviderPicker` (the other provider's missing key, once the page chose it) or nowhere.
@@ -137,7 +146,7 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   (`AsRef`/`AsMut`), the summary is asked for right after a script is written (`prefetch`) and
   kept with the topics it sums up (derived, never flagged), the first download fixes the stem for
   the draft, and a step that changes a downloadable file calls `new_draft()`. Take a download's
-  content synchronously, then `spawn` (part page) or `spawn_forever` (exam page) the naming.
+  content synchronously, then `spawn_forever` the naming (both pages).
   Never hold a `peek()`/`read()` guard across a call that writes the same signal: bind the value
   first, since an `if let` keeps its scrutinee's guard alive through the block. Automatic
   downloads (`ui/prefs.rs`, `localStorage`, read after mount, off by default) fire only where a
@@ -154,6 +163,11 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   `infrastructure/prompts/items.rs`, `export/markdown.rs` and `export/docx.rs` (its
   `answer_layout` match is exhaustive, so the compiler flags it), plus a preset that uses it
   and a unit test for the validator arm.
+- The paper's wording is domain data, shared by Markdown and DOCX: `PassageKind::description()`
+  ("an interview") for the paper and the announcer (`label()` is for the UI and prompts),
+  `Task::printed_summary`, `prints_stems` and `printed_shared_options` for what a task prints,
+  and `ExamFormat::paper_candidate_fields()` for the DOCX candidate block (HSG has one, IELTS
+  none).
 - Passage speaker labels are always "Speaker A/B/C"; names live inside the lines. TTS and
   grounding checks depend on this.
 - Speech markup has one grammar, `domain/speech.rs`. `Line.text` keeps it and only the
@@ -242,15 +256,32 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   for Local requests only (`voices::delete_refusal`, `Bucket::VoiceDelete`); the refusal check
   comes before the rate limit. Voices made elsewhere in the project (the PO's) are listed and
   usable, never deleted.
-- Who may change a key or the Google project is decided per request by
-  `infrastructure::ingress` (`Origin::{Local, Published, Remote}`): `ingress::current()` at the
-  start of a server-fn body (the request context does not follow `tokio::spawn`; with no request
-  the answer is Remote), `ingress::of_parts` in plain routes. `classify` is pure and the first match wins: a
-  non-loopback bind → Remote; `Sec-Fetch-Site: cross-site` → Remote; the `PUBLIC_PORT` listener
+- Who may use the app at all, and who may change a key or the Google project, is decided per
+  request by `infrastructure::ingress` (`Origin::{Local, Published, Remote}`). Every `#[server]`
+  function starts with `ingress::require_app_access()?`, before any `.await` or rate limit (the
+  request context does not follow `tokio::spawn`; with no request it refuses), and decides with
+  the `Origin` it returns; `application::tests::every_server_function_checks_app_access` scans
+  `src/application` so a new one cannot forget it. Plain routes use `ingress::of_parts`
+  (`/instance`) and `ingress::may_stream` (`/audio`, `/voice-sample`). The pure core takes
+  explicit inputs (`classify`, `app_access`, `stream_access`, `refusal_message`). `classify`:
+  the first match wins: a non-loopback bind → Remote; `Sec-Fetch-Site: cross-site` or
+  `same-site` (trimmed, any case; `same-site` is also another port of this computer, such as
+  `localhost:3000`) → Remote; the `PUBLIC_PORT` listener
   → Published when its `Host` (port aside) and its `Origin`, if any, name a `PUBLIC_HOST` (the
   tunnel hostname, required with `PUBLIC_PORT`), else Remote; any `FORWARDING_HEADERS` (`cf-connecting-ip`, `x-forwarded-for`, `forwarded`,
-  `via`, …) → Remote; a `Host` or `Origin` that does not name this computer (`localhost`,
-  `127.x.y.z`, `[::1]`) → Remote; else Local. Application refusals stay pure bool functions
+  `via`, …) → Remote; a `Host` or `Origin` that does not name this computer (`localhost`, a name
+  under `.localhost`, `127.x.y.z`, `[::1]`) → Remote; else Local. `app_access` refuses a page of
+  another site on every bind. On a loopback bind it answers only Local and Published requests and
+  refuses every Remote one with a teacher-readable message (`refusal_message`: open
+  `http://localhost:{PORT}/`, or `https://{PUBLIC_HOST}/` through the tunnel; a proxy must use
+  `PUBLIC_PORT`), so a proxy on the main port, a tunnel that rewrites `Host` (`httpHostHeader`)
+  or `PUBLIC_PORT` opened directly is refused. On a network bind (`IP=0.0.0.0`: Docker, a LAN)
+  every other request is Remote and may generate and record, but not enter a key, design or
+  delete voices; `Host` and `Origin` are not checked there, so DNS rebinding is not covered: keep
+  authentication in front. `stream_access` applies only the address rule on a loopback bind (a
+  link from another site still plays; a rebound `Host` gets 403 with the reason). A request
+  refused for what it asks (a theme over `MAX_THEME_CHARS`, no topic to sum up, too many active
+  recording jobs) spends no rate limit, and saving has none. Application refusals stay pure bool functions
   (`settings::entry_refusal`, `voices::design_refusal`, `voices::delete_refusal`) so they
   compile for wasm. Takeover (`/instance`) therefore works only on a loopback bind, and a reverse
   proxy other than Cloudflare Tunnel must target `PUBLIC_PORT`, never the main port.
@@ -306,7 +337,9 @@ Dependency direction: `ui → application → {domain, infrastructure}`, `infras
   without the lock (another live copy, or a file system that cannot lock) they are left alone,
   and under `dx serve` this happens once, not on every hot-patch. Every answer of `/audio` and
   `/voice-sample`, errors included, carries `Cache-Control: private, no-cache` (no shared cache
-  such as Cloudflare keeps a recording; the browser still revalidates with 304).
+  such as Cloudflare keeps a recording; the browser still revalidates with 304). On a loopback
+  bind both answer 403 with the reason to a request that names neither this computer nor the
+  tunnel (`ingress::may_stream`); a link from another site still plays.
 - Voice samples ("Listen") are made once per voice by `voice_preview` (catalogue ids, or the
   designed voices of the key's project; anything else is refused; `Bucket::VoiceSample`),
   stored as `DATA_DIR/audio/voices/{id}.wav`, streamed from the plain route

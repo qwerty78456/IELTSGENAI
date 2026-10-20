@@ -110,6 +110,8 @@ cargo check --features server --no-default-features  # server side
 cargo test  --features server --no-default-features  # unit tests (domain, export, audio, prompts, usage)
 ```
 
+Plain `cargo test` (default feature) runs the tests that need no server.
+
 `cargo test --features server --no-default-features live_probe -- --ignored --nocapture`
 calls the real API (about $0.01) and prints tokens, latency and audio tokens
 per second. `voice_live_probe` (same flags) checks for free that every pooled
@@ -140,8 +142,13 @@ The container listens on `127.0.0.1:8080`. Put a reverse proxy with TLS and
 **authentication** in front (Caddy with `basic_auth`, or Cloudflare Access):
 the app rate-limits but has no login, and every request spends API credit.
 Inside the container the app binds `0.0.0.0`, so every request is a Remote
-request: no key from the browser, no designing or deleting voices (see
-"Who may do what" below).
+request: it may generate and record, but no key from the browser, no
+designing or deleting voices (see "Who may do what" below). A page of another
+site is still refused, but on a network bind the app does not check `Host`,
+so it is not protected against DNS rebinding: the proxy's authentication is
+what keeps other pages out. The image is built with `--locked` and starts the
+server with `--non-interactive`; `.dockerignore` keeps `.env` files, `data/`
+and build output out of the build context.
 Data (job database, saved exams, WAVs, logs) lives in the `generator_data`
 volume; recordings no saved exam refers to are purged after
 `AUDIO_RETENTION_HOURS` (24 by default), saved exams keep theirs.
@@ -179,14 +186,16 @@ the server's own computer, `PUBLIC_PORT` for `cloudflared`, which should point
 at `http://127.0.0.1:8081` with Cloudflare Access in front. A request on
 `PUBLIC_PORT` counts as an internet user (a Published request) only when its
 `Host` (and `Origin`, if sent) is one of the `PUBLIC_HOST` names; anything else
-on that port is Remote. This keeps a web page whose name was rebound to
+on that port is Remote and refused, `PUBLIC_PORT` opened directly in a
+browser included. This keeps a web page whose name was rebound to
 127.0.0.1 (DNS rebinding) from using the published port without passing
 Cloudflare Access. Leave the `Host` header as the browser sent it: a tunnel
-ingress rule that rewrites it (`httpHostHeader`) makes every tunnel request
-Remote. Several hostnames are separated by commas, without a port or scheme.
+ingress rule that rewrites it (`httpHostHeader`) makes the app refuse every
+tunnel request. Several hostnames are separated by commas, without a port or scheme.
 Any reverse
 proxy other than the tunnel must also target `PUBLIC_PORT`, never `PORT`: a
-proxy on the main port is recognised only by the forwarding headers it adds.
+proxy on the main port is recognised only by the forwarding headers it adds
+(or a `Host` that does not name this computer), and its requests are refused.
 With a non-loopback `IP` the published port is reachable from the network
 without Access, so the app treats it like any other network address and says so
 at startup. `PUBLIC_PORT` is ignored under `dx serve`.
@@ -198,8 +207,10 @@ Each request is classified as Local, Published or Remote:
 | | Local | Published | Remote |
 |---|---|---|---|
 | comes from | a browser on the server's own computer, on `PORT` | `PUBLIC_PORT` (the tunnel), for a `PUBLIC_HOST` name | anything else |
+| use the app: generate, record, open and save exams | yes | yes | only on a network bind (refused on a loopback bind) |
+| choose Claude to write the text (spends on the server's Anthropic account) | yes | yes | only on a network bind |
+| play or download a recording or voice sample (`/audio`, `/voice-sample`) | yes | yes | a link from another site, or any request on a network bind; otherwise 403 |
 | enter an API key in the browser | yes | no | no |
-| choose Claude to write the text (spends on the server's Anthropic account) | yes | yes | yes |
 | design a voice | yes | yes | no |
 | delete a designed voice (made by this app) | yes | no | no |
 | `GET /instance`, `POST /instance/stop` | yes | no (404) | no (404) |
@@ -207,11 +218,19 @@ Each request is classified as Local, Published or Remote:
 A request is Local only when the server listens on a loopback address, the
 request arrived on `PORT`, it carries no forwarding header (`CF-Connecting-IP`,
 `X-Forwarded-For`, `Forwarded`, `Via` and the like), its `Host` (and `Origin`,
-if sent) names this computer (`localhost`, `127.x.x.x`, `[::1]`), and the
-browser does not mark it as made by another site (`Sec-Fetch-Site:
-cross-site`). A request is Published only when the server listens on a
-loopback address, it arrived on `PUBLIC_PORT`, its `Host` (and `Origin`, if
-sent) is a `PUBLIC_HOST` name, and it is not cross-site.
+if sent) names this computer (`localhost`, a name under `.localhost`,
+`127.x.x.x`, `[::1]`), and the browser does not mark it as made by another
+site (`Sec-Fetch-Site: cross-site` or `same-site`; a page on another port of
+this computer, such as `localhost:3000`, is same-site). A request is Published
+only when the server listens on a loopback address, it arrived on
+`PUBLIC_PORT`, its `Host` (and `Origin`, if sent) is a `PUBLIC_HOST` name, and
+it is not from another site.
+
+A page of another site is refused on every bind. On a loopback bind any other
+Remote request is refused too, with a message that names the address to open
+(`http://localhost:PORT/`, and the tunnel's `https://PUBLIC_HOST/` when set).
+A link to a recording from another site (an e-mail, a learning platform)
+still plays: `/audio` and `/voice-sample` check only the address.
 
 ## Configuration
 
@@ -235,7 +254,7 @@ sent) is a `PUBLIC_HOST` name, and it is not cross-site.
 | `AUDIO_RETENTION_HOURS` | `24` | hours an unsaved recording is kept; `0` keeps every recording; recordings of saved exams are never purged |
 | `IP`, `PORT` | `127.0.0.1`, `8080` | bind address (Docker sets `IP=0.0.0.0` itself) |
 | `PUBLIC_PORT` | unset | a second port on the same `IP` for Cloudflare Tunnel; requests on it for a `PUBLIC_HOST` name are Published (internet users); must differ from `PORT`; ignored under `dx serve` |
-| `PUBLIC_HOST` | unset | required with `PUBLIC_PORT`: the tunnel's hostname, or several separated by commas (no port or scheme, e.g. `app.example.com`); a request on `PUBLIC_PORT` whose `Host` or `Origin` names anything else is Remote; ignored, with a notice, without `PUBLIC_PORT` |
+| `PUBLIC_HOST` | unset | required with `PUBLIC_PORT`: the tunnel's hostname, or several separated by commas (no port or scheme, e.g. `app.example.com`); a request on `PUBLIC_PORT` whose `Host` or `Origin` names anything else is Remote (refused on a loopback bind); ignored, with a notice, without `PUBLIC_PORT` |
 
 Model facts checked on ai.google.dev and measured, 2026-09-28: every request
 goes to the Interactions API (`POST /v1beta/interactions`) with

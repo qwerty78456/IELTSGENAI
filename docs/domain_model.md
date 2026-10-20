@@ -13,13 +13,21 @@ Types of the **Listening Assessment Generation** context, as implemented in
 - `id`, `name`
 - `total_points` (IELTS 40, HSG 5.0), `listening_minutes`, `check_minutes`
 - `parts: Vec<PartSpec>`
+- `candidate_fields: Vec<String>` (`#[serde(default)]`) — the blank fields the
+  whole-exam DOCX prints for the school to fill in: HSG "Họ và tên", "Số báo
+  danh", "Số phách", "Điểm"; IELTS none, so no block.
+  `paper_candidate_fields()` falls back to the preset's for a format saved
+  before 0.10.1 (an empty list).
 - `check_consistency()`: numbering contiguous from 1, every part has tasks
   and the right number of default voices.
 
 ### `PartSpec`
 - `number`, `title`
 - `passage: PassageKind` — `Conversation { speakers }`, `Interview { guests }`,
-  `Monologue`, `Excerpt`
+  `Monologue`, `Excerpt`. `label()` ("Conversation (2 speakers)") is for the
+  app and the prompts; `description()` ("an interview", "a talk", "part of a
+  talk", "a conversation", "a conversation between 3 people" beyond two) is
+  what the paper prints and the announcer says ("Listen to an interview once").
 - `brief` — genre guidance used in prompts
 - `playback: PlayCount` — `Once` | `Twice`
 - `min_minutes`, `max_minutes`
@@ -33,9 +41,17 @@ Types of the **Listening Assessment Generation** context, as implemented in
 `TrueFalseNotGiven`, `WhoMentioned { guests }`, `MultipleSelect { choose, options }`,
 `MultipleChoice { options }`, `ShortAnswer(WordLimit)`, `SummaryCompletion(WordLimit)`,
 `NoteCompletion(WordLimit)`, `SentenceCompletion(WordLimit)`, `Matching { options }`.
+`has_shared_options()` (who-mentioned, multiple selection, matching: one option
+list for the task) and `uses_summary()` (summary and note completion: numbered
+gaps in one text) decide what a task carries and prints.
+`default_instruction` names each letter once in the multiple-choice rubric
+("A, B or C").
 
 ### `WordLimit`
-`max_words`, `allow_number`; renders as "NO MORE THAN TWO WORDS AND/OR A NUMBER".
+`max_words`, `allow_number`; `instruction()` renders "NO MORE THAN TWO WORDS
+AND/OR A NUMBER", "NO MORE THAN FOUR WORDS AND/OR A NUMBER" (one to five
+spelled out, then digits: "NO MORE THAN 7 WORDS"). How an answer counts against
+it is under Validation.
 
 ## Voices
 
@@ -136,6 +152,12 @@ are its two readings. The text views:
 Text-to-speech receives each line's `speech_text` without labels, the speaker
 travelling beside each line.
 
+`size_problem()` says why a script is too big to send to a model or the
+voices: more than `MAX_PASSAGE_LINES` (200) turns, `MAX_PASSAGE_WORDS` (3,000)
+words or `MAX_PASSAGE_CHARS` (30,000) characters, labels included. It is an
+Error in `validate_passage`, and `TaskRequest` and `AudioRequest` refuse such a
+script. Real scripts stay far below these limits.
+
 ### Speech markup (`speech.rs`)
 Gemini 3.8 TTS reads its text aloud except inline tags in angle brackets
 (`<sigh>`), which it performs, and `|backchannels|` in a two-voice request. The
@@ -171,6 +193,12 @@ tags.
 ### `Task`
 `spec`, `instruction`, `shared_options: Vec<Choice>`, `summary: Option<String>`
 (paragraph or notes with `(n)______` gaps), `items: Vec<Item>`.
+What the paper prints, shared by Markdown and DOCX: `printed_summary()` (the
+text, only for a kind that `uses_summary` and only when it has words),
+`prints_stems()` (not for multiple selection, nor for a summary or note task
+whose text is printed) and `printed_shared_options()` (only for a kind that
+`has_shared_options`). Anything else the task carries is not printed, and
+`validate_task` warns about it.
 
 ### `Item`
 `number`, `stem`, `options: Vec<Choice>` (multiple choice only), `answer: Answer`,
@@ -274,12 +302,16 @@ from the ledger; it includes failed and superseded runs.
 | Command            | Validates                                              |
 |--------------------|--------------------------------------------------------|
 | `PassageRequest`   | topic length/content, part exists, speaker count/labels (first Error; warnings never block). `expressive` (`#[serde(default)]`, false) lets the script carry a few `EXAM_SPEECH_TAGS` |
-| `TaskRequest`      | part and task index exist, passage not empty            |
-| `AudioRequest`     | passage not empty, every used label configured, every speaker has a voice (none on `Auto`) with a valid id, no shared voice, no voice of the other gender |
-| `ExamAudioRequest` | one valid `AudioRequest` per part of the format (errors name the part) |
+| `TaskRequest`      | part and task index exist, passage not empty and not oversized (`Passage::size_problem`), speaker count/labels (`validate_speakers`, first Error), every used label configured |
+| `AudioRequest`     | passage not empty and not oversized, every used label configured, every speaker has a voice (none on `Auto`) with a valid id, no shared voice, no voice of the other gender |
+| `ExamAudioRequest` | one valid `AudioRequest` for each part of the format, each part exactly once (errors name the part) |
 
 Both pages start new work expressive; a saved exam keeps the choice
 (`SavedExam.expressive`, false for exams saved before 0.8).
+
+Text limits live beside the commands: a topic of `MIN_TOPIC_CHARS` to
+`MAX_TOPIC_CHARS` (10–500) characters, an exam's theme of at most
+`MAX_THEME_CHARS` (2,000), checked by `suggest_topic` and by saving.
 
 Voices are assigned before an `AudioRequest` is validated: the browser and the
 server both run `assign_voices` first. The server also refuses, before the job
@@ -306,7 +338,31 @@ also adds a Warning per `markup_problems` entry, prefixed with the turn
 recording"); a gap (`___`, `[FILL ...]`) stays an Error. The grounding rule:
 text keys and evidence must occur in the normalised passage text, where
 `normalize` drops speech markup first, so a quote matches with or without a
-`<sigh>` in it.
+`<sigh>` in it. `validate_passage` also reports an oversized script
+(`size_problem`) as an Error.
+
+`validate_task` checks each text key against its `WordLimit`. Words are split
+on whitespace, so a hyphenated word ("check-in") is one word. With "AND/OR A
+NUMBER" one number is free and the other words count: a number is one token
+written in digits ("15", "$25", "2,500", "15th", "10am"), optionally followed
+by scale words ("3.5 million"), or a run of cardinal words ("twenty-five",
+"one hundred and twenty"; "and" counts as part of a number only between
+number words), so
+"15 May" and "25 dollars" pass, "first aid" and "salt and pepper" count every
+word, and two numbers ("15 May 2026") are an Error. Without it every token
+counts and a token written in digits ("25 cats") is an Error; words that hold
+digits ("A4", "COVID-19") are words.
+
+Gaps and what is printed:
+- summary and note completion (`TaskKind::uses_summary`) need their text
+  (Error "{label} needs its text with the gaps (n)______"); a gap missing from
+  the text or appearing twice is an Error, a marker without its blank
+  ("(2)" with no `______` after it) a Warning ("(1)" inside "(11)" does not
+  count);
+- a sentence-completion stem needs a blank (`___`), else an Error;
+- Warnings for what the paper will not print: shared options on a kind without
+  them, a summary or notes text on a kind that uses none, and the stems of a
+  summary or note task whose text is printed.
 
 A saved exam (`application::exams::check`) must have each part's speaker count
 and distinct labels and valid voice ids, but two speakers sharing a voice are

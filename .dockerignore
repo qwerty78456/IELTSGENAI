@@ -1,0 +1,21 @@
+# Patterns are anchored at the build context root; `**/` reaches nested folders.
+
+# Secrets and local configuration
+**/.env
+**/.env.*
+!.env.example
+.secrets/
+voices.json
+voices.*.json
+
+# Runtime data, databases, audio and logs
+data/
+
+# Build artifacts, caches and version control
+**/target/
+**/__pycache__/
+dist/
+.git/
+.github/
+.claude/
+TESTING_DUMP/

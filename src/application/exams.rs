@@ -437,6 +437,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "server")]
     fn opening_a_0_7_exam_marks_nothing_stale() {
         use crate::domain::{Exam, assign_exam_voices, validate_passage};
         use crate::infrastructure::tts::voices::VoiceCatalog;

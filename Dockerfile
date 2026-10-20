@@ -1,5 +1,6 @@
 # --- BUILD STAGE ---
-# Edition 2024 needs Rust >= 1.85; the crate is developed on 1.92.
+# Edition 2024 needs Rust >= 1.85; this crate needs >= 1.89 (let-chains, File::try_lock)
+# and is developed on 1.92.
 FROM rust:1.92-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,7 +16,7 @@ WORKDIR /app
 COPY . .
 
 # Fullstack release build: server binary + public/ folder under target/dx/<crate>/release/web/
-RUN dx build --release
+RUN dx build --release --web --cargo-args=--locked
 
 # --- RUNTIME STAGE ---
 FROM debian:bookworm-slim
@@ -35,4 +36,4 @@ ENV DATA_DIR=/app/data
 RUN mkdir -p /app/data
 
 EXPOSE 8080
-CMD ["./server"]
+CMD ["./server", "--non-interactive"]

@@ -369,7 +369,7 @@ fn checked(
     Ok(assigned.speakers)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "server"))]
 mod tests {
     use super::*;
     use crate::domain::{Accent, Gender, SpeakerConfig, SpeakerRole, assign_voices, speaker_label};

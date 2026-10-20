@@ -89,12 +89,26 @@ impl PassageKind {
         self.speaker_count() > 1
     }
 
+    /// The name shown in the app and given to the language model.
     pub fn label(self) -> String {
         match self {
             PassageKind::Conversation { speakers } => format!("Conversation ({speakers} speakers)"),
             PassageKind::Interview { guests } => format!("Interview (host + {guests} guests)"),
             PassageKind::Monologue => "Talk / monologue".to_string(),
             PassageKind::Excerpt => "Part of a talk".to_string(),
+        }
+    }
+
+    /// What the paper prints and the announcer says: "Listen to {description} once".
+    pub fn description(self) -> String {
+        match self {
+            PassageKind::Conversation { speakers } if speakers > 2 => {
+                format!("a conversation between {speakers} people")
+            }
+            PassageKind::Conversation { .. } => "a conversation".to_string(),
+            PassageKind::Interview { .. } => "an interview".to_string(),
+            PassageKind::Monologue => "a talk".to_string(),
+            PassageKind::Excerpt => "part of a talk".to_string(),
         }
     }
 }
@@ -123,10 +137,8 @@ impl WordLimit {
 
     pub fn instruction(self) -> String {
         let words = match self.max_words {
-            1 => "ONE WORD",
-            2 => "TWO WORDS",
-            3 => "THREE WORDS",
-            n => return format!("NO MORE THAN {n} WORDS"),
+            1 => "ONE WORD".to_string(),
+            n => format!("{} WORDS", number_word(n)),
         };
         if self.allow_number {
             format!("NO MORE THAN {words} AND/OR A NUMBER")
@@ -205,6 +217,15 @@ impl TaskKind {
         )
     }
 
+    /// True when the questions are numbered gaps "(n)______" in one text
+    /// (`Task::summary`) rather than one stem per item.
+    pub fn uses_summary(&self) -> bool {
+        matches!(
+            self,
+            TaskKind::SummaryCompletion(_) | TaskKind::NoteCompletion(_)
+        )
+    }
+
     /// The rubric printed above the task, in the style of the reference paper.
     pub fn default_instruction(&self, first: u8, last: u8) -> String {
         let range = if first == last {
@@ -230,13 +251,11 @@ impl TaskKind {
                     number_word(*choose)
                 )
             }
-            TaskKind::MultipleChoice { options } => {
-                let last_letter = (b'A' + options.saturating_sub(1)) as char;
-                format!(
-                    "For {range}, write the letter A, B, C or {last_letter} in the corresponding numbered boxes provided to indicate \
-                     the correct answer to each of the following questions according to what is stated or implied by the speaker."
-                )
-            }
+            TaskKind::MultipleChoice { options } => format!(
+                "For {range}, write the letter {} in the corresponding numbered boxes provided to indicate \
+                 the correct answer to each of the following questions according to what is stated or implied by the speaker.",
+                letter_list(*options)
+            ),
             TaskKind::ShortAnswer(limit) => format!(
                 "For {range}, answer each of the following questions with {} taken from the recording. \
                  Write your answers in the corresponding spaces provided.",
@@ -263,6 +282,18 @@ impl TaskKind {
                 "For {range}, choose the correct letter from the list of options and write it next to each question."
             ),
         }
+    }
+}
+
+/// "A", "A or B", "A, B or C", "A, B, C or D": the first `n` letters.
+fn letter_list(n: u8) -> String {
+    let letters: Vec<String> = (0..n.clamp(1, 26))
+        .map(|i| ((b'A' + i) as char).to_string())
+        .collect();
+    match letters.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
     }
 }
 
@@ -354,9 +385,25 @@ pub struct ExamFormat {
     /// Time given at the end to check answers.
     pub check_minutes: u8,
     pub parts: Vec<PartSpec>,
+    /// Blank fields printed at the top of the whole-exam paper for the school
+    /// to fill in ("Số báo danh", ...); none for a format whose paper has no
+    /// such block. Formats saved before 0.10.1 have none: see
+    /// `paper_candidate_fields`.
+    #[serde(default)]
+    pub candidate_fields: Vec<String>,
 }
 
 impl ExamFormat {
+    /// The candidate fields the paper prints. A format saved before 0.10.1
+    /// carries none and prints its preset's.
+    pub fn paper_candidate_fields(&self) -> Vec<String> {
+        if self.candidate_fields.is_empty() {
+            self.id.format().candidate_fields
+        } else {
+            self.candidate_fields.clone()
+        }
+    }
+
     pub fn part(&self, number: u8) -> Option<&PartSpec> {
         self.parts.iter().find(|p| p.number == number)
     }
@@ -472,6 +519,7 @@ impl ExamFormat {
                     tasks: vec![TaskSpec::new(TaskKind::NoteCompletion(one_word), 31, 40)],
                 },
             ],
+            candidate_fields: Vec::new(),
         }
     }
 
@@ -551,6 +599,9 @@ impl ExamFormat {
                     tasks: vec![TaskSpec::new(TaskKind::SummaryCompletion(WordLimit::words_or_number(1)), 26, 35)],
                 },
             ],
+            candidate_fields: ["Họ và tên", "Số báo danh", "Số phách", "Điểm"]
+                .map(String::from)
+                .to_vec(),
         }
     }
 }
@@ -583,5 +634,69 @@ mod tests {
             WordLimit::words_or_number(1).instruction(),
             "NO MORE THAN ONE WORD AND/OR A NUMBER"
         );
+        assert_eq!(
+            WordLimit::words_or_number(4).instruction(),
+            "NO MORE THAN FOUR WORDS AND/OR A NUMBER"
+        );
+        assert_eq!(WordLimit::words(7).instruction(), "NO MORE THAN 7 WORDS");
+    }
+
+    #[test]
+    fn multiple_choice_rubric_names_each_letter_once() {
+        let rubric = |options| TaskKind::MultipleChoice { options }.default_instruction(11, 15);
+        assert!(
+            rubric(2).contains("write the letter A or B in"),
+            "{}",
+            rubric(2)
+        );
+        assert!(rubric(3).contains("write the letter A, B or C in"));
+        assert!(rubric(4).contains("write the letter A, B, C or D in"));
+        assert!(rubric(5).contains("write the letter A, B, C, D or E in"));
+        // The IELTS preset's 3-option blocks.
+        let ielts = ExamFormat::ielts_listening();
+        let part2 = &ielts.part(2).unwrap().tasks[0];
+        assert!(part2.instruction().contains("A, B or C in"));
+    }
+
+    #[test]
+    fn passage_kinds_have_paper_wording() {
+        for format in [ExamFormat::ielts_listening(), ExamFormat::hsg_national()] {
+            for part in &format.parts {
+                let wording = part.passage.description();
+                assert!(
+                    !wording.contains(['(', ')', '+', '/']),
+                    "{}: {wording}",
+                    part.title
+                );
+                assert_eq!(wording, wording.to_lowercase());
+            }
+        }
+        assert_eq!(
+            PassageKind::Interview { guests: 2 }.description(),
+            "an interview"
+        );
+        assert_eq!(
+            PassageKind::Conversation { speakers: 3 }.description(),
+            "a conversation between 3 people"
+        );
+    }
+
+    #[test]
+    fn candidate_fields_follow_the_format() {
+        assert!(
+            ExamFormat::ielts_listening()
+                .paper_candidate_fields()
+                .is_empty()
+        );
+        assert_eq!(ExamFormat::hsg_national().paper_candidate_fields().len(), 4);
+        // An HSG exam saved before the field existed still prints the block.
+        let mut saved = ExamFormat::hsg_national();
+        saved.candidate_fields.clear();
+        assert_eq!(saved.paper_candidate_fields().len(), 4);
+        let json = serde_json::to_value(&saved).unwrap();
+        let mut old = json.clone();
+        old.as_object_mut().unwrap().remove("candidate_fields");
+        let read: ExamFormat = serde_json::from_value(old).unwrap();
+        assert!(read.candidate_fields.is_empty());
     }
 }

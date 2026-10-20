@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::format::TaskSpec;
+use super::format::{TaskKind, TaskSpec};
 
 /// Reads a missing *or null* field as its default. Language models write
 /// `"shared_options": null` as often as they leave the field out, and an
@@ -108,6 +108,36 @@ pub struct Task {
 impl Task {
     pub fn answers(&self) -> impl Iterator<Item = (u8, &Answer)> {
         self.items.iter().map(|item| (item.number, &item.answer))
+    }
+
+    /// The text with the gaps the paper prints: only for a kind that uses one
+    /// (`TaskKind::uses_summary`), and only when it has words.
+    pub fn printed_summary(&self) -> Option<&str> {
+        self.summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && self.spec.kind.uses_summary())
+    }
+
+    /// Whether the paper prints each item's stem and options. A multiple
+    /// selection is answered from the shared options alone; a summary or note
+    /// carries its own gaps, so its stems are printed only without that text.
+    pub fn prints_stems(&self) -> bool {
+        match self.spec.kind {
+            TaskKind::MultipleSelect { .. } => false,
+            ref kind if kind.uses_summary() => self.printed_summary().is_none(),
+            _ => true,
+        }
+    }
+
+    /// The options the paper lists once above the items: only for a kind
+    /// that shares its options.
+    pub fn printed_shared_options(&self) -> &[Choice] {
+        if self.spec.kind.has_shared_options() {
+            &self.shared_options
+        } else {
+            &[]
+        }
     }
 }
 

@@ -11,6 +11,8 @@ use super::voice::{Voice, voice_conflicts};
 
 pub const MIN_TOPIC_CHARS: usize = 10;
 pub const MAX_TOPIC_CHARS: usize = 500;
+/// An exam's theme for topic suggestions.
+pub const MAX_THEME_CHARS: usize = 2_000;
 
 pub fn validate_topic(topic: &str) -> Result<(), DomainError> {
     let trimmed = topic.trim();
@@ -95,7 +97,31 @@ impl TaskRequest {
                 "Generate the script before the questions".into(),
             ));
         }
+        check_size(&self.passage)?;
+        // The line-up and the script are quoted in the question prompt.
+        let issues = validate_speakers(&spec, &self.speakers);
+        if let Some(error) = first_error(&issues) {
+            return Err(DomainError::InvalidRequest(error.message.clone()));
+        }
+        let labels: Vec<&str> = self.speakers.iter().map(|s| s.label.as_str()).collect();
+        if let Some(unknown) = self
+            .passage
+            .speakers_used()
+            .into_iter()
+            .find(|used| !labels.contains(&used.as_str()))
+        {
+            return Err(DomainError::InvalidRequest(format!(
+                "Unknown speaker label \"{unknown}\" in the script"
+            )));
+        }
         Ok((spec, task))
+    }
+}
+
+fn check_size(passage: &Passage) -> Result<(), DomainError> {
+    match passage.size_problem() {
+        Some(problem) => Err(DomainError::InvalidRequest(problem)),
+        None => Ok(()),
     }
 }
 
@@ -122,6 +148,14 @@ impl ExamAudioRequest {
                 })?;
             part.validate()
                 .map_err(|e| DomainError::InvalidRequest(format!("{}: {e}", spec.title)))?;
+        }
+        // Every part was found above, so an equal count means each part exactly once.
+        if self.parts.len() != exam.parts.len() {
+            return Err(DomainError::InvalidRequest(format!(
+                "Expected {} parts, found {}",
+                exam.parts.len(),
+                self.parts.len()
+            )));
         }
         Ok(())
     }
@@ -152,6 +186,7 @@ impl AudioRequest {
                 "There is no script to read".into(),
             ));
         }
+        check_size(&self.passage)?;
         let labels: Vec<&str> = self.speakers.iter().map(|s| s.label.as_str()).collect();
         for used in self.passage.speakers_used() {
             if !labels.contains(&used.as_str()) {
@@ -325,6 +360,131 @@ mod tests {
             expressive: true,
         };
         assert!(request.validate().is_ok());
+    }
+
+    /// The part's default line-up, each speaker with a voice of its own.
+    fn voiced_line_up(part: &PartSpec) -> Vec<SpeakerConfig> {
+        part.default_speakers
+            .iter()
+            .enumerate()
+            .map(|(k, s)| {
+                s.clone()
+                    .with_voice(voice(&format!("en-gb-{}-{k}", part.number), s.gender))
+            })
+            .collect()
+    }
+
+    /// A recording request for one part that passes validation.
+    fn part_request(part: &PartSpec) -> AudioRequest {
+        let speakers = voiced_line_up(part);
+        let labels: Vec<String> = speakers.iter().map(|s| s.label.clone()).collect();
+        let script: Vec<String> = labels.iter().map(|l| format!("{l}: Hello.")).collect();
+        AudioRequest {
+            passage: Passage::parse(part.number, "topic", &script.join("\n"), &labels).unwrap(),
+            speakers,
+            fresh: false,
+        }
+    }
+
+    fn invalid(message: &str) -> Result<(), DomainError> {
+        Err(DomainError::InvalidRequest(message.into()))
+    }
+
+    #[test]
+    fn exam_audio_request_needs_each_part_exactly_once() {
+        let format = FormatId::IeltsListening;
+        let parts: Vec<AudioRequest> = format.format().parts.iter().map(part_request).collect();
+        let exam = |parts: Vec<AudioRequest>| ExamAudioRequest { format, parts };
+        assert_eq!(exam(parts.clone()).validate(), Ok(()));
+        // A part sent twice would be read twice and only one take kept.
+        let mut twice = parts.clone();
+        twice.push(parts[0].clone());
+        assert_eq!(exam(twice).validate(), invalid("Expected 4 parts, found 5"));
+        assert_eq!(
+            exam(parts[..3].to_vec()).validate(),
+            invalid("Part 4 has no script yet")
+        );
+    }
+
+    #[test]
+    fn oversized_scripts_are_refused_by_turns_words_and_characters() {
+        let part1 = FormatId::IeltsListening.format().parts[0].clone();
+        let speakers = voiced_line_up(&part1);
+        let labels: Vec<String> = speakers.iter().map(|s| s.label.clone()).collect();
+        let turns: Vec<String> = (0..201)
+            .map(|i| format!("{}: Line {i}.", labels[i % 2]))
+            .collect();
+        let cases = [
+            (turns.join("\n"), "at most 200 turns"),
+            (
+                format!("{}: {}", labels[0], "word ".repeat(3_001)),
+                "at most 3000 words",
+            ),
+            // One "word" of 30 001 characters.
+            (
+                format!("{}: {}", labels[0], "x".repeat(30_001)),
+                "at most 30000 characters",
+            ),
+        ];
+        for (script, expected) in cases {
+            let passage = Passage::parse(1, "topic", &script, &labels).unwrap();
+            let audio = AudioRequest {
+                passage: passage.clone(),
+                speakers: speakers.clone(),
+                fresh: false,
+            };
+            let task = TaskRequest {
+                format: FormatId::IeltsListening,
+                part: 1,
+                task_index: 0,
+                passage,
+                speakers: speakers.clone(),
+            };
+            for error in [
+                audio.validate().unwrap_err().to_string(),
+                task.validate().unwrap_err().to_string(),
+            ] {
+                assert!(error.contains(expected), "{expected}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn task_requests_check_their_speakers() {
+        let part1 = FormatId::IeltsListening.format().parts[0].clone();
+        let fine = part_request(&part1);
+        let request = |speakers: Vec<SpeakerConfig>, passage: Passage| TaskRequest {
+            format: FormatId::IeltsListening,
+            part: 1,
+            task_index: 0,
+            passage,
+            speakers,
+        };
+        assert!(
+            request(fine.speakers.clone(), fine.passage.clone())
+                .validate()
+                .is_ok()
+        );
+        let error = request(fine.speakers[..1].to_vec(), fine.passage.clone())
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("needs exactly 2 speaker(s)"), "{error}");
+        let mut twins = fine.speakers.clone();
+        twins[1].label = twins[0].label.clone();
+        let error = request(twins, fine.passage.clone())
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Duplicate speaker label"), "{error}");
+        let labels = ["Speaker A", "Speaker B", "Speaker C"].map(String::from);
+        let stranger =
+            Passage::parse(1, "topic", "Speaker A: Hi.\nSpeaker C: Hello.", &labels).unwrap();
+        let error = request(fine.speakers.clone(), stranger)
+            .validate()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "Unknown speaker label \"Speaker C\" in the script");
     }
 
     #[test]

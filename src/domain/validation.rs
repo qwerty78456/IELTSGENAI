@@ -7,8 +7,8 @@
 use serde::{Deserialize, Serialize};
 
 use super::exam::Exam;
-use super::format::{PartSpec, TaskKind};
-use super::passage::{Passage, count_words};
+use super::format::{PartSpec, TaskKind, WordLimit};
+use super::passage::Passage;
 use super::speaker::SpeakerConfig;
 use super::speech::{display_text, markup_problems};
 use super::task::{Answer, Choice, Item, Task};
@@ -109,6 +109,9 @@ pub fn validate_passage(
     speakers: &[SpeakerConfig],
 ) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
+    if let Some(problem) = passage.size_problem() {
+        issues.push(ValidationIssue::error(None, problem));
+    }
     let labels: Vec<&str> = speakers.iter().map(|s| s.label.as_str()).collect();
     let used = passage.speakers_used();
     for label in &used {
@@ -242,24 +245,58 @@ pub fn validate_task(task: &Task, passage: Option<&Passage>) -> Vec<ValidationIs
         } else {
             issues.extend(check_lettering(&task.shared_options, None));
         }
+    } else if !task.shared_options.is_empty() {
+        issues.push(ValidationIssue::warning(
+            None,
+            format!(
+                "{} does not use shared options; they are not printed",
+                spec.kind.label()
+            ),
+        ));
     }
-    if let TaskKind::SummaryCompletion(_) = spec.kind {
-        match &task.summary {
+    if spec.kind.uses_summary() {
+        match task.printed_summary() {
             None => issues.push(ValidationIssue::error(
                 None,
-                "Summary completion needs the summary paragraph",
+                format!(
+                    "{} needs its text with the gaps (n)______",
+                    spec.kind.label()
+                ),
             )),
-            Some(summary) => {
+            Some(text) => {
                 for number in &expected {
-                    if !summary.contains(&format!("({number})")) {
-                        issues.push(ValidationIssue::error(
+                    let (with_blank, bare) = gap_occurrences(text, *number);
+                    match with_blank + bare {
+                        0 => issues.push(ValidationIssue::error(
                             Some(*number),
-                            format!("The summary has no gap ({number})"),
-                        ));
+                            format!("Gap ({number})______ is missing from the text"),
+                        )),
+                        // The paper still prints a numbered answer box.
+                        1 if bare == 1 => issues.push(ValidationIssue::warning(
+                            Some(*number),
+                            format!("Gap ({number}) has no blank line (______) after it"),
+                        )),
+                        1 => {}
+                        times => issues.push(ValidationIssue::error(
+                            Some(*number),
+                            format!("Gap ({number}) appears {times} times in the text"),
+                        )),
                     }
                 }
             }
         }
+    } else if task
+        .summary
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty())
+    {
+        issues.push(ValidationIssue::warning(
+            None,
+            format!(
+                "{} does not use a summary or notes text; it is not printed",
+                spec.kind.label()
+            ),
+        ));
     }
     let haystack = passage.map(|p| normalize(&p.plain_text()));
     for item in &task.items {
@@ -344,6 +381,24 @@ fn validate_item(item: &Item, task: &Task, haystack: Option<&str>) -> Vec<Valida
     if item.stem.trim().is_empty() && !is_gap {
         issues.push(ValidationIssue::error(number, "Empty question"));
     }
+    if kind.uses_summary() && task.printed_summary().is_some() && !item.stem.trim().is_empty() {
+        issues.push(ValidationIssue::warning(
+            number,
+            format!(
+                "The stem is not printed for {}; the text with the gaps is",
+                kind.label()
+            ),
+        ));
+    }
+    if matches!(kind, TaskKind::SentenceCompletion(_))
+        && !item.stem.trim().is_empty()
+        && !item.stem.contains("___")
+    {
+        issues.push(ValidationIssue::error(
+            number,
+            "The sentence needs a blank (______) where the answer goes",
+        ));
+    }
     match kind {
         TaskKind::TrueFalseNotGiven => {
             if !matches!(item.answer, Answer::Tfng(_)) {
@@ -371,32 +426,15 @@ fn validate_item(item: &Item, task: &Task, haystack: Option<&str>) -> Vec<Valida
         | TaskKind::SentenceCompletion(limit) => match &item.answer {
             Answer::Text(variants) if !variants.is_empty() => {
                 for variant in variants {
-                    let words = count_words(variant);
-                    if words == 0 {
-                        issues.push(ValidationIssue::error(number, "Empty answer"));
-                    } else if words > limit.max_words as usize {
-                        issues.push(ValidationIssue::error(
-                            number,
-                            format!(
-                                "\"{variant}\" has {words} words; the limit is {}",
-                                limit.instruction()
-                            ),
-                        ));
-                    }
-                    if !limit.allow_number && is_number(variant) {
-                        issues.push(ValidationIssue::error(
-                            number,
-                            format!("\"{variant}\" is a number but numbers are not allowed"),
-                        ));
-                    }
+                    issues.extend(check_text_answer(variant, *limit, number));
                 }
-                if let Some(haystack) = haystack {
-                    if !variants.iter().any(|v| haystack.contains(&normalize(v))) {
-                        issues.push(ValidationIssue::error(
-                            number,
-                            format!("Key \"{}\" does not occur in the script", variants[0]),
-                        ));
-                    }
+                if let Some(haystack) = haystack
+                    && !variants.iter().any(|v| haystack.contains(&normalize(v)))
+                {
+                    issues.push(ValidationIssue::error(
+                        number,
+                        format!("Key \"{}\" does not occur in the script", variants[0]),
+                    ));
                 }
             }
             _ => issues.push(ValidationIssue::error(
@@ -520,12 +558,207 @@ pub fn normalize(text: &str) -> String {
     out
 }
 
-fn is_number(text: &str) -> bool {
-    let stripped: String = text
-        .chars()
-        .filter(|c| !matches!(c, ',' | '.' | '%' | ' '))
-        .collect();
-    !stripped.is_empty() && stripped.chars().all(|c| c.is_ascii_digit())
+/// The word limit of one accepted answer. With "AND/OR A NUMBER" the answer
+/// may add one number to its words: "15 May", "25 dollars", "3.5 million",
+/// "one hundred and twenty". Without it, every token counts and a number
+/// token is refused ("25 cats"); words that hold digits ("A4", "COVID-19")
+/// are words.
+fn check_text_answer(variant: &str, limit: WordLimit, item: Option<u8>) -> Vec<ValidationIssue> {
+    let shape = answer_shape(variant);
+    if shape.tokens == 0 {
+        return vec![ValidationIssue::error(item, "Empty answer")];
+    }
+    let mut issues = Vec::new();
+    let max = usize::from(limit.max_words);
+    if limit.allow_number {
+        if shape.numbers > 1 {
+            issues.push(ValidationIssue::error(
+                item,
+                format!(
+                    "\"{variant}\" has {} numbers; the limit is {}",
+                    shape.numbers,
+                    limit.instruction()
+                ),
+            ));
+        }
+        if shape.words > max {
+            let besides = if shape.numbers > 0 {
+                " besides the number"
+            } else {
+                ""
+            };
+            issues.push(ValidationIssue::error(
+                item,
+                format!(
+                    "\"{variant}\" has {} words{besides}; the limit is {}",
+                    shape.words,
+                    limit.instruction()
+                ),
+            ));
+        }
+    } else {
+        if shape.tokens > max {
+            issues.push(ValidationIssue::error(
+                item,
+                format!(
+                    "\"{variant}\" has {} words; the limit is {}",
+                    shape.tokens,
+                    limit.instruction()
+                ),
+            ));
+        }
+        if shape.has_number_token {
+            issues.push(ValidationIssue::error(
+                item,
+                format!("\"{variant}\" contains a number but numbers are not allowed"),
+            ));
+        }
+    }
+    issues
+}
+
+/// How an answer counts: whitespace tokens, the words outside numbers, the
+/// numbers, and whether one token is written in digits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AnswerShape {
+    tokens: usize,
+    words: usize,
+    numbers: usize,
+    has_number_token: bool,
+}
+
+/// A number is a run of tokens: digits ("15", "$25", "2,500", "15th",
+/// "10am"), optionally followed by scale words ("3.5 million"), or cardinal
+/// words ("twenty five", "one hundred and twenty"; "and" only between them).
+/// Ordinals, "half" or "quarter" are words: "first aid" is two words.
+fn answer_shape(text: &str) -> AnswerShape {
+    #[derive(PartialEq)]
+    enum Run {
+        None,
+        Digits,
+        Words,
+    }
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    let mut shape = AnswerShape {
+        tokens: tokens.len(),
+        words: 0,
+        numbers: 0,
+        has_number_token: false,
+    };
+    let mut run = Run::None;
+    for (i, token) in tokens.iter().enumerate() {
+        let word = word_form(token);
+        if is_digit_number_token(token) {
+            shape.has_number_token = true;
+            shape.numbers += 1;
+            run = Run::Digits;
+        } else if is_scale_word(&word) && run != Run::None {
+            run = Run::Words;
+        } else if is_cardinal_word(&word) {
+            if run != Run::Words {
+                shape.numbers += 1;
+            }
+            run = Run::Words;
+        } else if word == "and"
+            && run == Run::Words
+            && tokens
+                .get(i + 1)
+                .is_some_and(|next| is_cardinal_word(&word_form(next)))
+        {
+            // "one hundred and twenty": still the same number.
+        } else {
+            shape.words += 1;
+            run = Run::None;
+        }
+    }
+    shape
+}
+
+/// Lower case, without the punctuation around a word ("Twenty-five," -> "twenty-five").
+fn word_form(token: &str) -> String {
+    token
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+        .to_lowercase()
+}
+
+/// A token written in digits: "15", "$25", "2,500", "3.5", "10:30", "24/7",
+/// "50%", "15th", "10am". "A4", "M25", "COVID-19" and "24-hour" are words.
+fn is_digit_number_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '$' | '£' | '€' | '¥' | '%' | ':' | '.' | ',' | ';' | '!' | '?' | '(' | ')' | '"'
+        )
+    });
+    let lower = trimmed.to_lowercase();
+    let core = ["st", "nd", "rd", "th", "am", "pm"]
+        .iter()
+        .find_map(|suffix| lower.strip_suffix(*suffix))
+        .unwrap_or(lower.as_str());
+    core.chars().any(|c| c.is_ascii_digit())
+        && core
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '.' | ',' | ':' | '/' | '-'))
+}
+
+/// "zero" to "nineteen", the tens, the scale words, and hyphenated
+/// combinations of them ("twenty-five").
+fn is_cardinal_word(word: &str) -> bool {
+    const CARDINALS: [&str; 28] = [
+        "zero",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "eleven",
+        "twelve",
+        "thirteen",
+        "fourteen",
+        "fifteen",
+        "sixteen",
+        "seventeen",
+        "eighteen",
+        "nineteen",
+        "twenty",
+        "thirty",
+        "forty",
+        "fifty",
+        "sixty",
+        "seventy",
+        "eighty",
+        "ninety",
+    ];
+    !word.is_empty()
+        && word
+            .split('-')
+            .all(|part| CARDINALS.contains(&part) || is_scale_word(part))
+}
+
+fn is_scale_word(word: &str) -> bool {
+    matches!(word, "hundred" | "thousand" | "million" | "billion")
+}
+
+/// How often the marker "(n)" appears in a summary or note text: followed
+/// (after spaces) by a blank "___", and without one. "(1)" inside "(11)" is
+/// not a match.
+fn gap_occurrences(text: &str, number: u8) -> (usize, usize) {
+    let marker = format!("({number})");
+    let (mut with_blank, mut bare) = (0, 0);
+    for (at, _) in text.match_indices(&marker) {
+        let rest = text[at + marker.len()..].trim_start_matches([' ', '\t']);
+        if rest.starts_with("___") {
+            with_blank += 1;
+        } else {
+            bare += 1;
+        }
+    }
+    (with_blank, bare)
 }
 
 #[cfg(test)]
@@ -870,6 +1103,253 @@ mod tests {
             issues[0].message.contains("13 - 15"),
             "{}",
             issues[0].message
+        );
+    }
+
+    /// A one-item short-answer task with this limit and key, and its error messages.
+    fn answer_errors(limit: WordLimit, answer: &str) -> Vec<String> {
+        let mut task = short_answer_task(answer);
+        task.spec.kind = TaskKind::ShortAnswer(limit);
+        validate_task(&task, None)
+            .into_iter()
+            .filter(|i| i.severity == Severity::Error)
+            .map(|i| i.message)
+            .collect()
+    }
+
+    #[test]
+    fn words_or_number_allows_one_word_plus_a_number() {
+        let limit = WordLimit::words_or_number(1);
+        for fine in [
+            "15",
+            "May",
+            "15 May",
+            "May 15",
+            "15th May",
+            "25 dollars",
+            "$25",
+            "3.5 million",
+            "10 am",
+            "10am",
+            "2,500 pounds",
+            "twenty five",
+            "twenty-five",
+            "one hundred and twenty",
+            "24/7",
+        ] {
+            assert_eq!(answer_errors(limit, fine), Vec::<String>::new(), "{fine}");
+        }
+        for too_long in ["big red bus", "first aid", "half price", "second floor"] {
+            let errors = answer_errors(limit, too_long);
+            assert_eq!(errors.len(), 1, "{too_long}: {errors:?}");
+            assert!(errors[0].contains("words; the limit is"), "{errors:?}");
+        }
+        let errors = answer_errors(limit, "15 May 2026");
+        assert!(errors[0].contains("has 2 numbers"), "{errors:?}");
+        let errors = answer_errors(limit, "the 15 May");
+        assert_eq!(
+            errors,
+            [
+                "\"the 15 May\" has 2 words besides the number; the limit is NO MORE THAN ONE WORD AND/OR A NUMBER"
+            ]
+        );
+    }
+
+    #[test]
+    fn and_counts_only_between_number_words() {
+        let limit = WordLimit::words_or_number(2);
+        for too_long in ["salt and pepper", "fish and chips"] {
+            assert!(!answer_errors(limit, too_long).is_empty(), "{too_long}");
+        }
+        for fine in ["two hundred and fifty grams", "bread rolls", "fifty grams"] {
+            assert!(answer_errors(limit, fine).is_empty(), "{fine}");
+        }
+    }
+
+    #[test]
+    fn words_without_number_reject_only_number_tokens() {
+        let limit = WordLimit::words(2);
+        for number in ["25 cats", "25", "$50"] {
+            let errors = answer_errors(limit, number);
+            assert!(
+                errors.iter().any(|e| e.contains("numbers are not allowed")),
+                "{number}: {errors:?}"
+            );
+        }
+        for word in [
+            "A4 paper",
+            "M25",
+            "COVID-19",
+            "3D printer",
+            "24-hour service",
+            "twenty cats",
+        ] {
+            assert!(answer_errors(limit, word).is_empty(), "{word}");
+        }
+        assert!(!answer_errors(WordLimit::words(2), "very bad knee pain").is_empty());
+    }
+
+    /// Already true in 0.10.0 (words are split on whitespace only); kept as a guard.
+    #[test]
+    fn hyphenated_compound_counts_as_one_word() {
+        for word in ["check-in", "part-time", "up-to-date"] {
+            assert!(
+                answer_errors(WordLimit::words(1), word).is_empty(),
+                "{word}"
+            );
+        }
+        assert!(!answer_errors(WordLimit::words(1), "check in desk").is_empty());
+    }
+
+    #[test]
+    fn spelled_out_variant_is_one_number() {
+        let passage = Passage::parse(
+            1,
+            "birds",
+            "Speaker A: There are one hundred birds in the sanctuary.",
+            &["Speaker A".to_string()],
+        )
+        .unwrap();
+        let mut task = short_answer_task("100");
+        task.spec.kind = TaskKind::ShortAnswer(WordLimit::words_or_number(1));
+        task.items[0].answer = Answer::Text(vec!["100".into(), "one hundred".into()]);
+        task.items[0].evidence = "one hundred birds".into();
+        let issues = validate_task(&task, Some(&passage));
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    /// A gap task over items 1-2 with this text and these stems.
+    fn gap_task(kind: TaskKind, summary: Option<&str>, stem: &str) -> Task {
+        let item = |number| Item {
+            number,
+            stem: stem.into(),
+            options: vec![],
+            answer: Answer::Text(vec!["library".into()]),
+            evidence: String::new(),
+        };
+        Task {
+            spec: TaskSpec::new(kind, 1, 2),
+            instruction: "Complete the notes below.".into(),
+            shared_options: vec![],
+            summary: summary.map(String::from),
+            items: vec![item(1), item(2)],
+        }
+    }
+
+    fn messages(issues: &[ValidationIssue], severity: Severity) -> Vec<String> {
+        issues
+            .iter()
+            .filter(|i| i.severity == severity)
+            .map(|i| i.message.clone())
+            .collect()
+    }
+
+    #[test]
+    fn note_and_summary_completion_need_their_text_and_gaps() {
+        let limit = WordLimit::words_or_number(1);
+        for kind in [
+            TaskKind::NoteCompletion(limit),
+            TaskKind::SummaryCompletion(limit),
+        ] {
+            let label = kind.label();
+            for missing in [None, Some(""), Some("   ")] {
+                let issues = validate_task(&gap_task(kind.clone(), missing, ""), None);
+                assert_eq!(
+                    messages(&issues, Severity::Error),
+                    [format!("{label} needs its text with the gaps (n)______")],
+                    "{missing:?}"
+                );
+            }
+            let check = |text: &str| validate_task(&gap_task(kind.clone(), Some(text), ""), None);
+            let issues = check("Meet at (1)______ on Monday.");
+            assert_eq!(
+                messages(&issues, Severity::Error),
+                ["Gap (2)______ is missing from the text"]
+            );
+            let issues = check("Meet at (1) ______ on (2).");
+            assert!(!has_errors(&issues), "{issues:?}");
+            assert_eq!(
+                messages(&issues, Severity::Warning),
+                ["Gap (2) has no blank line (______) after it"]
+            );
+            let issues = check("(1)______ and (2)______, as in (1)______.");
+            assert_eq!(
+                messages(&issues, Severity::Error),
+                ["Gap (1) appears 2 times in the text"]
+            );
+            // "(1)" is not found inside "(11)".
+            assert!(check("(1)______ (2)______ (11)______").is_empty());
+        }
+    }
+
+    #[test]
+    fn unused_shared_options_and_summary_warn() {
+        let mut task = short_answer_task("knee pain");
+        task.shared_options = vec![Choice {
+            letter: 'A',
+            text: "stray".into(),
+        }];
+        task.summary = Some("A stray summary.".into());
+        let issues = validate_task(&task, Some(&passage()));
+        assert!(!has_errors(&issues), "{issues:?}");
+        assert_eq!(
+            messages(&issues, Severity::Warning),
+            [
+                "Short answer does not use shared options; they are not printed",
+                "Short answer does not use a summary or notes text; it is not printed"
+            ]
+        );
+        task.summary = Some("  ".into());
+        task.shared_options.clear();
+        assert!(validate_task(&task, Some(&passage())).is_empty());
+    }
+
+    #[test]
+    fn gap_task_stems_warn_only_when_the_text_hides_them() {
+        let kind = TaskKind::NoteCompletion(WordLimit::words_or_number(1));
+        let issues = validate_task(
+            &gap_task(kind.clone(), Some("(1)______ (2)______"), "Name:"),
+            None,
+        );
+        assert_eq!(
+            messages(&issues, Severity::Warning),
+            ["The stem is not printed for Note / form completion; the text with the gaps is"; 2]
+        );
+        // Without the text the stems are printed, so only the missing text is reported.
+        let issues = validate_task(&gap_task(kind, None, "Name:"), None);
+        assert!(
+            messages(&issues, Severity::Warning).is_empty(),
+            "{issues:?}"
+        );
+    }
+
+    #[test]
+    fn sentence_completion_needs_a_blank() {
+        let mut task = short_answer_task("knee pain");
+        task.spec.kind = TaskKind::SentenceCompletion(WordLimit::words(2));
+        task.items[0].stem = "Retro-walking can ease".into();
+        let issues = validate_task(&task, Some(&passage()));
+        assert_eq!(
+            messages(&issues, Severity::Error),
+            ["The sentence needs a blank (______) where the answer goes"]
+        );
+        task.items[0].stem = "Retro-walking can ease ______.".into();
+        assert!(!has_errors(&validate_task(&task, Some(&passage()))));
+    }
+
+    #[test]
+    fn an_oversized_script_is_an_error_on_the_page() {
+        let hsg = ExamFormat::hsg_national();
+        let part3 = hsg.part(3).unwrap();
+        let labels = vec!["Speaker A".to_string()];
+        let huge = format!("Speaker A: {}", "x".repeat(40_000));
+        let passage = Passage::parse(3, "topic", &huge, &labels).unwrap();
+        let issues = validate_passage(&passage, part3, &part3.default_speakers);
+        assert!(
+            messages(&issues, Severity::Error)
+                .iter()
+                .any(|m| m.contains("at most 30000 characters")),
+            "{issues:?}"
         );
     }
 

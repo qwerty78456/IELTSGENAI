@@ -1,8 +1,9 @@
 //! DOCX rendering of the paper, the key and the transcript, beside the
-//! Markdown one. Same content, laid out like the HSG paper: a title block, a
-//! blank candidate block (name, number, "số phách", mark), each part's tasks
-//! with a table of numbered answer boxes, then the answer key and the
-//! transcripts on pages of their own. Times New Roman 13 pt throughout.
+//! Markdown one. Same content, laid out like the HSG paper: a title block,
+//! the format's blank candidate fields (HSG: name, number, "số phách",
+//! mark; IELTS: none), each part's tasks with a table of numbered answer
+//! boxes, then the answer key and the transcripts on pages of their own.
+//! Times New Roman 13 pt throughout.
 //!
 //! Pure: the package is built in memory with `docx-rs`, so the browser can
 //! download it without a server round trip. `answer_layout` matches every
@@ -53,21 +54,6 @@ fn answer_layout(kind: &TaskKind) -> AnswerLayout {
         | TaskKind::Matching { .. } => AnswerLayout::Boxes,
         TaskKind::ShortAnswer(_) => AnswerLayout::LineBelow,
         TaskKind::SentenceCompletion(_) => AnswerLayout::InPlace,
-    }
-}
-
-/// Whether the numbered stems are printed; a summary or note carries its own
-/// gaps, and a multiple selection is answered from the shared options alone.
-fn shows_stems(task: &Task) -> bool {
-    match &task.spec.kind {
-        TaskKind::MultipleSelect { .. } => false,
-        TaskKind::SummaryCompletion(_) | TaskKind::NoteCompletion(_) => task.summary.is_none(),
-        TaskKind::TrueFalseNotGiven
-        | TaskKind::WhoMentioned { .. }
-        | TaskKind::MultipleChoice { .. }
-        | TaskKind::ShortAnswer(_)
-        | TaskKind::SentenceCompletion(_)
-        | TaskKind::Matching { .. } => true,
     }
 }
 
@@ -150,38 +136,43 @@ fn title_block(docx: Docx, title: &str, format: Option<&ExamFormat>) -> Docx {
     }
 }
 
-/// Blank fields the school fills in; no candidate data lives in the domain.
-fn candidate_block(docx: Docx) -> Docx {
+/// The format's blank fields the school fills in, in two columns; nothing
+/// when the format has none. No candidate data lives in the domain.
+fn candidate_block(docx: Docx, fields: &[String]) -> Docx {
+    if fields.is_empty() {
+        return docx;
+    }
     let half = TEXT_WIDTH / 2;
     let dotted = ".........................................";
-    let row = TableRow::new(vec![
-        cell(
-            half,
-            vec![
-                para(&format!("Họ và tên: {dotted}")),
-                para(&format!("Số báo danh: {dotted}")),
-            ],
-        ),
-        cell(
-            half,
-            vec![
-                para(&format!("Số phách: {dotted}")),
-                para(&format!("Điểm: {dotted}")),
-            ],
-        ),
-    ]);
+    let (left, right) = fields.split_at(fields.len().div_ceil(2));
+    let column = |fields: &[String]| -> Vec<Paragraph> {
+        let mut paragraphs: Vec<Paragraph> = fields
+            .iter()
+            .map(|field| para(&format!("{field}: {dotted}")))
+            .collect();
+        if paragraphs.is_empty() {
+            paragraphs.push(blank());
+        }
+        paragraphs
+    };
+    let row = TableRow::new(vec![cell(half, column(left)), cell(half, column(right))]);
     docx.add_paragraph(blank())
         .add_table(fixed_table(vec![row], 2))
         .add_paragraph(blank())
 }
 
+/// "Listen to an interview ONCE and do the tasks that follow."
+fn listen_line(spec: &PartSpec) -> Paragraph {
+    italic(&format!(
+        "Listen to {} {} and do the tasks that follow.",
+        spec.passage.description(),
+        spec.playback.label()
+    ))
+}
+
 fn part_heading(docx: Docx, spec: &PartSpec) -> Docx {
     docx.add_paragraph(heading(&spec.title, HEADING_SIZE, false))
-        .add_paragraph(italic(&format!(
-            "Listen to {} {} and do the tasks that follow.",
-            spec.passage.label().to_lowercase(),
-            spec.playback.label()
-        )))
+        .add_paragraph(listen_line(spec))
 }
 
 /// Numbered boxes `first..=last`, five to a row; the last row is padded so
@@ -208,16 +199,16 @@ fn answer_boxes(first: u8, last: u8) -> Table {
 /// One question block as printed on the paper (no answers).
 fn task_blocks(mut docx: Docx, task: &Task) -> Docx {
     docx = docx.add_paragraph(bold(&task.instruction));
-    for option in &task.shared_options {
+    for option in task.printed_shared_options() {
         docx = docx.add_paragraph(para(&format!("{}. {}", option.letter, option.text)));
     }
-    if let Some(summary) = &task.summary {
-        for line in summary.trim().lines() {
+    if let Some(summary) = task.printed_summary() {
+        for line in summary.lines() {
             docx = docx.add_paragraph(para(line));
         }
     }
     let layout = answer_layout(&task.spec.kind);
-    if shows_stems(task) {
+    if task.prints_stems() {
         for item in &task.items {
             docx = docx.add_paragraph(para(&format!("{}. {}", item.number, item.stem.trim())));
             for option in &item.options {
@@ -228,12 +219,13 @@ fn task_blocks(mut docx: Docx, task: &Task) -> Docx {
             }
         }
     }
-    docx = docx.add_paragraph(italic(&format!(
-        "Your answers: {}",
-        task.spec.range_label()
-    )));
     if layout == AnswerLayout::Boxes {
-        docx = docx.add_table(answer_boxes(task.spec.first, task.spec.last));
+        docx = docx
+            .add_paragraph(italic(&format!(
+                "Your answers: {}",
+                task.spec.range_label()
+            )))
+            .add_table(answer_boxes(task.spec.first, task.spec.last));
     }
     docx.add_paragraph(blank())
 }
@@ -310,7 +302,7 @@ fn key_entries(tasks: &[Task]) -> Vec<KeyEntry> {
 pub fn exam_document(exam: &Exam) -> Docx {
     let format = &exam.format;
     let mut docx = title_block(base_document(), &exam.title, Some(format));
-    docx = candidate_block(docx);
+    docx = candidate_block(docx, &format.paper_candidate_fields());
     docx = docx.add_paragraph(para(&format!(
         "Parts played once are not repeated; at the start of each recording you will hear a sound. \
          You have {} minutes to check your answers at the end.",
@@ -342,12 +334,7 @@ pub fn part_document(
     tasks: &[Task],
     transcript: Option<(&Passage, &[SpeakerConfig])>,
 ) -> Docx {
-    let mut docx = title_block(base_document(), &spec.title, None);
-    docx = docx.add_paragraph(italic(&format!(
-        "Listen to {} {} and do the tasks that follow.",
-        spec.passage.label().to_lowercase(),
-        spec.playback.label()
-    )));
+    let mut docx = title_block(base_document(), &spec.title, None).add_paragraph(listen_line(spec));
     for task in tasks {
         docx = task_blocks(docx, task);
     }
@@ -516,7 +503,8 @@ mod tests {
             let task = fixture_task(spec);
             let xml = document_xml(task_blocks(Docx::new(), &task));
             assert!(xml.contains(&task.instruction), "{}", spec.kind.label());
-            match answer_layout(&spec.kind) {
+            let layout = answer_layout(&spec.kind);
+            match layout {
                 AnswerLayout::Boxes => assert!(xml.contains("<w:tbl>"), "{}", spec.kind.label()),
                 AnswerLayout::LineBelow => {
                     assert!(xml.contains(UNDERLINE), "{}", spec.kind.label())
@@ -525,8 +513,46 @@ mod tests {
                     assert!(!xml.contains("<w:tbl>") && !xml.contains(UNDERLINE))
                 }
             }
+            // "Your answers" heads the boxes, so it appears only above them.
+            assert_eq!(
+                xml.contains("Your answers"),
+                layout == AnswerLayout::Boxes,
+                "{}",
+                spec.kind.label()
+            );
         }
         assert_eq!(seen.len(), 9, "every task kind is covered: {seen:?}");
+    }
+
+    #[test]
+    fn candidate_block_follows_the_format() {
+        let mut exam = filled_exam();
+        assert!(document_xml(exam_document(&exam)).contains("Số phách"));
+        // An HSG exam saved before the format carried its fields.
+        exam.format.candidate_fields.clear();
+        assert!(document_xml(exam_document(&exam)).contains("Số phách"));
+        let ielts = Exam::new(ExamFormat::ielts_listening(), "Mock", "travel");
+        let xml = document_xml(exam_document(&ielts));
+        assert!(!xml.contains("Số phách") && !xml.contains("Họ và tên"));
+    }
+
+    #[test]
+    fn stray_summary_and_options_are_not_printed() {
+        let spec = TaskSpec::new(TaskKind::ShortAnswer(WordLimit::words(2)), 21, 22);
+        let mut task = fixture_task(&spec);
+        task.summary = Some("A stray paragraph.".into());
+        task.shared_options = letters(2);
+        let xml = document_xml(task_blocks(Docx::new(), &task));
+        assert!(!xml.contains("stray") && !xml.contains("Option 1"), "{xml}");
+        assert!(xml.contains("Stem 21"));
+    }
+
+    #[test]
+    fn part_headers_use_paper_wording() {
+        let hsg = ExamFormat::hsg_national();
+        let xml = document_xml(part_document(&hsg.parts[0], &[], None));
+        assert!(xml.contains("Listen to an interview ONCE and do the tasks that follow."));
+        assert!(!xml.contains("(host"));
     }
 
     #[test]

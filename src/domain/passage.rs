@@ -177,7 +177,41 @@ impl Passage {
         }
         seen
     }
+
+    /// Why the script is too big to send to a language model or the voices,
+    /// if it is: too many turns, words, or characters (one huge "word").
+    /// Real scripts stay far below these limits.
+    pub fn size_problem(&self) -> Option<String> {
+        if self.lines.len() > MAX_PASSAGE_LINES {
+            return Some(format!(
+                "The script is too long: at most {MAX_PASSAGE_LINES} turns, found {}",
+                self.lines.len()
+            ));
+        }
+        let words = self.word_count();
+        if words > MAX_PASSAGE_WORDS {
+            return Some(format!(
+                "The script is too long: at most {MAX_PASSAGE_WORDS} words, found {words}"
+            ));
+        }
+        let chars: usize = self
+            .lines
+            .iter()
+            .map(|l| l.speaker.chars().count() + l.text.chars().count())
+            .sum();
+        if chars > MAX_PASSAGE_CHARS {
+            return Some(format!(
+                "The script is too long: at most {MAX_PASSAGE_CHARS} characters, found {chars}"
+            ));
+        }
+        None
+    }
 }
+
+/// Size limits of one script (`Passage::size_problem`).
+pub const MAX_PASSAGE_LINES: usize = 200;
+pub const MAX_PASSAGE_WORDS: usize = 3_000;
+pub const MAX_PASSAGE_CHARS: usize = 30_000;
 
 pub fn count_words(text: &str) -> usize {
     text.split_whitespace().count()

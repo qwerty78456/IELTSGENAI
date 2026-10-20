@@ -5,7 +5,7 @@ use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::domain::{AudioTrack, Exam, FormatId, MAX_TOPIC_CHARS, TextProvider};
+use crate::domain::{AudioTrack, Exam, FormatId, MAX_THEME_CHARS, MAX_TOPIC_CHARS, TextProvider};
 
 use super::audio::JobStatus;
 
@@ -96,7 +96,6 @@ pub enum DeleteOutcome {
 #[cfg_attr(not(feature = "server"), allow(dead_code))]
 pub const MAX_SAVED_EXAM_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_TITLE_CHARS: usize = 200;
-pub const MAX_THEME_CHARS: usize = 2_000;
 
 /// Checks the shape of a record before it is stored; teacher-readable reasons.
 #[cfg_attr(not(feature = "server"), allow(dead_code))]

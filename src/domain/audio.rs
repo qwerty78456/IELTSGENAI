@@ -61,7 +61,7 @@ impl AudioProgram {
             segments.push(AudioSegment::Announcement(format!(
                 "{}. Listen to {} {} and do the tasks for questions {} to {}.",
                 part.title,
-                part.passage.label().to_lowercase(),
+                part.passage.description(),
                 match part.playback {
                     PlayCount::Once => "once",
                     PlayCount::Twice => "twice",
@@ -128,5 +128,29 @@ mod tests {
         assert_eq!(plays(1), 1);
         assert_eq!(plays(3), 2);
         assert_eq!(program.passages_needed(), vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn announcements_use_paper_wording() {
+        let program = AudioProgram::for_format(&ExamFormat::hsg_national());
+        let spoken: Vec<&str> = program
+            .segments
+            .iter()
+            .filter_map(|s| match s {
+                AudioSegment::Announcement(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(spoken.contains(
+            &"Part 1. Listen to an interview once and do the tasks for questions 1 to 10."
+        ));
+        assert!(
+            spoken.contains(
+                &"Part 2. Listen to a talk once and do the tasks for questions 11 to 20."
+            )
+        );
+        for text in spoken {
+            assert!(!text.contains(['(', ')', '+', '/']), "{text}");
+        }
     }
 }

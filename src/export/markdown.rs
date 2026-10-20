@@ -3,23 +3,23 @@
 
 use crate::domain::{Exam, ExamPart, PartSpec, Passage, SpeakerConfig, Task, TaskKind};
 
-/// The question block as printed on the paper (no answers).
+/// The question block as printed on the paper (no answers). Markdown draws
+/// no answer boxes, so nothing points to them.
 pub fn render_task(task: &Task) -> String {
     let mut out = String::new();
     out.push_str(&format!("**{}**\n\n", task.instruction));
-    if !task.shared_options.is_empty() {
-        for option in &task.shared_options {
+    let options = task.printed_shared_options();
+    if !options.is_empty() {
+        for option in options {
             out.push_str(&format!("- **{}** {}\n", option.letter, option.text));
         }
         out.push('\n');
     }
-    if let Some(summary) = &task.summary {
-        out.push_str(summary.trim());
+    if let Some(summary) = task.printed_summary() {
+        out.push_str(summary);
         out.push_str("\n\n");
     }
-    let bare_items =
-        task.summary.is_some() || matches!(task.spec.kind, TaskKind::MultipleSelect { .. });
-    if !bare_items {
+    if task.prints_stems() {
         for item in &task.items {
             out.push_str(&format!("{}. {}\n", item.number, item.stem.trim()));
             for option in &item.options {
@@ -31,7 +31,6 @@ pub fn render_task(task: &Task) -> String {
         }
         out.push('\n');
     }
-    out.push_str(&format!("*Your answers: {}*\n\n", task.spec.range_label()));
     out
 }
 
@@ -40,7 +39,7 @@ pub fn render_part_paper(spec: &PartSpec, tasks: &[Task]) -> String {
     let mut out = format!(
         "## {}\n\n*Listen to {} {} and do the tasks that follow.*\n\n",
         spec.title,
-        spec.passage.label().to_lowercase(),
+        spec.passage.description(),
         spec.playback.label()
     );
     for task in tasks {
@@ -122,40 +121,101 @@ pub fn render_exam(exam: &Exam) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Answer, Choice, ExamFormat, Item, TaskSpec, Tfng};
+    use crate::domain::{Answer, Choice, ExamFormat, Item, TaskSpec, Tfng, WordLimit};
+
+    fn two_items(answers: [Answer; 2]) -> Vec<Item> {
+        let [first, second] = answers;
+        vec![
+            Item {
+                number: 1,
+                stem: "First.".into(),
+                options: vec![],
+                answer: first,
+                evidence: String::new(),
+            },
+            Item {
+                number: 2,
+                stem: "Second.".into(),
+                options: vec![],
+                answer: second,
+                evidence: String::new(),
+            },
+        ]
+    }
 
     #[test]
     fn renders_shared_options_and_key() {
         let task = Task {
+            spec: TaskSpec::new(TaskKind::WhoMentioned { guests: 2 }, 1, 2),
+            instruction: "Who mentioned it?".into(),
+            shared_options: vec![
+                Choice {
+                    letter: 'S',
+                    text: "Samara".into(),
+                },
+                Choice {
+                    letter: 'A',
+                    text: "Arun".into(),
+                },
+                Choice {
+                    letter: 'B',
+                    text: "Both".into(),
+                },
+            ],
+            summary: None,
+            items: two_items([Answer::Letters(vec!['S']), Answer::Letters(vec!['B'])]),
+        };
+        let paper = render_task(&task);
+        assert!(paper.contains("- **S** Samara"));
+        assert!(paper.contains("2. Second."));
+        assert!(!paper.contains("Your answers"), "{paper}");
+        assert!(render_key(&[task]).contains("| 2 | B |"));
+        let tfng = Task {
+            spec: TaskSpec::new(TaskKind::TrueFalseNotGiven, 1, 2),
+            instruction: "True, false or not given?".into(),
+            shared_options: vec![],
+            summary: None,
+            items: two_items([Answer::Tfng(Tfng::True), Answer::Tfng(Tfng::NotGiven)]),
+        };
+        assert!(!render_task(&tfng).contains("NG"));
+        assert!(render_key(&[tfng]).contains("| 2 | NG |"));
+    }
+
+    #[test]
+    fn stray_summary_and_options_are_not_printed() {
+        let mut task = Task {
             spec: TaskSpec::new(TaskKind::TrueFalseNotGiven, 1, 2),
             instruction: "True, false or not given?".into(),
             shared_options: vec![Choice {
                 letter: 'S',
                 text: "Samara".into(),
             }],
-            summary: None,
-            items: vec![
-                Item {
-                    number: 1,
-                    stem: "First.".into(),
-                    options: vec![],
-                    answer: Answer::Tfng(Tfng::True),
-                    evidence: String::new(),
-                },
-                Item {
-                    number: 2,
-                    stem: "Second.".into(),
-                    options: vec![],
-                    answer: Answer::Tfng(Tfng::NotGiven),
-                    evidence: String::new(),
-                },
-            ],
+            summary: Some("A stray paragraph.".into()),
+            items: two_items([Answer::Tfng(Tfng::True), Answer::Tfng(Tfng::False)]),
         };
         let paper = render_task(&task);
-        assert!(paper.contains("- **S** Samara"));
-        assert!(paper.contains("2. Second."));
-        assert!(!paper.contains("NG"));
-        assert!(render_key(&[task]).contains("| 2 | NG |"));
+        assert!(
+            !paper.contains("Samara") && !paper.contains("stray"),
+            "{paper}"
+        );
+        assert!(paper.contains("1. First.") && paper.contains("2. Second."));
+        // A blank text of a note task does not hide its stems either.
+        task.spec = TaskSpec::new(TaskKind::NoteCompletion(WordLimit::words(1)), 1, 2);
+        task.summary = Some("  ".into());
+        assert!(render_task(&task).contains("2. Second."));
+        task.summary = Some("Name: (1)______ Day: (2)______".into());
+        let paper = render_task(&task);
+        assert!(paper.contains("Name: (1)______") && !paper.contains("2. Second."));
+    }
+
+    #[test]
+    fn part_headers_use_paper_wording() {
+        let hsg = ExamFormat::hsg_national();
+        let paper = render_part_paper(&hsg.parts[0], &[]);
+        assert!(
+            paper.contains("*Listen to an interview ONCE and do the tasks that follow.*"),
+            "{paper}"
+        );
     }
 
     #[test]
